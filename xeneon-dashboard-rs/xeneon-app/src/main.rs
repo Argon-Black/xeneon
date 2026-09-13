@@ -419,7 +419,21 @@ impl SimpleComponent for AppModel {
                 if let Some(index) = target {
                     let grid = &self.real_grids[index];
                     grid.add_widget(descriptor.title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
-                    self.carousel.scroll_to(grid.widget(), true);
+                    // Deferred to the next idle iteration rather than
+                    // called inline: a page just created above via
+                    // carousel.insert() hasn't been size-allocated yet in
+                    // this same call, and AdwCarousel computes scroll_to's
+                    // target offset from each page's allocated width - so
+                    // scrolling immediately here can silently land short
+                    // of a brand-new last page (the widget still gets
+                    // added correctly, it's only the page switch that's
+                    // visually wrong). One idle-loop turn is enough for
+                    // GTK to run the pending allocation first.
+                    let carousel = self.carousel.clone();
+                    let page = grid.widget().clone();
+                    gtk::glib::idle_add_local_once(move || {
+                        carousel.scroll_to(&page, true);
+                    });
                 }
             }
         }
