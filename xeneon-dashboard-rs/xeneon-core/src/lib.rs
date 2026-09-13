@@ -1,14 +1,8 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Pure application logic for Xeneon Dashboard, shared by the GTK/Relm4 UI
+//! (`xeneon-app`) but with no GTK dependency of its own - everything here
+//! is plain data and arithmetic, so it can be built and tested without a
+//! display. Ported piece by piece from the Python app (`xeneon_dashboard/`)
+//! on the `rust-gtk-port` branch; see the plan doc referenced in project
+//! memory for the full mapping.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod grid;
