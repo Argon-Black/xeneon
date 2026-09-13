@@ -51,14 +51,20 @@ fn ensure_css_installed() {
 pub fn build(size_code: &str) -> gtk::Box {
     ensure_css_installed();
 
+    // Fills the whole card (no halign/valign here - Center would size the
+    // box down to the label's own natural size and center *that*, leaving
+    // the background color only behind the text instead of across the
+    // full widget). The label below is what gets centered inside it.
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.set_halign(gtk::Align::Center);
-    content.set_valign(gtk::Align::Center);
     content.set_hexpand(true);
     content.set_vexpand(true);
     content.add_css_class(&format!("dummy-{}", size_code.to_lowercase()));
 
     let label = gtk::Label::new(None);
+    label.set_halign(gtk::Align::Center);
+    label.set_valign(gtk::Align::Center);
+    label.set_hexpand(true);
+    label.set_vexpand(true);
     let key = label_key(size_code);
     let set_text = {
         let label = label.clone();
