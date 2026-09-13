@@ -66,6 +66,10 @@
   "widgets.audio.empty": "Aucun lecteur en cours",
   "widgets.audio.unknown_title": "Titre inconnu",
   "widgets.audio.unknown_artist": "Artiste inconnu",
+  "widgets.audio.play": "Lecture",
+  "widgets.audio.pause": "Pause",
+  "widgets.audio.previous": "Piste précédente",
+  "widgets.audio.next": "Piste suivante",
 
   "widgets.clock.title": "Horloge",
   "widgets.clock.settings.time_font": "Police (heure)",

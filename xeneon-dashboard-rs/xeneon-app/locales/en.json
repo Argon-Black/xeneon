@@ -66,6 +66,10 @@
   "widgets.audio.empty": "No player active",
   "widgets.audio.unknown_title": "Unknown title",
   "widgets.audio.unknown_artist": "Unknown artist",
+  "widgets.audio.play": "Play",
+  "widgets.audio.pause": "Pause",
+  "widgets.audio.previous": "Previous track",
+  "widgets.audio.next": "Next track",
 
   "widgets.clock.title": "Clock",
   "widgets.clock.settings.time_font": "Font (time)",
