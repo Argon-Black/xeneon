@@ -92,6 +92,28 @@ pub fn apply(css_class: &str, appearance: &WidgetAppearance) {
     });
 }
 
+/// Installs (or, with `rule: None`, removes) an already-formatted CSS rule
+/// under `css_class` in the same shared provider `apply()` above uses -
+/// lets an unrelated feature (the app-wide/per-page background image, see
+/// grid_widget.rs's `set_background_image`) piggy-back on one
+/// CssProvider/reload cycle instead of installing a second provider.
+pub fn set_raw_rule(css_class: &str, rule: Option<String>) {
+    ensure_provider();
+    RULES.with(|rules| {
+        let mut rules = rules.borrow_mut();
+        match rule {
+            Some(rule) => {
+                rules.insert(css_class.to_string(), rule);
+            }
+            None => {
+                rules.remove(css_class);
+            }
+        }
+        let css: String = rules.values().cloned().collect::<Vec<_>>().join("\n");
+        ensure_provider().load_from_string(&css);
+    });
+}
+
 /// The reset button's own hardcoded punchy red/white - the theme's
 /// "destructive" style renders too muted (dark red on dark red) to read
 /// clearly, same rationale as `_rules["_reset_button"]` in

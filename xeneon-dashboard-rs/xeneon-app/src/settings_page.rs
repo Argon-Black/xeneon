@@ -108,6 +108,15 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     let column3 = gtk::Box::new(gtk::Orientation::Vertical, 24);
     column3.set_valign(gtk::Align::Start);
 
+    // Every real widget page, kept live (not just a startup snapshot) so
+    // both a page added at runtime (`PagesHandle::add_page`) and a setting
+    // that must apply to every currently-visible page (the app-wide
+    // background image below, the "apply appearance to all" button in
+    // column 2) always see the full, current list. Declared once up front
+    // rather than down in the Pages group's own section since the
+    // Interface group needs it too.
+    let pages_shared: Rc<RefCell<Vec<Rc<WidgetGrid>>>> = Rc::new(RefCell::new(pages.to_vec()));
+
     // --- Column 1: Interface (page indicator look) ---
     let config = config_store::get();
 
@@ -147,6 +156,78 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     indicator_color_reset_button.set_tooltip_text(Some(&i18n::t("settings.indicator_color_row.reset_tooltip")));
     indicator_color_row.add_suffix(&indicator_color_reset_button);
     interface_group.add(&indicator_color_row);
+
+    // Full-bleed background image behind every *real* widget page (not the
+    // dev-mode test page, not this settings page - see
+    // grid_widget.rs's `set_background_image`). A later phase adds a
+    // per-page override on top of this app-wide default, hence the
+    // subtitle spelling that out now rather than leaving it a surprise.
+    let app_background_row = adw::ActionRow::new();
+    app_background_row.set_title(&i18n::t("settings.app_background_row.title"));
+    app_background_row.set_subtitle(&i18n::t("settings.app_background_row.subtitle"));
+    let app_background_choose_button = gtk::Button::with_label(&i18n::t("settings.app_background_row.choose_image"));
+    app_background_choose_button.set_valign(gtk::Align::Center);
+    app_background_row.add_suffix(&app_background_choose_button);
+    let app_background_clear_button = gtk::Button::with_label(&i18n::t("settings.app_background_row.clear_image"));
+    app_background_clear_button.set_valign(gtk::Align::Center);
+    app_background_row.add_suffix(&app_background_clear_button);
+    interface_group.add(&app_background_row);
+
+    // Only one of the two is shown at a time: with an image already set,
+    // "choose" is hidden so the only way forward is "clear" first - makes
+    // it obvious that changing the image means removing it, not
+    // overwriting it in place. Mirrors the same pattern the Python
+    // original uses for a page's own background image.
+    let sync_app_background_buttons = {
+        let app_background_choose_button = app_background_choose_button.clone();
+        let app_background_clear_button = app_background_clear_button.clone();
+        move || {
+            let has_image = config_store::get().app_background_image_path.is_some();
+            app_background_choose_button.set_visible(!has_image);
+            app_background_clear_button.set_visible(has_image);
+        }
+    };
+    sync_app_background_buttons();
+
+    app_background_choose_button.connect_clicked({
+        let pages_shared = pages_shared.clone();
+        let sync_app_background_buttons = sync_app_background_buttons.clone();
+        move |button| {
+            let dialog = gtk::FileDialog::new();
+            let image_filter = gtk::FileFilter::new();
+            image_filter.set_name(Some(&i18n::t("widgets.appearance.bg_image_filter")));
+            for mime in crate::appearance_popover::IMAGE_MIME_TYPES {
+                image_filter.add_mime_type(mime);
+            }
+            let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&image_filter);
+            dialog.set_filters(Some(&filters));
+            let root = button.root().and_downcast::<gtk::Window>();
+            let pages_shared = pages_shared.clone();
+            let sync_app_background_buttons = sync_app_background_buttons.clone();
+            dialog.open(root.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
+                let Ok(file) = result else { return };
+                let Some(path) = file.path() else { return };
+                let path = path.display().to_string();
+                config_store::update(|c| c.app_background_image_path = Some(path.clone()));
+                for page in pages_shared.borrow().iter() {
+                    page.set_background_image(Some(&path));
+                }
+                sync_app_background_buttons();
+            });
+        }
+    });
+    app_background_clear_button.connect_clicked({
+        let pages_shared = pages_shared.clone();
+        let sync_app_background_buttons = sync_app_background_buttons.clone();
+        move |_| {
+            config_store::update(|c| c.app_background_image_path = None);
+            for page in pages_shared.borrow().iter() {
+                page.set_background_image(None);
+            }
+            sync_app_background_buttons();
+        }
+    });
 
     // Both the opacity spin row and the color button/reset feed the same
     // "reapply the indicator's style" step, since set_style() takes both
@@ -319,10 +400,6 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     pages_group.set_title(&i18n::t("settings.pages_group.title"));
     column2.append(&pages_group);
     let page_rows: Rc<RefCell<Vec<adw::ExpanderRow>>> = Rc::new(RefCell::new(Vec::new()));
-    // Shared (not just a snapshot) so a page added at runtime via
-    // `PagesHandle::add_page` is still there when the retranslate closure
-    // below rebuilds the group - see `PagesHandle`'s own doc comment.
-    let pages_shared: Rc<RefCell<Vec<Rc<WidgetGrid>>>> = Rc::new(RefCell::new(pages.to_vec()));
     refresh_pages_group(&pages_group, &page_rows, &pages_shared.borrow(), &page_indicator);
 
     // --- Column 2 (cont'd): Default widget appearance ---
@@ -544,6 +621,9 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let indicator_opacity_row = indicator_opacity_row.clone();
         let indicator_color_row = indicator_color_row.clone();
         let indicator_color_reset_button = indicator_color_reset_button.clone();
+        let app_background_row = app_background_row.clone();
+        let app_background_choose_button = app_background_choose_button.clone();
+        let app_background_clear_button = app_background_clear_button.clone();
         let language_group = language_group.clone();
         let language_row = language_row.clone();
         let theme_group = theme_group.clone();
@@ -575,6 +655,10 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             indicator_opacity_row.set_subtitle(&i18n::t("settings.indicator_opacity_row.subtitle"));
             indicator_color_row.set_title(&i18n::t("settings.indicator_color_row.title"));
             indicator_color_reset_button.set_tooltip_text(Some(&i18n::t("settings.indicator_color_row.reset_tooltip")));
+            app_background_row.set_title(&i18n::t("settings.app_background_row.title"));
+            app_background_row.set_subtitle(&i18n::t("settings.app_background_row.subtitle"));
+            app_background_choose_button.set_label(&i18n::t("settings.app_background_row.choose_image"));
+            app_background_clear_button.set_label(&i18n::t("settings.app_background_row.clear_image"));
             language_group.set_title(&i18n::t("settings.language_group"));
             language_row.set_title(&i18n::t("settings.language_row.title"));
             // The language names themselves don't change (each is spelled

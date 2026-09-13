@@ -66,6 +66,14 @@ pub struct WidgetGrid {
     on_emptied: Rc<RefCell<Option<Box<dyn Fn()>>>>,
 }
 
+/// One stable CSS class per page, scoped by `page_id` rather than shared
+/// across every page - needed once a later phase lets a page override the
+/// app-wide default image with its own (see `set_background_image`'s own
+/// doc comment), at which point pages can no longer all share one rule.
+fn background_css_class(page_id: &str) -> String {
+    format!("xeneon-page-background-{page_id}")
+}
+
 static INSTALL_PREVIEW_CSS: Once = Once::new();
 
 /// The dragged widget's real card never moves during a drag - only this
@@ -148,18 +156,19 @@ impl WidgetGrid {
     ) -> Self {
         ensure_preview_css_installed();
         let fixed = gtk::Fixed::new();
-        fixed.set_size_request(page_w, page_h);
-        // Keeps widgets off the physical screen edge, matching
-        // window.py's PAGE_MARGIN - deliberately GAP on all four sides so
-        // the page edge reads as just another gap in the grid, per
-        // CLAUDE.md. page_w/page_h are the content area *inside* this
-        // margin (see xeneon_core::grid::PAGE_W/PAGE_H), not the full
-        // screen, so the margin is added on top rather than eating into
-        // them.
-        fixed.set_margin_start(grid::GAP);
-        fixed.set_margin_end(grid::GAP);
-        fixed.set_margin_top(grid::GAP);
-        fixed.set_margin_bottom(grid::GAP);
+        // Sized to the *full* carousel page (content area plus the GAP
+        // bezel on every side), not `gtk::Widget`'s own margin properties -
+        // a margin is space *outside* a widget's own paint box, which would
+        // leave the GAP bezel unpainted by this page's own background image
+        // (see `set_background_image` below), showing a plain border
+        // around it instead of the full-bleed, edge-to-edge look that's
+        // meant to have. page_w/page_h stay the *content* coordinate space
+        // every x/y in this file is expressed in (matching
+        // xeneon_core::grid::PAGE_W/PAGE_H and its find_free_position/
+        // snap_to_layout math) - GAP is added right at the point each one
+        // is actually put/moved onto `fixed`, not baked in here.
+        fixed.set_size_request(page_w + 2 * grid::GAP, page_h + 2 * grid::GAP);
+        fixed.add_css_class(&background_css_class(&page_id));
         Self {
             fixed,
             page_w,
@@ -179,6 +188,27 @@ impl WidgetGrid {
     /// `adw::Carousel` page).
     pub fn widget(&self) -> &gtk::Fixed {
         &self.fixed
+    }
+
+    /// Renders `path` (or, with `None`, clears it) as this page's full-bleed
+    /// background - `cover`-scaled, no border, filling `fixed`'s entire
+    /// paint box edge to edge (see `build()`'s own note on why margins were
+    /// swapped for a grown `size_request` + GAP-offset placement to make
+    /// that possible). Driven today only by the app-wide
+    /// `Config.app_background_image_path` setting (applied to every real
+    /// page uniformly from `main.rs`); not yet persisted per page - that's
+    /// the later per-page-override phase the settings row's own subtitle
+    /// mentions.
+    pub fn set_background_image(&self, path: Option<&str>) {
+        let rule = path.map(|path| {
+            let uri = gtk::gio::File::for_path(path).uri();
+            format!(
+                ".{class} {{ background-image: url('{uri}'); background-size: cover; \
+                 background-position: center; background-repeat: no-repeat; }}",
+                class = background_css_class(&self.page_id)
+            )
+        });
+        crate::appearance_css::set_raw_rule(&background_css_class(&self.page_id), rule);
     }
 
     /// Stable identity (the `pages/<id>.json` filename), independent of
@@ -381,7 +411,7 @@ impl WidgetGrid {
         );
         let root_widget: gtk::Widget = handles.root.clone().upcast();
 
-        self.fixed.put(&root_widget, rect.x as f64, rect.y as f64);
+        self.fixed.put(&root_widget, (rect.x + grid::GAP) as f64, (rect.y + grid::GAP) as f64);
         self.placed.borrow_mut().push(PlacedWidget {
             id: id.clone(),
             kind: kind.clone(),
@@ -472,7 +502,7 @@ impl WidgetGrid {
                 ghost.set_size_request(current.w, current.h);
                 ghost.add_css_class("xeneon-move-preview");
                 ghost.add_css_class("xeneon-move-preview-valid");
-                fixed.put(&ghost, current.x as f64, current.y as f64);
+                fixed.put(&ghost, (current.x + grid::GAP) as f64, (current.y + grid::GAP) as f64);
                 *preview.borrow_mut() = Some(MovePreview { ghost, candidate: current, valid: true });
             });
         }
@@ -497,7 +527,7 @@ impl WidgetGrid {
                 let mut preview = preview.borrow_mut();
                 let Some(state) = preview.as_mut() else { return };
                 if state.candidate != candidate {
-                    fixed.move_(&state.ghost, candidate.x as f64, candidate.y as f64);
+                    fixed.move_(&state.ghost, (candidate.x + grid::GAP) as f64, (candidate.y + grid::GAP) as f64);
                     state.candidate = candidate;
                 }
                 if state.valid != valid {
@@ -528,7 +558,7 @@ impl WidgetGrid {
                 let Some(state) = preview.borrow_mut().take() else { return };
                 fixed.remove(&state.ghost);
                 if state.valid {
-                    fixed.move_(&root_widget, state.candidate.x as f64, state.candidate.y as f64);
+                    fixed.move_(&root_widget, (state.candidate.x + grid::GAP) as f64, (state.candidate.y + grid::GAP) as f64);
                     if let Some(p) = placed.borrow_mut().iter_mut().find(|p| p.id == id) {
                         p.rect = state.candidate;
                     }

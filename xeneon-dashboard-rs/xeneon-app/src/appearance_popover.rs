@@ -15,7 +15,7 @@ use crate::appearance_css;
 use crate::i18n_runtime as i18n;
 use xeneon_core::appearance::WidgetAppearance;
 
-const IMAGE_MIME_TYPES: [&str; 7] =
+pub(crate) const IMAGE_MIME_TYPES: [&str; 7] =
     ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/gif", "image/tiff", "image/svg+xml"];
 
 fn add_color_row(box_: &gtk::Box, initial: &gtk::gdk::RGBA) -> (gtk::Label, gtk::ColorDialogButton) {

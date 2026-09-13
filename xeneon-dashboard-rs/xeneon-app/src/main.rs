@@ -235,6 +235,7 @@ impl SimpleComponent for AppModel {
                 ),
                 None => WidgetGrid::new(PAGE_W, PAGE_H, index, widgets_dir.clone(), pages_dir.clone()),
             };
+            grid.set_background_image(app_config.app_background_image_path.as_deref());
             let grid = Rc::new(grid);
             register_page_emptied(&grid, &sender);
             real_grids.push(grid);
@@ -427,7 +428,9 @@ impl SimpleComponent for AppModel {
                     }
 
                     let new_index = self.real_grids.len();
-                    let grid = Rc::new(WidgetGrid::new(PAGE_W, PAGE_H, new_index, self.widgets_dir.clone(), self.pages_dir.clone()));
+                    let grid = WidgetGrid::new(PAGE_W, PAGE_H, new_index, self.widgets_dir.clone(), self.pages_dir.clone());
+                    grid.set_background_image(config_store::get().app_background_image_path.as_deref());
+                    let grid = Rc::new(grid);
                     register_page_emptied(&grid, &sender);
                     self._page_indicator.register_page(grid.widget(), grid.clone());
                     // Insert right after the last real page - ahead of the

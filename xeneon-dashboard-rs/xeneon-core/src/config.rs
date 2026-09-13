@@ -78,6 +78,12 @@ pub struct Config {
     pub accent_color: String,
     pub accent_follow_system: bool,
     pub default_widget_appearance: DefaultWidgetAppearance,
+    // Full-bleed background image shown behind every *real* widget page
+    // (not the dev-mode test page, not the settings page) - None means no
+    // image, just the plain theme background. A later phase adds a
+    // per-page override on top of this app-wide default (see grid_widget.rs
+    // in xeneon-app).
+    pub app_background_image_path: Option<String>,
 }
 
 impl Default for Config {
@@ -94,6 +100,7 @@ impl Default for Config {
             accent_color: "#7e57c2".to_string(),
             accent_follow_system: false,
             default_widget_appearance: DefaultWidgetAppearance::default(),
+            app_background_image_path: None,
         }
     }
 }
