@@ -239,7 +239,19 @@ class SettingsPage(Gtk.Box):
         columns_box.append(shortcuts_column)
         columns_box.append(info_column)
 
-        self.append(columns_box)
+        # Scrolls instead of just growing: this page's content only gets
+        # taller as settings groups are added (like the "Thème" group
+        # above), and the Xeneon Edge panel is a fixed 720px tall with no
+        # room to spare - if this page's natural height ever exceeds what's
+        # actually available, an un-scrolled Gtk.Box would instead push the
+        # whole Adw.Carousel (and therefore the fullscreened window itself)
+        # taller than the physical monitor, breaking true fullscreen
+        # coverage for every page, not just this one.
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_vexpand(True)
+        scroller.set_child(columns_box)
+        self.append(scroller)
         self.refresh_pages()
 
         self.refresh_fullscreen_shortcut_label()

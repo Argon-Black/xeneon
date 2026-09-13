@@ -532,6 +532,15 @@ class WidgetPicker(Gtk.Revealer):
         self.set_valign(Gtk.Align.FILL)
         self.set_hexpand(True)
         self.set_vexpand(True)
+        # A FILL-aligned overlay child is allocated the *whole* overlay area
+        # by Gtk.Overlay regardless of the Revealer's own reveal_child state
+        # - reveal_child only affects what gets drawn, not what gets
+        # allocated/hit-tested. Left targetable, this invisible-but-full-size
+        # Revealer would sit over the entire carousel and swallow every
+        # click/swipe even while fully closed. Same fix as PageIndicator
+        # above (see its own set_can_target(False)/_show()/_hide()):
+        # targetable only while actually open - see open()/close().
+        self.set_can_target(False)
         self.add_css_class("xeneon-widget-picker")
         _ensure_picker_css()
 
@@ -585,11 +594,13 @@ class WidgetPicker(Gtk.Revealer):
 
     def open(self):
         self._rebuild_body()
+        self.set_can_target(True)
         self.set_reveal_child(True)
         self.grab_focus()
 
     def close(self):
         self.set_reveal_child(False)
+        self.set_can_target(False)
         # Drops every preview widget the moment the picker closes rather
         # than leaving them alive off-screen - several of them (weather,
         # agenda, cpu_temp, temp_gauge) hold their own GLib timers/
