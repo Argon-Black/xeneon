@@ -5,4 +5,9 @@
 //! on the `rust-gtk-port` branch; see the plan doc referenced in project
 //! memory for the full mapping.
 
+pub mod appearance;
+pub mod config;
 pub mod grid;
+pub mod page_state;
+mod persistence;
+pub mod widget_state;
