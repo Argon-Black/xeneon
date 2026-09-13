@@ -11,9 +11,12 @@
 //! simple list of every registered widget kind - a reduced stand-in for
 //! `WidgetPicker` in widget_picker.py - and adds the chosen one to the
 //! current page (or the next real page with room, same overflow-forward
-//! scan as `XeneonWindow.add_widget`; unlike the Python original, running
-//! out of pages entirely just logs rather than creating a fresh page -
-//! dynamic page creation isn't wired up yet).
+//! scan as `XeneonWindow.add_widget`). Unlike the Python original -
+//! which has no page cap - running out of room on every existing page
+//! (the current page is full, or the widget is too big to ever fit an
+//! empty one) creates a fresh page and lands the widget there, up to
+//! `MAX_PAGES`; past that cap, adding is refused with a toast instead
+//! (see `AppMsg::AddWidget`).
 //!
 //! Startup layout: whatever was saved (or one empty page, on a first run
 //! with nothing saved yet), then - only in dev mode (see
@@ -38,6 +41,7 @@ mod widgets;
 use adw::prelude::*;
 use page_indicator::PageIndicator;
 use relm4::prelude::*;
+use std::path::PathBuf;
 use std::rc::Rc;
 use xeneon_core::config;
 use xeneon_core::grid::{PAGE_H, PAGE_W};
@@ -50,6 +54,12 @@ use grid_widget::WidgetGrid;
 /// scale (logical px == physical px - see CLAUDE.md in the Python app).
 const WINDOW_WIDTH: i32 = 2560;
 const WINDOW_HEIGHT: i32 = 720;
+
+/// Hard cap on real (non-dev, non-settings) pages, matching the limit the
+/// user asked for so a runaway sequence of "add a widget" calls can't
+/// grow the carousel without bound. Past this, `AddWidget` shows a toast
+/// instead of creating another page.
+const MAX_PAGES: usize = 10;
 
 /// Set `XENEON_DEV_MODE=1` (any value works) to show the dummy-widgets
 /// test page at startup and the settings page's restart button. Runtime
@@ -69,14 +79,30 @@ struct AppModel {
     // AppMsg::GotoSettings. Always the carousel's last page (see its
     // append order at the end of init()).
     settings_root: gtk::Box,
+    // Shown on top of everything else (carousel, header bar, page
+    // indicator) so a toast - currently only the "max pages reached"
+    // warning - floats above them rather than being clipped by the
+    // gtk::Overlay underneath. See the manual reparenting after
+    // view_output!() below for why this isn't built inside the view!
+    // macro like the rest of the window content.
+    toast_overlay: adw::ToastOverlay,
     widget_picker_dialog: adw::Dialog,
     window: adw::ApplicationWindow,
+    // Needed again whenever AddWidget creates a fresh page at runtime -
+    // WidgetGrid::new takes them, same as every real page built at
+    // startup below.
+    widgets_dir: PathBuf,
+    pages_dir: PathBuf,
     // Kept alive for the app's lifetime - each owns the Rc<RefCell<_>>
     // state its drag/delete closures capture. real_grids also doubles as
     // the "which pages can I add a widget to" list for AddWidget below.
     real_grids: Vec<Rc<WidgetGrid>>,
     _dev_grid: Option<Rc<WidgetGrid>>,
     _page_indicator: PageIndicator,
+    // Lets AddWidget append a page to the Settings "Pages" rename list the
+    // moment it creates one, instead of the list only catching up on the
+    // next language switch - see `settings_page::PagesHandle`.
+    pages_handle: settings_page::PagesHandle,
 }
 
 #[derive(Debug)]
@@ -251,12 +277,14 @@ impl SimpleComponent for AppModel {
             page_indicator.register_page(dev_grid.widget(), dev_grid.clone());
         }
 
-        settings_page::populate(&settings_root, &real_grids, page_indicator.clone());
+        let pages_handle = settings_page::populate(&settings_root, &real_grids, page_indicator.clone());
 
         let window_title = adw::WindowTitle::new(&i18n_runtime::t("window.title"), "");
         let header_bar = adw::HeaderBar::new();
         header_bar.set_valign(gtk::Align::Start);
         header_bar.set_title_widget(Some(&window_title));
+
+        let toast_overlay = adw::ToastOverlay::new();
 
         let widget_picker_dialog = widget_picker::build({
             let sender = sender.clone();
@@ -286,11 +314,15 @@ impl SimpleComponent for AppModel {
             window_title,
             carousel: carousel.clone(),
             settings_root: settings_root.clone(),
+            toast_overlay: toast_overlay.clone(),
             widget_picker_dialog,
             window: root.clone(),
+            widgets_dir,
+            pages_dir,
             real_grids,
             _dev_grid: dev_grid,
             _page_indicator: page_indicator,
+            pages_handle,
         };
 
         i18n_runtime::on_change({
@@ -303,6 +335,17 @@ impl SimpleComponent for AppModel {
         widgets.overlay.set_child(Some(&carousel));
         widgets.overlay.add_overlay(model._page_indicator.widget());
         widgets.overlay.add_overlay(&model.header_bar);
+
+        // Splice the toast overlay in between the window and its existing
+        // content rather than building it inside the view! macro above -
+        // consistent with this file's own stated preference (see the
+        // set_content doc comment) for wiring externally-built widgets by
+        // hand. set_content() on the window unparents the gtk::Overlay
+        // (its current content) as part of replacing it, which is what
+        // makes the immediately following set_child() below valid - a
+        // widget can't be given a second parent while it still has one.
+        root.set_content(Some(&toast_overlay));
+        toast_overlay.set_child(Some(&widgets.overlay));
 
         for grid in &model.real_grids {
             carousel.append(grid.widget());
@@ -341,15 +384,42 @@ impl SimpleComponent for AppModel {
                 let Some(descriptor) = widgets::registry::find(kind) else { return };
                 let start = current_widget_page_index(&self.carousel, self.real_grids.len());
                 let target = (start..self.real_grids.len()).find(|&i| self.real_grids[i].has_room_for(descriptor.size));
-                match target {
-                    Some(index) => {
-                        let grid = &self.real_grids[index];
-                        grid.add_widget(descriptor.title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
-                        self.carousel.scroll_to(grid.widget(), true);
+
+                // No existing page has room - either every one is full, or
+                // the widget is too big to ever fit an empty one (both
+                // read the same way through has_room_for/find_free_position:
+                // simply "no free spot"). Overflow forward onto a brand
+                // new page instead of giving up, same as the scan above
+                // already does across existing pages - capped at
+                // MAX_PAGES so this can't grow the carousel without bound.
+                let target = target.or_else(|| {
+                    if self.real_grids.len() >= MAX_PAGES {
+                        let toast = adw::Toast::new(&i18n_runtime::t_args(
+                            "widgets.add_menu.max_pages_toast",
+                            &[("max", &MAX_PAGES.to_string())],
+                        ));
+                        toast.set_timeout(4);
+                        self.toast_overlay.add_toast(toast);
+                        return None;
                     }
-                    None => {
-                        eprintln!("xeneon-dashboard: no room on any page for a new {kind} widget (creating a fresh page on overflow isn't wired up yet)");
-                    }
+
+                    let new_index = self.real_grids.len();
+                    let grid = Rc::new(WidgetGrid::new(PAGE_W, PAGE_H, new_index, self.widgets_dir.clone(), self.pages_dir.clone()));
+                    self._page_indicator.register_page(grid.widget(), grid.clone());
+                    // Insert right after the last real page - ahead of the
+                    // dev-mode test page and/or the settings page, which
+                    // always come after real_grids in the carousel (see
+                    // the append order at the end of init()).
+                    self.carousel.insert(grid.widget(), new_index as i32);
+                    self.pages_handle.add_page(grid.clone());
+                    self.real_grids.push(grid);
+                    Some(new_index)
+                });
+
+                if let Some(index) = target {
+                    let grid = &self.real_grids[index];
+                    grid.add_widget(descriptor.title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
+                    self.carousel.scroll_to(grid.widget(), true);
                 }
             }
         }

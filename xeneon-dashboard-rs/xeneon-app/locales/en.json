@@ -41,6 +41,7 @@
   "widgets.move_tooltip": "Move",
 
   "widgets.add_menu.title": "Add a widget",
+  "widgets.add_menu.max_pages_toast": "Maximum number of pages reached ({max})",
 
   "widgets.dummy.title_s": "Dummy S",
   "widgets.dummy.title_m": "Dummy M",

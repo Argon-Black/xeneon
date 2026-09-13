@@ -42,7 +42,32 @@ use crate::theme;
 /// `pages` is every *renameable* widget page (not the dev-mode test page,
 /// not the settings page itself) - mirrors `window.widget_pages()` feeding
 /// `SettingsPage.refresh_pages()`.
-pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageIndicator) {
+/// Handle kept by the caller (`AppModel`) to append a page to the "Pages"
+/// rename list *after* `populate` has already built it - needed once
+/// dynamic page creation (adding a widget that overflows onto a fresh
+/// page, see `main.rs`'s `AppMsg::AddWidget`) can grow the page count at
+/// runtime, not just at startup. `pages` is the same shared list the
+/// i18n retranslate closure below reads from, so a page added here is
+/// still there (and still renameable) after a language switch rebuilds
+/// the group.
+#[derive(Clone)]
+pub struct PagesHandle {
+    group: adw::PreferencesGroup,
+    rows: Rc<RefCell<Vec<adw::ExpanderRow>>>,
+    pages: Rc<RefCell<Vec<Rc<WidgetGrid>>>>,
+    page_indicator: PageIndicator,
+}
+
+impl PagesHandle {
+    pub fn add_page(&self, grid: Rc<WidgetGrid>) {
+        let row = build_page_row(grid.clone(), self.page_indicator.clone());
+        self.group.add(&row);
+        self.rows.borrow_mut().push(row);
+        self.pages.borrow_mut().push(grid);
+    }
+}
+
+pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageIndicator) -> PagesHandle {
     root.set_orientation(gtk::Orientation::Vertical);
     root.set_hexpand(true);
     root.set_vexpand(true);
@@ -279,7 +304,11 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     pages_group.set_title(&i18n::t("settings.pages_group.title"));
     column2.append(&pages_group);
     let page_rows: Rc<RefCell<Vec<adw::ExpanderRow>>> = Rc::new(RefCell::new(Vec::new()));
-    refresh_pages_group(&pages_group, &page_rows, pages, &page_indicator);
+    // Shared (not just a snapshot) so a page added at runtime via
+    // `PagesHandle::add_page` is still there when the retranslate closure
+    // below rebuilds the group - see `PagesHandle`'s own doc comment.
+    let pages_shared: Rc<RefCell<Vec<Rc<WidgetGrid>>>> = Rc::new(RefCell::new(pages.to_vec()));
+    refresh_pages_group(&pages_group, &page_rows, &pages_shared.borrow(), &page_indicator);
 
     // --- Column 3: Keyboard shortcuts + dev tools ---
     let shortcuts_group = adw::PreferencesGroup::new();
@@ -376,7 +405,8 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let dev_group = dev_group.clone();
         let pages_group = pages_group.clone();
         let page_rows = page_rows.clone();
-        let pages = pages.to_vec();
+        let pages_shared = pages_shared.clone();
+        let page_indicator = page_indicator.clone();
         let shortcuts_group = shortcuts_group.clone();
         let fullscreen_row = fullscreen_row.clone();
         let goto_row = goto_row.clone();
@@ -408,7 +438,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             // Rebuilding is the simplest way to keep a dynamic-length,
             // per-row-translated list in sync - same call Python's
             // _retranslate() makes to refresh_pages() for the same reason.
-            refresh_pages_group(&pages_group, &page_rows, &pages, &page_indicator);
+            refresh_pages_group(&pages_group, &page_rows, &pages_shared.borrow(), &page_indicator);
             shortcuts_group.set_title(&i18n::t("settings.shortcuts_group"));
             fullscreen_row.set_title(&i18n::t("settings.fullscreen_row.title"));
             fullscreen_row.set_subtitle(&i18n::t("settings.fullscreen_row.subtitle"));
@@ -427,6 +457,8 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             dev_toggle_row.set_subtitle(&i18n::t("settings.dev_toggle.subtitle"));
         }
     });
+
+    PagesHandle { group: pages_group, rows: page_rows, pages: pages_shared, page_indicator }
 }
 
 /// Spawns a fresh instance with dev mode set to `dev_mode` and quits this
