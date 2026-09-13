@@ -113,6 +113,42 @@ pub fn build(
         move |_| popover.popup()
     });
 
+    // Closes the popover on any click elsewhere, including the first touch
+    // of a carousel swipe - can't just turn autohide back on for this (see
+    // the comment on `set_autohide` in appearance_popover::build, still
+    // needed to survive the color/file dialogs), so instead this watches
+    // the window itself in the capture phase: a `Gtk.Popover`, like the
+    // dialogs it opens, renders into its own native surface, so any press
+    // that reaches the window controller at all necessarily landed outside
+    // the popover. Wired on "map"/"closed" rather than once at build time
+    // because the card isn't attached to a window yet here, so there's no
+    // root to watch.
+    let outside_click: Rc<RefCell<Option<gtk::GestureClick>>> = Rc::new(RefCell::new(None));
+    popover.connect_map({
+        let outside_click = outside_click.clone();
+        move |popover| {
+            let Some(root) = popover.root() else { return };
+            let click = gtk::GestureClick::new();
+            click.set_propagation_phase(gtk::PropagationPhase::Capture);
+            click.connect_pressed({
+                let popover = popover.clone();
+                move |_, _, _, _| popover.popdown()
+            });
+            root.add_controller(click.clone());
+            *outside_click.borrow_mut() = Some(click);
+        }
+    });
+    popover.connect_closed({
+        let outside_click = outside_click.clone();
+        move |popover| {
+            if let Some(click) = outside_click.borrow_mut().take() {
+                if let Some(root) = popover.root() {
+                    root.remove_controller(&click);
+                }
+            }
+        }
+    });
+
     // Hidden until revealed - via opacity for the label (stable allocation,
     // matches grid.py) and via visibility for the buttons (so they don't
     // intercept clicks meant for the content underneath while hidden).
