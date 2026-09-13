@@ -3,9 +3,10 @@
 //! `WidgetGrid`, and a configure button opening the appearance popover -
 //! the generic controls (opacity/background/border/corners) every widget
 //! gets, plus the plugin's own settings alongside them when it has any.
-//! Ported (simplified for this phase) from `DashboardWidget` in grid.py -
-//! hover-only reveal and touch-hold reveal aren't built yet, so the
-//! buttons are always visible rather than only on hover.
+//! Ported from `DashboardWidget` in grid.py, including its hover/tap
+//! reveal: the label and the three corner buttons stay hidden until the
+//! pointer enters the card (or, on touch, it's tapped, since touch has no
+//! hover/leave events to hide them again afterwards).
 
 use gtk::prelude::*;
 use std::cell::RefCell;
@@ -111,6 +112,83 @@ pub fn build(
         let popover = popover.clone();
         move |_| popover.popup()
     });
+
+    // Hidden until revealed - via opacity for the label (stable allocation,
+    // matches grid.py) and via visibility for the buttons (so they don't
+    // intercept clicks meant for the content underneath while hidden).
+    header.set_opacity(0.0);
+    delete_button.set_visible(false);
+    move_button.set_visible(false);
+    configure_button.set_visible(false);
+
+    let hide_source: Rc<RefCell<Option<gtk::glib::SourceId>>> = Rc::new(RefCell::new(None));
+
+    let hide_now: Rc<dyn Fn()> = Rc::new({
+        let header = header.clone();
+        let delete_button = delete_button.clone();
+        let move_button = move_button.clone();
+        let configure_button = configure_button.clone();
+        let hide_source = hide_source.clone();
+        move || {
+            header.set_opacity(0.0);
+            delete_button.set_visible(false);
+            move_button.set_visible(false);
+            configure_button.set_visible(false);
+            *hide_source.borrow_mut() = None;
+        }
+    });
+
+    // `hide_after_seconds` is only used for the touch-tap path (no "leave"
+    // event to hide on, unlike hover) - see TOUCH_REVEAL_SECONDS in
+    // grid.py.
+    let reveal: Rc<dyn Fn(Option<u32>)> = Rc::new({
+        let header = header.clone();
+        let delete_button = delete_button.clone();
+        let move_button = move_button.clone();
+        let configure_button = configure_button.clone();
+        let hide_source = hide_source.clone();
+        let hide_now = hide_now.clone();
+        move |hide_after_seconds| {
+            header.set_opacity(1.0);
+            delete_button.set_visible(true);
+            move_button.set_visible(true);
+            configure_button.set_visible(true);
+            if let Some(source) = hide_source.borrow_mut().take() {
+                source.remove();
+            }
+            if let Some(seconds) = hide_after_seconds {
+                let hide_now = hide_now.clone();
+                let source = gtk::glib::timeout_add_seconds_local(seconds, move || {
+                    hide_now();
+                    gtk::glib::ControlFlow::Break
+                });
+                *hide_source.borrow_mut() = Some(source);
+            }
+        }
+    });
+
+    let hover = gtk::EventControllerMotion::new();
+    hover.connect_enter({
+        let reveal = reveal.clone();
+        move |_, _, _| reveal(None)
+    });
+    hover.connect_leave({
+        let hide_now = hide_now.clone();
+        let popover = popover.clone();
+        move |_| {
+            // Stays revealed while its own settings popover is open, even
+            // though the pointer has left the card to reach the popover.
+            if popover.is_visible() {
+                return;
+            }
+            hide_now();
+        }
+    });
+    root.add_controller(hover);
+
+    let tap = gtk::GestureClick::new();
+    tap.connect_released(move |_, _, _, _| reveal(Some(3)));
+    root.add_controller(tap);
 
     DashboardWidgetHandles { root, delete_button, move_button, appearance, settings_popover: popover }
 }
