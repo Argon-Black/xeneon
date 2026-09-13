@@ -1,23 +1,32 @@
-//! Xeneon Dashboard - Rust/Relm4 port. This is the Phase 1 skeleton: a
-//! window sized to the Xeneon Edge panel with a header bar and a carousel,
-//! one placeholder page, and F11 fullscreen toggle. No widget grid, no
-//! persistence wiring, no plugins yet - those are the next steps (see the
-//! plan doc referenced in project memory for the full sequence).
+//! Xeneon Dashboard - Rust/Relm4 port. Phase 1: a window sized to the
+//! Xeneon Edge panel, F11 fullscreen, and a carousel of two pages backed
+//! by real `WidgetGrid`s (drag/snap wired to xeneon-core's grid math),
+//! populated with dummy widgets across every size preset so the base
+//! interaction stack - move, snap, delete, page swipe - is testable before
+//! any real plugin content exists. No persistence, i18n, or appearance
+//! popover yet - those are later steps.
+
+mod dashboard_widget;
+mod grid_widget;
+mod widgets;
 
 use adw::prelude::*;
 use relm4::prelude::*;
+use xeneon_core::grid::{PAGE_H, PAGE_W, SIZE_L, SIZE_M, SIZE_S, SIZE_SQ, SIZE_SSX, SIZE_SX};
+
+use grid_widget::WidgetGrid;
 
 /// Real panel resolution of the Xeneon Edge bar screen at 100% display
 /// scale (logical px == physical px - see CLAUDE.md in the Python app).
-/// Windowed dev builds open at exactly this size so what's on screen here
-/// matches the real hardware; forcing fullscreen on the actual monitor
-/// (`fullscreen_on_monitor` in the Python app's display.py) isn't ported
-/// yet - this phase only has the in-window F11 toggle.
 const WINDOW_WIDTH: i32 = 2560;
 const WINDOW_HEIGHT: i32 = 720;
 
 struct AppModel {
     fullscreened: bool,
+    // Kept alive for the app's lifetime - each owns the Rc<RefCell<_>>
+    // state its drag/delete closures capture.
+    _grid1: WidgetGrid,
+    _grid2: WidgetGrid,
 }
 
 #[derive(Debug)]
@@ -64,18 +73,13 @@ impl SimpleComponent for AppModel {
 
                 #[wrap(Some)]
                 set_content = &adw::Carousel {
-                    // Placeholder page - WidgetGrid (a gtk::Fixed driven by
-                    // the drag/snap math already ported to xeneon-core)
-                    // replaces this in the next step.
-                    gtk::Fixed {
-                        set_width_request: WINDOW_WIDTH,
-                        set_height_request: WINDOW_HEIGHT,
-
-                        put[0.0, 0.0] = &gtk::Label {
-                            set_label: "Page 1 (placeholder - WidgetGrid comes next)",
-                            set_halign: gtk::Align::Center,
-                            set_valign: gtk::Align::Center,
-                        },
+                    #[local_ref]
+                    page1_fixed -> gtk::Fixed {
+                        set_visible: true,
+                    },
+                    #[local_ref]
+                    page2_fixed -> gtk::Fixed {
+                        set_visible: true,
                     },
                 },
             },
@@ -83,8 +87,28 @@ impl SimpleComponent for AppModel {
     }
 
     fn init(_init: Self::Init, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
-        let model = AppModel { fullscreened: false };
+        let grid1 = WidgetGrid::new(PAGE_W, PAGE_H);
+        let grid2 = WidgetGrid::new(PAGE_W, PAGE_H);
+
+        // Page 1: the wider presets - also exercises two M's landing
+        // side by side automatically via find_free_position.
+        grid1.add_widget("L", SIZE_L, widgets::dummy::build("L"));
+        grid1.add_widget("M", SIZE_M, widgets::dummy::build("M"));
+        grid1.add_widget("M", SIZE_M, widgets::dummy::build("M"));
+
+        // Page 2: the narrower presets, to test swiping between pages.
+        grid2.add_widget("S", SIZE_S, widgets::dummy::build("S"));
+        grid2.add_widget("SQ", SIZE_SQ, widgets::dummy::build("SQ"));
+        grid2.add_widget("SX", SIZE_SX, widgets::dummy::build("SX"));
+        grid2.add_widget("SSX", SIZE_SSX, widgets::dummy::build("SSX"));
+
+        let model = AppModel { fullscreened: false, _grid1: grid1, _grid2: grid2 };
+
+        let page1_fixed = model._grid1.widget();
+        let page2_fixed = model._grid2.widget();
+
         let widgets = view_output!();
+
         ComponentParts { model, widgets }
     }
 
