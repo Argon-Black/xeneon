@@ -31,11 +31,11 @@ fn add_color_row(box_: &gtk::Box, initial: &gtk::gdk::RGBA) -> (gtk::Label, gtk:
     (label, button)
 }
 
-fn hex_to_rgba(hex: &str) -> gtk::gdk::RGBA {
+pub(crate) fn hex_to_rgba(hex: &str) -> gtk::gdk::RGBA {
     gtk::gdk::RGBA::parse(hex).unwrap_or(gtk::gdk::RGBA::BLACK)
 }
 
-fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
+pub(crate) fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
     format!(
         "#{:02x}{:02x}{:02x}",
         (rgba.red() * 255.0).round() as u8,

@@ -25,11 +25,15 @@ use adw::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::appearance_css;
+use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::config_store;
 use crate::grid_widget::WidgetGrid;
 use crate::i18n_runtime as i18n;
 use crate::page_indicator::PageIndicator;
 use crate::theme;
+use xeneon_core::appearance::WidgetAppearance;
+use xeneon_core::config::DefaultWidgetAppearance;
 
 /// Handle kept by the caller (`AppModel`) to append a page to the "Pages"
 /// rename list *after* `populate` has already built it - needed once
@@ -321,6 +325,139 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     let pages_shared: Rc<RefCell<Vec<Rc<WidgetGrid>>>> = Rc::new(RefCell::new(pages.to_vec()));
     refresh_pages_group(&pages_group, &page_rows, &pages_shared.borrow(), &page_indicator);
 
+    // --- Column 2 (cont'd): Default widget appearance ---
+    // Applied to every widget newly added from here on (see
+    // grid_widget.rs's `add_widget`); an already-customized widget's own
+    // look stays untouched unless the "apply to all" button below is
+    // used - mirrors `has_customizations()` / `defaults_touched_dict()`
+    // in the Python original's widget_appearance.py.
+    appearance_css::ensure_reset_button_css_installed();
+
+    let appearance_group = adw::PreferencesGroup::new();
+    appearance_group.set_title(&i18n::t("settings.appearance_group.title"));
+    appearance_group.set_description(Some(&i18n::t("settings.appearance_group.subtitle")));
+
+    let defaults = config.default_widget_appearance.clone();
+
+    let appearance_opacity_row = adw::ActionRow::new();
+    appearance_opacity_row.set_title(&i18n::t("widgets.appearance.opacity"));
+    let appearance_opacity_scale = gtk::Scale::new(gtk::Orientation::Horizontal, gtk::Adjustment::NONE);
+    appearance_opacity_scale.set_range(0.0, 100.0);
+    appearance_opacity_scale.set_value(defaults.opacity * 100.0);
+    appearance_opacity_scale.set_draw_value(true);
+    appearance_opacity_scale.set_value_pos(gtk::PositionType::Right);
+    appearance_opacity_scale.set_size_request(140, -1);
+    appearance_opacity_scale.set_hexpand(true);
+    appearance_opacity_scale.set_valign(gtk::Align::Center);
+    appearance_opacity_row.add_suffix(&appearance_opacity_scale);
+    appearance_group.add(&appearance_opacity_row);
+
+    let appearance_bg_color_row = adw::ActionRow::new();
+    appearance_bg_color_row.set_title(&i18n::t("widgets.appearance.bg_color"));
+    let appearance_bg_color_button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+    appearance_bg_color_button.set_rgba(&hex_to_rgba(&defaults.bg_color));
+    appearance_bg_color_button.set_valign(gtk::Align::Center);
+    appearance_bg_color_row.add_suffix(&appearance_bg_color_button);
+    appearance_group.add(&appearance_bg_color_row);
+
+    let appearance_border_row = adw::ActionRow::new();
+    appearance_border_row.set_title(&i18n::t("widgets.appearance.border_enabled"));
+    let appearance_border_switch = gtk::Switch::new();
+    appearance_border_switch.set_active(defaults.border_enabled);
+    appearance_border_switch.set_valign(gtk::Align::Center);
+    appearance_border_row.add_suffix(&appearance_border_switch);
+    appearance_group.add(&appearance_border_row);
+
+    let appearance_border_width_row = adw::SpinRow::with_range(1.0, 12.0, 1.0);
+    appearance_border_width_row.set_title(&i18n::t("widgets.appearance.border_width"));
+    appearance_border_width_row.set_value(defaults.border_width as f64);
+    appearance_group.add(&appearance_border_width_row);
+
+    let appearance_border_color_row = adw::ActionRow::new();
+    appearance_border_color_row.set_title(&i18n::t("widgets.appearance.border_color"));
+    let appearance_border_color_button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+    appearance_border_color_button.set_rgba(&hex_to_rgba(&defaults.border_color));
+    appearance_border_color_button.set_valign(gtk::Align::Center);
+    appearance_border_color_row.add_suffix(&appearance_border_color_button);
+    appearance_group.add(&appearance_border_color_row);
+
+    // Pushes the 5 controls above into `config.default_widget_appearance`
+    // as one unit on every change - saved as a whole so a partial write
+    // never leaves the nested struct half-updated (config.rs's
+    // `#[serde(default)]` merge only ever sees a complete value here).
+    let save_appearance_defaults = {
+        let appearance_opacity_scale = appearance_opacity_scale.clone();
+        let appearance_bg_color_button = appearance_bg_color_button.clone();
+        let appearance_border_switch = appearance_border_switch.clone();
+        let appearance_border_width_row = appearance_border_width_row.clone();
+        let appearance_border_color_button = appearance_border_color_button.clone();
+        move || {
+            let updated = DefaultWidgetAppearance {
+                opacity: appearance_opacity_scale.value() / 100.0,
+                bg_color: rgba_to_hex(&appearance_bg_color_button.rgba()),
+                border_enabled: appearance_border_switch.is_active(),
+                border_width: appearance_border_width_row.value() as u32,
+                border_color: rgba_to_hex(&appearance_border_color_button.rgba()),
+            };
+            config_store::update(|c| c.default_widget_appearance = updated);
+        }
+    };
+    appearance_opacity_scale.connect_value_changed({
+        let save_appearance_defaults = save_appearance_defaults.clone();
+        move |_| save_appearance_defaults()
+    });
+    appearance_bg_color_button.connect_rgba_notify({
+        let save_appearance_defaults = save_appearance_defaults.clone();
+        move |_| save_appearance_defaults()
+    });
+    appearance_border_switch.connect_active_notify({
+        let save_appearance_defaults = save_appearance_defaults.clone();
+        move |_| save_appearance_defaults()
+    });
+    appearance_border_width_row.connect_value_notify({
+        let save_appearance_defaults = save_appearance_defaults.clone();
+        move |_| save_appearance_defaults()
+    });
+    appearance_border_color_button.connect_rgba_notify({
+        let save_appearance_defaults = save_appearance_defaults.clone();
+        move |_| save_appearance_defaults()
+    });
+
+    let appearance_apply_row = adw::ActionRow::new();
+    appearance_apply_row.set_title(&i18n::t("settings.appearance_apply_row.title"));
+    appearance_apply_row.set_subtitle(&i18n::t("settings.appearance_apply_row.subtitle"));
+    let appearance_apply_button = gtk::Button::with_label(&i18n::t("settings.appearance_apply_row.button"));
+    appearance_apply_button.add_css_class("xeneon-reset-button");
+    appearance_apply_button.set_valign(gtk::Align::Center);
+    appearance_apply_row.add_suffix(&appearance_apply_button);
+    appearance_group.add(&appearance_apply_row);
+
+    // The click itself has no other visible effect (the button stays red
+    // before and after), so swap the label to a confirmation and disable
+    // it briefly - the only sign the overwrite actually happened. Reads
+    // `pages_shared`, not the `pages` parameter, so a page created after
+    // startup (overflow, see PagesHandle::add_page) is included too.
+    appearance_apply_button.connect_clicked({
+        let pages_shared = pages_shared.clone();
+        let appearance_apply_button = appearance_apply_button.clone();
+        move |_| {
+            let appearance = WidgetAppearance::from_config_default(&config_store::get().default_widget_appearance);
+            for page in pages_shared.borrow().iter() {
+                page.apply_appearance_to_all(&appearance);
+            }
+            appearance_apply_button.set_label(&i18n::t("settings.appearance_apply_row.button_applied"));
+            appearance_apply_button.set_sensitive(false);
+            let appearance_apply_button = appearance_apply_button.clone();
+            gtk::glib::timeout_add_seconds_local(2, move || {
+                appearance_apply_button.set_label(&i18n::t("settings.appearance_apply_row.button"));
+                appearance_apply_button.set_sensitive(true);
+                gtk::glib::ControlFlow::Break
+            });
+        }
+    });
+
+    column2.append(&appearance_group);
+
     // --- Column 3: Keyboard shortcuts + dev tools ---
     let shortcuts_group = adw::PreferencesGroup::new();
     shortcuts_group.set_title(&i18n::t("settings.shortcuts_group"));
@@ -421,6 +558,14 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let shortcuts_group = shortcuts_group.clone();
         let fullscreen_row = fullscreen_row.clone();
         let goto_row = goto_row.clone();
+        let appearance_group = appearance_group.clone();
+        let appearance_opacity_row = appearance_opacity_row.clone();
+        let appearance_bg_color_row = appearance_bg_color_row.clone();
+        let appearance_border_row = appearance_border_row.clone();
+        let appearance_border_width_row = appearance_border_width_row.clone();
+        let appearance_border_color_row = appearance_border_color_row.clone();
+        let appearance_apply_row = appearance_apply_row.clone();
+        let appearance_apply_button = appearance_apply_button.clone();
         move || {
             title.set_label(&i18n::t("settings.title"));
             interface_group.set_title(&i18n::t("settings.interface_group"));
@@ -454,6 +599,16 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             fullscreen_row.set_title(&i18n::t("settings.fullscreen_row.title"));
             fullscreen_row.set_subtitle(&i18n::t("settings.fullscreen_row.subtitle"));
             goto_row.set_title(&i18n::t("settings.goto_row.title"));
+            appearance_group.set_title(&i18n::t("settings.appearance_group.title"));
+            appearance_group.set_description(Some(&i18n::t("settings.appearance_group.subtitle")));
+            appearance_opacity_row.set_title(&i18n::t("widgets.appearance.opacity"));
+            appearance_bg_color_row.set_title(&i18n::t("widgets.appearance.bg_color"));
+            appearance_border_row.set_title(&i18n::t("widgets.appearance.border_enabled"));
+            appearance_border_width_row.set_title(&i18n::t("widgets.appearance.border_width"));
+            appearance_border_color_row.set_title(&i18n::t("widgets.appearance.border_color"));
+            appearance_apply_row.set_title(&i18n::t("settings.appearance_apply_row.title"));
+            appearance_apply_row.set_subtitle(&i18n::t("settings.appearance_apply_row.subtitle"));
+            appearance_apply_button.set_label(&i18n::t("settings.appearance_apply_row.button"));
             if let Some((group, row)) = &dev_group {
                 group.set_title(&i18n::t("settings.dev_group.title"));
                 row.set_title(&i18n::t("settings.dev_group.restart_button"));

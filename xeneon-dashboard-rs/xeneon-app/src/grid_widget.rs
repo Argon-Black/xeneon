@@ -24,7 +24,13 @@ use crate::widgets::registry::WidgetInstance;
 
 struct PlacedWidget {
     id: String,
+    kind: String,
     rect: Rect,
+    css_class: String,
+    /// Shared with the live popover, if open - see
+    /// `DashboardWidgetHandles::appearance`'s own doc comment.
+    appearance: Rc<RefCell<WidgetAppearance>>,
+    to_dict: Rc<dyn Fn() -> serde_json::Value>,
 }
 
 pub struct WidgetGrid {
@@ -277,13 +283,17 @@ impl WidgetGrid {
         let id = uuid::Uuid::new_v4().to_string();
         let rect = Rect::new(x, y, size.w, size.h);
         let to_dict = instance.to_dict.as_ref()();
-        // Fresh widget: untouched appearance (the theme's plain card
-        // look) unless the plugin itself preset something - none of ours
-        // do yet, matching every dummy/clock spawn in the Python original
-        // except the dummy widgets' own per-size color, which this port's
-        // dummy content renders through its own inline CSS class instead
-        // of the generic WidgetAppearance system (see widgets/dummy.rs).
-        let appearance = WidgetAppearance::default();
+        // Fresh widget: the global default-appearance setting applies,
+        // mirroring window.py's add_widget() - except for a dummy widget
+        // (its per-size color lives in its own inline CSS class, not the
+        // generic WidgetAppearance system - see widgets/dummy.rs) or a
+        // non-persisting page (the dev-mode test page), which both stay
+        // untouched/plain, same as every spawn in the Python original.
+        let appearance = if self.persist && !kind.starts_with("dummy_") {
+            WidgetAppearance::from_config_default(&crate::config_store::get().default_widget_appearance)
+        } else {
+            WidgetAppearance::default()
+        };
         self.insert_at(id.clone(), kind.to_string(), title_key, rect, appearance.clone(), instance);
         if self.persist {
             self.save_widget_state(&id, kind, rect, appearance, to_dict);
@@ -319,16 +329,67 @@ impl WidgetGrid {
         }
     }
 
+    /// Force-applies `appearance` to every real (non-dummy) widget on this
+    /// page, re-rendering its CSS live and persisting immediately - used by
+    /// the "apply default appearance to all widgets" button in the settings
+    /// page's appearance group. Dummy widgets are skipped (their per-size
+    /// color lives outside the generic WidgetAppearance system, see
+    /// `add_widget()`'s own note). A non-persisting page (the dev-mode test
+    /// page) is never actually reached here - it's never part of the page
+    /// list the settings page is given - but the `persist` check stays for
+    /// the same reason every other save path in this file has one.
+    pub fn apply_appearance_to_all(&self, appearance: &WidgetAppearance) {
+        for placed in self.placed.borrow().iter() {
+            if placed.kind.starts_with("dummy_") {
+                continue;
+            }
+            *placed.appearance.borrow_mut() = appearance.clone();
+            crate::appearance_css::apply(&placed.css_class, &placed.appearance.borrow());
+            if !self.persist {
+                continue;
+            }
+            let state = WidgetState {
+                id: placed.id.clone(),
+                kind: placed.kind.clone(),
+                page_index: self.page_index(),
+                x: placed.rect.x,
+                y: placed.rect.y,
+                w: placed.rect.w,
+                h: placed.rect.h,
+                appearance: appearance.clone(),
+                content: (placed.to_dict)(),
+            };
+            if let Err(err) = widget_state::save(&self.widgets_dir, &state) {
+                eprintln!("xeneon-dashboard: failed to save widget {}: {err}", placed.id);
+            }
+        }
+    }
+
     fn insert_at(&self, id: String, kind: String, title_key: &str, rect: Rect, appearance: WidgetAppearance, instance: WidgetInstance) {
         let WidgetInstance { content, settings, to_dict, on_reset } = instance;
         let to_dict: Rc<dyn Fn() -> serde_json::Value> = Rc::from(to_dict);
         let css_class = format!("xeneon-appearance-{id}");
-        let handles =
-            crate::dashboard_widget::build(title_key, &content, rect.w, rect.h, css_class, appearance, settings.as_ref(), on_reset);
+        let handles = crate::dashboard_widget::build(
+            title_key,
+            &content,
+            rect.w,
+            rect.h,
+            css_class.clone(),
+            appearance,
+            settings.as_ref(),
+            on_reset,
+        );
         let root_widget: gtk::Widget = handles.root.clone().upcast();
 
         self.fixed.put(&root_widget, rect.x as f64, rect.y as f64);
-        self.placed.borrow_mut().push(PlacedWidget { id: id.clone(), rect });
+        self.placed.borrow_mut().push(PlacedWidget {
+            id: id.clone(),
+            kind: kind.clone(),
+            rect,
+            css_class,
+            appearance: handles.appearance.clone(),
+            to_dict: to_dict.clone(),
+        });
 
         {
             let popover = &handles.settings_popover;
