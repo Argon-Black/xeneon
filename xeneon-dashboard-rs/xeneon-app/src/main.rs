@@ -262,14 +262,17 @@ impl SimpleComponent for AppModel {
             // the page indicator shows for this page.
             grid.set_custom_name(Some(i18n_runtime::t("widgets.dev_page.title")));
             for descriptor in widgets::registry::CATALOG {
-                // Clock isn't a size preset to validate - it's a real
-                // plugin, already exercised through the normal widget
-                // picker - and being medium-sized itself, adding it here
-                // ahead of the dummies ate up exactly the column space
-                // dummy_l (a full-height column) needs, so dummy_l would
-                // silently fail to place (add_widget returns None when
-                // there's no room) and just be missing from the page.
-                if descriptor.kind == "clock" {
+                // This page exists to validate every grid size preset
+                // (the dummy_* kinds), not to preview every real plugin -
+                // those are already exercised through the normal widget
+                // picker on a real page. Originally this skipped "clock"
+                // by name (it's medium-sized and, added ahead of the
+                // dummies, ate the column space dummy_l - a full-height
+                // column - needs, so dummy_l would silently fail to place
+                // and be missing from the page); now that more real
+                // plugins exist (audio...), skip by pattern instead of
+                // growing a per-kind exclusion list by hand each time.
+                if !descriptor.kind.starts_with("dummy_") {
                     continue;
                 }
                 grid.add_widget(descriptor.title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
