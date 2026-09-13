@@ -89,22 +89,39 @@ impl Rect {
     }
 }
 
-/// Every valid left-edge x for a widget of the given `width` on a page of
-/// `page_width`, tiling flush from 0 at `width + GAP` steps and stopping
-/// once the next one would overflow the page. Always returns at least
-/// `[0]`, even if the widget doesn't actually fit (the caller clamps
-/// separately). Used both to snap a drag to a column and, with a
-/// different step, to scan for free space.
-pub fn column_positions(page_width: i32, width: i32) -> Vec<i32> {
-    let step = width + GAP;
+/// Every position reachable by tiling `page_length` at `step`-pixel
+/// intervals starting from 0, that still leaves room for a `span`-pixel
+/// footprint there (`pos + span <= page_length`). Always includes `0`,
+/// even if `span` alone doesn't fit (the caller clamps separately).
+fn quantized_positions(page_length: i32, span: i32, step: i32) -> Vec<i32> {
     let mut positions = vec![0];
-    let mut x = step;
-    while x + width <= page_width {
-        positions.push(x);
-        x += step;
+    let mut pos = step;
+    while pos + span <= page_length {
+        positions.push(pos);
+        pos += step;
     }
     positions
 }
+
+/// Every valid left-edge x for a widget of the given `width` on a page of
+/// `page_width`, tiling flush from 0 at `width + GAP` steps. Used both to
+/// scan for free space and, unioned with the finer grid below, to snap a
+/// drag.
+pub fn column_positions(page_width: i32, width: i32) -> Vec<i32> {
+    quantized_positions(page_width, width, width + GAP)
+}
+
+/// The finest step any widget can be nudged to while dragging, independent
+/// of its own footprint - one SSX-footprint plus a GAP, as if the page
+/// were tiled with copies of the smallest possible widget. Without this,
+/// dragging e.g. a lone M with nothing else on the page to snap against
+/// would only offer positions that are multiples of M's *own* size (352px
+/// apart) - far coarser than it needs to be. `snap_to_layout` unions these
+/// fine-grained candidates with the widget's own self-tiling ones, so both
+/// the "clean" same-size positions and the finer in-between ones stay
+/// reachable.
+pub const FINE_STEP_W: i32 = SIZE_SSX.w + GAP;
+pub const FINE_STEP_H: i32 = SIZE_SSX.h + GAP;
 
 /// The candidate closest to `value` by absolute difference. Panics on an
 /// empty slice - every call site here always seeds `candidates` with at
@@ -118,21 +135,25 @@ fn nearest(value: i32, candidates: &[i32]) -> i32 {
 
 /// Snaps a dragged widget's raw (unsnapped) position onto the grid: the
 /// nearest column for x, and the nearest "shelf" for y. Mirrors
-/// `WidgetGrid._snap_to_layout` in grid.py.
+/// `WidgetGrid._snap_to_layout` in grid.py, extended with a finer grid (see
+/// `FINE_STEP_W`/`FINE_STEP_H`) so a widget isn't restricted to multiples
+/// of its own size when nothing else constrains it.
 ///
 /// `others` is every other widget currently on the same page (the one being
 /// dragged must already be excluded by the caller - this function has no
 /// notion of "self").
 ///
-/// The y candidates ("shelves") are the union of two sets, which is what
-/// lets a lone short widget in an empty column still snap to arbitrary
-/// positions down the page rather than only "just below the one widget
-/// already there":
-/// - self-tiling shelves: `{0, step, 2*step, ...}` with `step = h + GAP`,
-///   as if the column were filled with copies of this widget;
-/// - neighbour-relative shelves: for every other widget whose x-range
-///   overlaps this widget's snapped x, one extra shelf at
-///   `other.y + other.h + GAP`.
+/// Both axes snap to the union of three candidate sets:
+/// - self-tiling positions: `{0, step, 2*step, ...}` with `step = w/h +
+///   GAP`, as if the page were tiled with copies of this widget - these
+///   are what keep e.g. two stacked M's landing exactly edge to edge;
+/// - fine-grained positions at the smallest preset's pitch (`FINE_STEP_W`/
+///   `FINE_STEP_H`), so any widget can still be nudged to an in-between
+///   spot even when its own multiples would only offer coarse jumps;
+/// - (y only) neighbour-relative shelves: for every other widget whose
+///   x-range overlaps this widget's snapped x, one extra shelf at
+///   `other.y + other.h + GAP`, so a widget lands flush under whatever's
+///   already there rather than merely near it.
 pub fn snap_to_layout(
     others: &[Rect],
     size: Size,
@@ -146,26 +167,27 @@ pub fn snap_to_layout(
     let clamped_x = raw_x.clamp(0, max_x);
     let clamped_y = raw_y.clamp(0, max_y);
 
-    let x = nearest(clamped_x, &column_positions(page_w, size.w));
+    let mut x_candidates = column_positions(page_w, size.w);
+    x_candidates.extend(quantized_positions(page_w, size.w, FINE_STEP_W));
+    x_candidates.sort_unstable();
+    x_candidates.dedup();
+    let x = nearest(clamped_x, &x_candidates);
 
-    let step = size.h + GAP;
-    let mut shelves = vec![0];
-    let mut y = step;
-    while y <= max_y {
-        shelves.push(y);
-        y += step;
-    }
+    let mut y_candidates = quantized_positions(page_h, size.h, size.h + GAP);
+    y_candidates.extend(quantized_positions(page_h, size.h, FINE_STEP_H));
     for other in others {
         let overlaps_x = x < other.x + other.w && other.x < x + size.w;
         if overlaps_x {
             let shelf = other.y + other.h + GAP;
             if shelf <= max_y {
-                shelves.push(shelf);
+                y_candidates.push(shelf);
             }
         }
     }
+    y_candidates.sort_unstable();
+    y_candidates.dedup();
+    let y = nearest(clamped_y, &y_candidates);
 
-    let y = nearest(clamped_y, &shelves);
     (x, y)
 }
 
@@ -264,6 +286,24 @@ mod tests {
         let (x, y) = snap_to_layout(&[neighbour], SIZE_S, 0, SIZE_S.h + 5, PAGE_W, PAGE_H);
         assert_eq!(x, 0);
         assert_eq!(y, SIZE_S.h + GAP);
+    }
+
+    #[test]
+    fn snap_to_layout_offers_fine_grained_shelves_between_a_widgets_own_multiples() {
+        // With no neighbours, plain self-tiling would only offer M's own
+        // multiples (0, 352) as free-floating shelves - too coarse. The
+        // fine grid (FINE_STEP_H, the SSX pitch) should let it land on an
+        // in-between shelf instead of snapping all the way back to 0.
+        let (_, y) = snap_to_layout(&[], SIZE_M, 0, FINE_STEP_H + 3, PAGE_W, PAGE_H);
+        assert_eq!(y, FINE_STEP_H);
+    }
+
+    #[test]
+    fn snap_to_layout_offers_fine_grained_columns_between_a_widgets_own_multiples() {
+        // Same idea on the x axis: M's own columns are 848px apart, but a
+        // drag near the SSX pitch should land there instead of at column 0.
+        let (x, _) = snap_to_layout(&[], SIZE_M, FINE_STEP_W + 5, 0, PAGE_W, PAGE_H);
+        assert_eq!(x, FINE_STEP_W);
     }
 
     #[test]
