@@ -5,13 +5,22 @@
 //! operation on an existing child, not a reorder. So this is deliberately
 //! plain gtk4-rs: a `Vec` of placed widgets behind an `Rc<RefCell<_>>`,
 //! with drag/delete wired up directly via closures. Mirrors `WidgetGrid`
-//! in grid.py.
+//! in grid.py, including its persistence: a widget is saved to
+//! `widgets/<id>.json` the moment it's added and again after every valid
+//! drag, and the page's own `pages/<id>.json` is (re)saved when renamed.
 
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Once;
+use xeneon_core::appearance::WidgetAppearance;
 use xeneon_core::grid::{self, Rect, Size};
+use xeneon_core::page_state::{self, PageState};
+use xeneon_core::widget_state::{self, WidgetState};
+
+use crate::i18n_runtime as i18n;
+use crate::widgets::registry::WidgetInstance;
 
 struct PlacedWidget {
     id: String,
@@ -22,6 +31,17 @@ pub struct WidgetGrid {
     fixed: gtk::Fixed,
     page_w: i32,
     page_h: i32,
+    page_index: usize,
+    page_id: String,
+    custom_name: RefCell<Option<String>>,
+    widgets_dir: PathBuf,
+    pages_dir: PathBuf,
+    /// False for the dev-mode test page: its dummy widgets are
+    /// regenerated fresh in code on every launch (see `dev_mode_enabled`
+    /// in main.rs), so they must never write to the same
+    /// widgets/pages directories a real page's content lives in - that
+    /// would leak throwaway test content into the persisted layout.
+    persist: bool,
     placed: Rc<RefCell<Vec<PlacedWidget>>>,
 }
 
@@ -68,7 +88,43 @@ struct MovePreview {
 }
 
 impl WidgetGrid {
-    pub fn new(page_w: i32, page_h: i32) -> Self {
+    /// A brand-new page: fresh `page_id`, no custom name yet.
+    pub fn new(page_w: i32, page_h: i32, page_index: usize, widgets_dir: PathBuf, pages_dir: PathBuf) -> Self {
+        Self::restore(page_w, page_h, page_index, uuid::Uuid::new_v4().to_string(), None, widgets_dir, pages_dir)
+    }
+
+    /// A page reconstructed from a saved `PageState` (or a fresh one, via
+    /// [`Self::new`] above) - same underlying constructor either way, just
+    /// with an existing identity/name instead of a generated one.
+    pub fn restore(
+        page_w: i32,
+        page_h: i32,
+        page_index: usize,
+        page_id: String,
+        custom_name: Option<String>,
+        widgets_dir: PathBuf,
+        pages_dir: PathBuf,
+    ) -> Self {
+        Self::build(page_w, page_h, page_index, page_id, custom_name, widgets_dir, pages_dir, true)
+    }
+
+    /// A page whose widgets are never written to disk - see the `persist`
+    /// field's own doc comment. Used only for the dev-mode test page.
+    pub fn ephemeral(page_w: i32, page_h: i32, page_index: usize) -> Self {
+        Self::build(page_w, page_h, page_index, uuid::Uuid::new_v4().to_string(), None, PathBuf::new(), PathBuf::new(), false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        page_w: i32,
+        page_h: i32,
+        page_index: usize,
+        page_id: String,
+        custom_name: Option<String>,
+        widgets_dir: PathBuf,
+        pages_dir: PathBuf,
+        persist: bool,
+    ) -> Self {
         ensure_preview_css_installed();
         let fixed = gtk::Fixed::new();
         fixed.set_size_request(page_w, page_h);
@@ -83,7 +139,18 @@ impl WidgetGrid {
         fixed.set_margin_end(grid::GAP);
         fixed.set_margin_top(grid::GAP);
         fixed.set_margin_bottom(grid::GAP);
-        Self { fixed, page_w, page_h, placed: Rc::new(RefCell::new(Vec::new())) }
+        Self {
+            fixed,
+            page_w,
+            page_h,
+            page_index,
+            page_id,
+            custom_name: RefCell::new(custom_name),
+            widgets_dir,
+            pages_dir,
+            persist,
+            placed: Rc::new(RefCell::new(Vec::new())),
+        }
     }
 
     /// The underlying widget to embed in a container (e.g. an
@@ -92,34 +159,181 @@ impl WidgetGrid {
         &self.fixed
     }
 
-    /// Places `content` (wrapped in the generic chrome) at the first free
-    /// spot for `size`, titled `title`. Returns `None` if the page is
-    /// already full - mirrors `WidgetGrid.find_free_position` returning
-    /// `None` in the Python original (the caller would then try another
-    /// page; multi-page overflow isn't wired up yet in this phase).
-    pub fn add_widget(&self, title: &str, size: Size, content: impl IsA<gtk::Widget>) -> Option<String> {
+    /// Stable identity (the `pages/<id>.json` filename), independent of
+    /// `page_index` - not read anywhere yet, but a natural accessor to
+    /// have alongside `page_index()`/`display_name()` and needed the
+    /// moment a "delete this page" feature exists.
+    #[allow(dead_code)]
+    pub fn page_id(&self) -> &str {
+        &self.page_id
+    }
+
+    pub fn page_index(&self) -> usize {
+        self.page_index
+    }
+
+    pub fn custom_name(&self) -> Option<String> {
+        self.custom_name.borrow().clone()
+    }
+
+    /// The custom name if set, else a templated "Page {n}" (1-based) -
+    /// mirrors `WidgetGrid.display_name()` in grid.py.
+    pub fn display_name(&self) -> String {
+        match self.custom_name.borrow().as_deref() {
+            Some(name) if !name.is_empty() => name.to_string(),
+            _ => i18n::t_args("settings.pages_group.default_name", &[("n", &(self.page_index + 1).to_string())]),
+        }
+    }
+
+    /// Sets (or clears, with `None`/whitespace-only) the page's custom
+    /// name and immediately persists it - matches the Python original's
+    /// `on_apply`/`on_restore` normalizing an empty entry to `None` rather
+    /// than storing an empty string.
+    pub fn set_custom_name(&self, name: Option<String>) {
+        let cleaned = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        *self.custom_name.borrow_mut() = cleaned;
+        self.save_page_state();
+    }
+
+    fn save_page_state(&self) {
+        if !self.persist {
+            return;
+        }
+        let state = PageState {
+            id: self.page_id.clone(),
+            page_index: self.page_index,
+            name: self.custom_name(),
+            background: serde_json::Value::Null,
+        };
+        if let Err(err) = page_state::save(&self.pages_dir, &state) {
+            eprintln!("xeneon-dashboard: failed to save page {}: {err}", self.page_id);
+        }
+    }
+
+    /// Cheap check for "would `add_widget` succeed for this size", without
+    /// actually constructing anything - lets a caller pick which page to
+    /// add to *before* spawning a live widget instance (which may already
+    /// own resources like Clock's tick timer that would otherwise need
+    /// tearing down again immediately if the spawn turned out unused).
+    pub fn has_room_for(&self, size: Size) -> bool {
+        let occupied: Vec<Rect> = self.placed.borrow().iter().map(|p| p.rect).collect();
+        grid::find_free_position(&occupied, size, self.page_w, self.page_h).is_some()
+    }
+
+    /// Places a freshly spawned widget at the first free spot for `size`,
+    /// titled `title_key` (an i18n key, or `""` for no header label) and
+    /// identified by `kind` (what a saved file's `"kind"` field will read
+    /// back as - see `widgets::registry`). Saved to disk immediately.
+    /// Returns `None` if the page is already full - mirrors
+    /// `WidgetGrid.find_free_position` returning `None` in the Python
+    /// original (the caller would then try another page; multi-page
+    /// overflow isn't wired up yet in this phase).
+    pub fn add_widget(&self, title_key: &str, kind: &str, size: Size, instance: WidgetInstance) -> Option<String> {
         let occupied: Vec<Rect> = self.placed.borrow().iter().map(|p| p.rect).collect();
         let (x, y) = grid::find_free_position(&occupied, size, self.page_w, self.page_h)?;
         let id = uuid::Uuid::new_v4().to_string();
-        self.insert_at(id.clone(), title, Rect::new(x, y, size.w, size.h), content);
+        let rect = Rect::new(x, y, size.w, size.h);
+        let to_dict = instance.to_dict.as_ref()();
+        // Fresh widget: untouched appearance (the theme's plain card
+        // look) unless the plugin itself preset something - none of ours
+        // do yet, matching every dummy/clock spawn in the Python original
+        // except the dummy widgets' own per-size color, which this port's
+        // dummy content renders through its own inline CSS class instead
+        // of the generic WidgetAppearance system (see widgets/dummy.rs).
+        let appearance = WidgetAppearance::default();
+        self.insert_at(id.clone(), kind.to_string(), title_key, rect, appearance.clone(), instance);
+        if self.persist {
+            self.save_widget_state(&id, kind, rect, appearance, to_dict);
+        }
         Some(id)
     }
 
-    fn insert_at(&self, id: String, title: &str, rect: Rect, content: impl IsA<gtk::Widget>) {
-        let handles = crate::dashboard_widget::build(title, &content, rect.w, rect.h);
+    /// Re-places a widget exactly as `state` describes (its saved id,
+    /// position and appearance, not a freshly scanned free spot) - used
+    /// when rebuilding a page from disk at startup. Not re-saved
+    /// immediately since it already matches what's on disk (the
+    /// registry's `restore` already applied `state.content` before
+    /// handing back `instance`).
+    pub fn restore_widget(&self, state: &WidgetState, title_key: &str, instance: WidgetInstance) {
+        let rect = Rect::new(state.x, state.y, state.w, state.h);
+        self.insert_at(state.id.clone(), state.kind.clone(), title_key, rect, state.appearance.clone(), instance);
+    }
+
+    fn save_widget_state(&self, id: &str, kind: &str, rect: Rect, appearance: WidgetAppearance, content: serde_json::Value) {
+        let state = WidgetState {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            page_index: self.page_index,
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+            appearance,
+            content,
+        };
+        if let Err(err) = widget_state::save(&self.widgets_dir, &state) {
+            eprintln!("xeneon-dashboard: failed to save widget {id}: {err}");
+        }
+    }
+
+    fn insert_at(&self, id: String, kind: String, title_key: &str, rect: Rect, appearance: WidgetAppearance, instance: WidgetInstance) {
+        let WidgetInstance { content, settings, to_dict, on_reset } = instance;
+        let to_dict: Rc<dyn Fn() -> serde_json::Value> = Rc::from(to_dict);
+        let css_class = format!("xeneon-appearance-{id}");
+        let handles =
+            crate::dashboard_widget::build(title_key, &content, rect.w, rect.h, css_class, appearance, settings.as_ref(), on_reset);
         let root_widget: gtk::Widget = handles.root.clone().upcast();
 
         self.fixed.put(&root_widget, rect.x as f64, rect.y as f64);
         self.placed.borrow_mut().push(PlacedWidget { id: id.clone(), rect });
 
         {
+            let popover = &handles.settings_popover;
+            let widgets_dir = self.widgets_dir.clone();
+            let page_index = self.page_index;
+            let persist = self.persist;
+            let placed = self.placed.clone();
+            let id = id.clone();
+            let kind = kind.clone();
+            let to_dict = to_dict.clone();
+            let appearance = handles.appearance.clone();
+            popover.connect_closed(move |_| {
+                if !persist {
+                    return;
+                }
+                let Some(rect) = placed.borrow().iter().find(|p| p.id == id).map(|p| p.rect) else { return };
+                let state = WidgetState {
+                    id: id.clone(),
+                    kind: kind.clone(),
+                    page_index,
+                    x: rect.x,
+                    y: rect.y,
+                    w: rect.w,
+                    h: rect.h,
+                    appearance: appearance.borrow().clone(),
+                    content: to_dict(),
+                };
+                if let Err(err) = widget_state::save(&widgets_dir, &state) {
+                    eprintln!("xeneon-dashboard: failed to save widget {id}: {err}");
+                }
+            });
+        }
+
+        {
             let placed = self.placed.clone();
             let fixed = self.fixed.clone();
+            let widgets_dir = self.widgets_dir.clone();
+            let persist = self.persist;
             let id = id.clone();
             let root_widget = root_widget.clone();
             handles.delete_button.connect_clicked(move |_| {
                 fixed.remove(&root_widget);
                 placed.borrow_mut().retain(|p| p.id != id);
+                if persist {
+                    if let Err(err) = widget_state::delete(&widgets_dir, &id) {
+                        eprintln!("xeneon-dashboard: failed to delete saved widget {id}: {err}");
+                    }
+                }
             });
         }
 
@@ -191,9 +405,15 @@ impl WidgetGrid {
         {
             let placed = self.placed.clone();
             let fixed = self.fixed.clone();
+            let widgets_dir = self.widgets_dir.clone();
+            let page_index = self.page_index;
+            let persist = self.persist;
             let id = id.clone();
+            let kind = kind.clone();
             let root_widget = root_widget.clone();
             let preview = preview.clone();
+            let to_dict = to_dict.clone();
+            let appearance = handles.appearance.clone();
             drag.connect_drag_end(move |_, _, _| {
                 let Some(state) = preview.borrow_mut().take() else { return };
                 fixed.remove(&state.ghost);
@@ -201,6 +421,23 @@ impl WidgetGrid {
                     fixed.move_(&root_widget, state.candidate.x as f64, state.candidate.y as f64);
                     if let Some(p) = placed.borrow_mut().iter_mut().find(|p| p.id == id) {
                         p.rect = state.candidate;
+                    }
+                    if !persist {
+                        return;
+                    }
+                    let saved = WidgetState {
+                        id: id.clone(),
+                        kind: kind.clone(),
+                        page_index,
+                        x: state.candidate.x,
+                        y: state.candidate.y,
+                        w: state.candidate.w,
+                        h: state.candidate.h,
+                        appearance: appearance.borrow().clone(),
+                        content: to_dict(),
+                    };
+                    if let Err(err) = widget_state::save(&widgets_dir, &saved) {
+                        eprintln!("xeneon-dashboard: failed to save widget {id}: {err}");
                     }
                 }
                 // Invalid drop: the real widget never moved, so simply

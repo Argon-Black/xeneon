@@ -8,6 +8,7 @@
 pub mod appearance;
 pub mod config;
 pub mod grid;
+pub mod i18n;
 pub mod page_state;
 mod persistence;
 pub mod widget_state;
