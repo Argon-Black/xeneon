@@ -31,25 +31,14 @@ use crate::i18n_runtime as i18n;
 use crate::page_indicator::PageIndicator;
 use crate::theme;
 
-/// `root` is a bare, already-constructed `gtk::Box` - created by the
-/// caller *before* this is called and before the page indicator too, so
-/// the indicator can be built against this page's real identity (needed
-/// for its "stay revealed on the settings page" and gear-icon behaviour)
-/// without a chicken-and-egg problem: this function needs a live
-/// `PageIndicator` (to refresh it on rename), and the indicator needs the
-/// real settings widget, not a stand-in.
-///
-/// `pages` is every *renameable* widget page (not the dev-mode test page,
-/// not the settings page itself) - mirrors `window.widget_pages()` feeding
-/// `SettingsPage.refresh_pages()`.
 /// Handle kept by the caller (`AppModel`) to append a page to the "Pages"
 /// rename list *after* `populate` has already built it - needed once
 /// dynamic page creation (adding a widget that overflows onto a fresh
 /// page, see `main.rs`'s `AppMsg::AddWidget`) can grow the page count at
-/// runtime, not just at startup. `pages` is the same shared list the
-/// i18n retranslate closure below reads from, so a page added here is
-/// still there (and still renameable) after a language switch rebuilds
-/// the group.
+/// runtime, not just at startup, and to remove one again when it's
+/// deleted (`AppMsg::PageEmptied`). `pages` is the same shared list the
+/// i18n retranslate closure in `populate` reads from, so a page added or
+/// removed here stays correct after a language switch rebuilds the group.
 #[derive(Clone)]
 pub struct PagesHandle {
     group: adw::PreferencesGroup,
@@ -65,8 +54,30 @@ impl PagesHandle {
         self.rows.borrow_mut().push(row);
         self.pages.borrow_mut().push(grid);
     }
+
+    /// Drops a page's rename row - `rows` and `pages` are built in
+    /// lockstep everywhere else (`add_page`, `refresh_pages_group`), so
+    /// `grid`'s position in `pages` is also its row's position in `rows`.
+    pub fn remove_page(&self, grid: &Rc<WidgetGrid>) {
+        let mut pages = self.pages.borrow_mut();
+        let Some(idx) = pages.iter().position(|g| Rc::ptr_eq(g, grid)) else { return };
+        pages.remove(idx);
+        let row = self.rows.borrow_mut().remove(idx);
+        self.group.remove(&row);
+    }
 }
 
+/// `root` is a bare, already-constructed `gtk::Box` - created by the
+/// caller *before* this is called and before the page indicator too, so
+/// the indicator can be built against this page's real identity (needed
+/// for its "stay revealed on the settings page" and gear-icon behaviour)
+/// without a chicken-and-egg problem: this function needs a live
+/// `PageIndicator` (to refresh it on rename), and the indicator needs the
+/// real settings widget, not a stand-in.
+///
+/// `pages` is every *renameable* widget page (not the dev-mode test page,
+/// not the settings page itself) - mirrors `window.widget_pages()` feeding
+/// `SettingsPage.refresh_pages()`.
 pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageIndicator) -> PagesHandle {
     root.set_orientation(gtk::Orientation::Vertical);
     root.set_hexpand(true);

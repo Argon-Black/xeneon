@@ -86,6 +86,23 @@ pub fn delete(widgets_dir: &Path, id: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Rewrites just the `page_index` field of an already-saved widget file in
+/// place - used when a page's own index shifts (e.g. an earlier page was
+/// deleted and every later page moves down by one) so this widget stays
+/// correctly bucketed on the next restart. Reads the file back first
+/// rather than reconstructing a fresh `WidgetState` from live state, since
+/// the caller (a `WidgetGrid` reindexing itself) only has the widget's id
+/// and rect on hand, not its kind/appearance/content.
+pub fn update_page_index(widgets_dir: &Path, id: &str, new_page_index: usize) -> std::io::Result<()> {
+    let path = widgets_dir.join(format!("{id}.json"));
+    let text = fs::read_to_string(&path)?;
+    let mut state: WidgetState =
+        serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    state.id = id.to_string();
+    state.page_index = new_page_index;
+    persistence::write_json_atomic(&path, &state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +134,32 @@ mod tests {
 
         delete(&dir, "abc123").unwrap();
         assert!(load_all(&dir).is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_page_index_rewrites_only_that_field() {
+        let dir = std::env::temp_dir().join(format!("xeneon-test-reindex-{}", uuid::Uuid::new_v4()));
+
+        let state = WidgetState {
+            id: "abc123".to_string(),
+            kind: "clock".to_string(),
+            page_index: 2,
+            x: 10,
+            y: 20,
+            content: serde_json::json!({"city_key": "widgets.clock.cities.paris"}),
+            ..Default::default()
+        };
+        save(&dir, &state).unwrap();
+
+        update_page_index(&dir, "abc123", 1).unwrap();
+
+        let loaded = load_all(&dir);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].page_index, 1);
+        assert_eq!(loaded[0].x, 10);
+        assert_eq!(loaded[0].content["city_key"], "widgets.clock.cities.paris");
 
         let _ = fs::remove_dir_all(&dir);
     }

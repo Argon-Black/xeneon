@@ -112,6 +112,13 @@ enum AppMsg {
     ShowWidgetPicker,
     AddWidget(&'static str),
     GotoSettings,
+    /// A widget delete left the named page (by `page_id`, not
+    /// `page_index` - the latter can shift under a page deleted earlier
+    /// in the same batch) with zero widgets on it. Looked up again here
+    /// rather than passing an index directly, since some time may pass
+    /// between the delete closure firing (deep inside `grid_widget.rs`,
+    /// with no view of `AppModel`) and this message being handled.
+    PageEmptied(String),
 }
 
 #[relm4::component]
@@ -228,7 +235,9 @@ impl SimpleComponent for AppModel {
                 ),
                 None => WidgetGrid::new(PAGE_W, PAGE_H, index, widgets_dir.clone(), pages_dir.clone()),
             };
-            real_grids.push(Rc::new(grid));
+            let grid = Rc::new(grid);
+            register_page_emptied(&grid, &sender);
+            real_grids.push(grid);
         }
         for state in &widget_states {
             let Some(grid) = real_grids.get(state.page_index) else {
@@ -364,7 +373,7 @@ impl SimpleComponent for AppModel {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, _sender: ComponentSender<Self>) {
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
             AppMsg::ToggleFullscreen => {
                 self.fullscreened = !self.fullscreened;
@@ -405,6 +414,7 @@ impl SimpleComponent for AppModel {
 
                     let new_index = self.real_grids.len();
                     let grid = Rc::new(WidgetGrid::new(PAGE_W, PAGE_H, new_index, self.widgets_dir.clone(), self.pages_dir.clone()));
+                    register_page_emptied(&grid, &sender);
                     self._page_indicator.register_page(grid.widget(), grid.clone());
                     // Insert right after the last real page - ahead of the
                     // dev-mode test page and/or the settings page, which
@@ -436,8 +446,44 @@ impl SimpleComponent for AppModel {
                     });
                 }
             }
+            AppMsg::PageEmptied(page_id) => {
+                let Some(pos) = self.real_grids.iter().position(|g| g.page_id() == page_id) else { return };
+                // The first page always stays, even empty - there must
+                // always be somewhere to add the next widget to.
+                if pos == 0 {
+                    return;
+                }
+                let grid = self.real_grids.remove(pos);
+                self.carousel.remove(grid.widget());
+                self._page_indicator.unregister_page(grid.widget());
+                self.pages_handle.remove_page(&grid);
+                if let Err(err) = page_state::delete(&self.pages_dir, grid.page_id()) {
+                    eprintln!("xeneon-dashboard: failed to delete saved page {}: {err}", grid.page_id());
+                }
+                // Every page after the deleted one shifts down by one
+                // index - and resaves its own widgets under that
+                // corrected index - so persistence stays contiguous
+                // (0..page_count) for the next restart. See
+                // WidgetGrid::set_page_index.
+                for later in &self.real_grids[pos..] {
+                    later.set_page_index(later.page_index() - 1);
+                }
+            }
         }
     }
+}
+
+/// Wires a real page's `on_emptied` callback to `AppMsg::PageEmptied` -
+/// called for every real page, including the first one, since whether a
+/// page is allowed to auto-delete depends on its *current* `page_index`
+/// at the moment it empties (which can shift after an earlier page is
+/// deleted), not on whether it happened to be first at registration time.
+/// The `update()` handler is what actually enforces "never the first
+/// page".
+fn register_page_emptied(grid: &Rc<WidgetGrid>, sender: &ComponentSender<AppModel>) {
+    let sender = sender.clone();
+    let page_id = grid.page_id().to_string();
+    grid.set_on_emptied(move || sender.input(AppMsg::PageEmptied(page_id.clone())));
 }
 
 /// Which real (non-dev, non-settings) page a newly added widget should

@@ -256,6 +256,16 @@ impl PageIndicator {
         self.inner.named_pages.borrow_mut().insert(widget.clone().upcast(), grid);
     }
 
+    /// Drops a page's name mapping - call when the page itself is removed
+    /// (deleted, not just navigated away from) so `named_pages` doesn't
+    /// keep an unused `Rc<WidgetGrid>` alive indefinitely. `refresh()`
+    /// would silently skip a removed page's button anyway (it only
+    /// iterates pages still in the carousel), so this is about releasing
+    /// the reference, not about correctness of what's shown.
+    pub fn unregister_page(&self, widget: &gtk::Fixed) {
+        self.inner.named_pages.borrow_mut().remove(&widget.clone().upcast::<gtk::Widget>());
+    }
+
     /// Forces a full rebuild - call after renaming a page, same as
     /// `window.py::save_page` unconditionally refreshing the indicator
     /// afterward ("cheap enough to just always refresh rather than

@@ -31,7 +31,15 @@ pub struct WidgetGrid {
     fixed: gtk::Fixed,
     page_w: i32,
     page_h: i32,
-    page_index: usize,
+    // Shared (not a plain usize) so the save closures set up in
+    // `insert_at` - which must be 'static and so can't borrow `self` -
+    // can still read the *current* value at save time rather than the
+    // value that was current when the widget was first added. Needed
+    // once a page's index can shift after the fact (an earlier page
+    // deleted, see `set_page_index`): a closure that had baked in a
+    // stale index would keep re-saving widgets under the wrong page
+    // forever, silently corrupting persistence.
+    page_index: Rc<Cell<usize>>,
     page_id: String,
     custom_name: RefCell<Option<String>>,
     widgets_dir: PathBuf,
@@ -43,6 +51,13 @@ pub struct WidgetGrid {
     /// would leak throwaway test content into the persisted layout.
     persist: bool,
     placed: Rc<RefCell<Vec<PlacedWidget>>>,
+    /// Fired when a widget delete leaves this page with zero widgets -
+    /// lets the caller (`main.rs`) decide whether to remove the page
+    /// itself (it always keeps the first page, deleted or not - see
+    /// `AppMsg::PageEmptied`). Not fired by anything other than an actual
+    /// user delete: starting empty (a freshly created page) or emptying
+    /// via page teardown doesn't go through this path.
+    on_emptied: Rc<RefCell<Option<Box<dyn Fn()>>>>,
 }
 
 static INSTALL_PREVIEW_CSS: Once = Once::new();
@@ -143,13 +158,14 @@ impl WidgetGrid {
             fixed,
             page_w,
             page_h,
-            page_index,
+            page_index: Rc::new(Cell::new(page_index)),
             page_id,
             custom_name: RefCell::new(custom_name),
             widgets_dir,
             pages_dir,
             persist,
             placed: Rc::new(RefCell::new(Vec::new())),
+            on_emptied: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -160,16 +176,43 @@ impl WidgetGrid {
     }
 
     /// Stable identity (the `pages/<id>.json` filename), independent of
-    /// `page_index` - not read anywhere yet, but a natural accessor to
-    /// have alongside `page_index()`/`display_name()` and needed the
-    /// moment a "delete this page" feature exists.
-    #[allow(dead_code)]
+    /// `page_index` - used by `AppMsg::PageEmptied` to find this page
+    /// again after the message round-trips through the event loop (a
+    /// `page_index` alone wouldn't survive another page being deleted
+    /// first).
     pub fn page_id(&self) -> &str {
         &self.page_id
     }
 
     pub fn page_index(&self) -> usize {
-        self.page_index
+        self.page_index.get()
+    }
+
+    /// Re-numbers this page (its own persisted file, if named, and every
+    /// currently-placed widget's file) - called when an earlier page is
+    /// deleted and this one shifts down to fill the gap, so persistence
+    /// stays contiguous (`0..page_count`) for the next restart. See the
+    /// `page_index` field's own doc comment for why a plain field
+    /// wouldn't be enough on its own.
+    pub fn set_page_index(&self, new_index: usize) {
+        self.page_index.set(new_index);
+        self.save_page_state();
+        if !self.persist {
+            return;
+        }
+        for p in self.placed.borrow().iter() {
+            if let Err(err) = widget_state::update_page_index(&self.widgets_dir, &p.id, new_index) {
+                eprintln!("xeneon-dashboard: failed to reindex widget {}: {err}", p.id);
+            }
+        }
+    }
+
+    /// Registers the callback fired when a widget delete leaves this page
+    /// empty - see the `on_emptied` field's own doc comment. Overwrites
+    /// any previously registered callback (only one caller ever needs
+    /// this, `main.rs` at page-creation time).
+    pub fn set_on_emptied(&self, cb: impl Fn() + 'static) {
+        *self.on_emptied.borrow_mut() = Some(Box::new(cb));
     }
 
     pub fn custom_name(&self) -> Option<String> {
@@ -181,7 +224,7 @@ impl WidgetGrid {
     pub fn display_name(&self) -> String {
         match self.custom_name.borrow().as_deref() {
             Some(name) if !name.is_empty() => name.to_string(),
-            _ => i18n::t_args("settings.pages_group.default_name", &[("n", &(self.page_index + 1).to_string())]),
+            _ => i18n::t_args("settings.pages_group.default_name", &[("n", &(self.page_index() + 1).to_string())]),
         }
     }
 
@@ -201,7 +244,7 @@ impl WidgetGrid {
         }
         let state = PageState {
             id: self.page_id.clone(),
-            page_index: self.page_index,
+            page_index: self.page_index(),
             name: self.custom_name(),
             background: serde_json::Value::Null,
         };
@@ -263,7 +306,7 @@ impl WidgetGrid {
         let state = WidgetState {
             id: id.to_string(),
             kind: kind.to_string(),
-            page_index: self.page_index,
+            page_index: self.page_index(),
             x: rect.x,
             y: rect.y,
             w: rect.w,
@@ -290,7 +333,7 @@ impl WidgetGrid {
         {
             let popover = &handles.settings_popover;
             let widgets_dir = self.widgets_dir.clone();
-            let page_index = self.page_index;
+            let page_index = self.page_index.clone();
             let persist = self.persist;
             let placed = self.placed.clone();
             let id = id.clone();
@@ -305,7 +348,7 @@ impl WidgetGrid {
                 let state = WidgetState {
                     id: id.clone(),
                     kind: kind.clone(),
-                    page_index,
+                    page_index: page_index.get(),
                     x: rect.x,
                     y: rect.y,
                     w: rect.w,
@@ -326,12 +369,18 @@ impl WidgetGrid {
             let persist = self.persist;
             let id = id.clone();
             let root_widget = root_widget.clone();
+            let on_emptied = self.on_emptied.clone();
             handles.delete_button.connect_clicked(move |_| {
                 fixed.remove(&root_widget);
                 placed.borrow_mut().retain(|p| p.id != id);
                 if persist {
                     if let Err(err) = widget_state::delete(&widgets_dir, &id) {
                         eprintln!("xeneon-dashboard: failed to delete saved widget {id}: {err}");
+                    }
+                }
+                if placed.borrow().is_empty() {
+                    if let Some(cb) = on_emptied.borrow().as_ref() {
+                        cb();
                     }
                 }
             });
@@ -406,7 +455,7 @@ impl WidgetGrid {
             let placed = self.placed.clone();
             let fixed = self.fixed.clone();
             let widgets_dir = self.widgets_dir.clone();
-            let page_index = self.page_index;
+            let page_index = self.page_index.clone();
             let persist = self.persist;
             let id = id.clone();
             let kind = kind.clone();
@@ -428,7 +477,7 @@ impl WidgetGrid {
                     let saved = WidgetState {
                         id: id.clone(),
                         kind: kind.clone(),
-                        page_index,
+                        page_index: page_index.get(),
                         x: state.candidate.x,
                         y: state.candidate.y,
                         w: state.candidate.w,
