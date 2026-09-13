@@ -3,7 +3,7 @@ import logging
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gdk, Gtk
+from gi.repository import Gdk, GLib, Gtk
 
 from xeneon_dashboard import i18n
 
@@ -446,7 +446,6 @@ _PICKER_CSS = """
 .xeneon-widget-picker-tile {
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  overflow: hidden;
 }
 .xeneon-widget-picker-tile:hover {
   border-color: @accent_color;
@@ -487,6 +486,10 @@ class _PreviewTile(Gtk.Overlay):
         super().__init__()
         self.add_css_class("xeneon-widget-picker-tile")
         self.set_size_request(*size)
+        # CSS `overflow` isn't a real GTK CSS property - clipping to the
+        # tile's own rounded corners (see .xeneon-widget-picker-tile's
+        # border-radius) needs this actual widget property instead.
+        self.set_overflow(Gtk.Overflow.HIDDEN)
 
         card = Gtk.Box()
         card.add_css_class("card")
@@ -565,6 +568,9 @@ class WidgetPicker(Gtk.Revealer):
         key_controller.connect("key-pressed", self._on_key_pressed)
         self.add_controller(key_controller)
 
+        self._build_source_id: int | None = None
+        self._build_queue: list[tuple[Gtk.FlowBox, tuple]] = []
+
         self._retranslate()
         i18n.on_change(self._retranslate)
 
@@ -590,6 +596,7 @@ class WidgetPicker(Gtk.Revealer):
         # background threads (see each content class's own "destroy"
         # handler), and there's no reason to keep those polling while
         # nobody can see them.
+        self._cancel_build_queue()
         self._clear_body()
 
     def _clear_body(self):
@@ -599,8 +606,28 @@ class WidgetPicker(Gtk.Revealer):
             self._body.remove(child)
             child = next_child
 
+    def _cancel_build_queue(self):
+        if self._build_source_id is not None:
+            GLib.source_remove(self._build_source_id)
+            self._build_source_id = None
+        self._build_queue = []
+
     def _rebuild_body(self):
+        self._cancel_build_queue()
         self._clear_body()
+        # Section headers and (empty) flow rows are built right away - cheap
+        # widgets, no live content - but each tile's own preview (a real
+        # ClockContent/WeatherContent/AgendaContent/... - see CATALOG) is
+        # queued and built one at a time on the idle loop instead of all at
+        # once here. Building all ~13 of them synchronously (weather's HTTP
+        # fetch kicking off, agenda's EDS connection, MPRIS DBus watches for
+        # both audio entries, a hwmon read for each temp entry...) was
+        # enough to visibly stall the main loop for a frame or more right as
+        # the picker opens - long enough that the compositor could mistake
+        # the fullscreened window for unresponsive and reveal the desktop's
+        # own top panel over the Xeneon Edge until the window recovers.
+        # Spreading construction across idle callbacks keeps every single
+        # iteration cheap, so the window never stops acking frames.
         for family, entries in _grouped_catalog():
             section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
             label = Gtk.Label(label=i18n._(_FAMILY_LABEL_KEYS[family]))
@@ -615,13 +642,24 @@ class WidgetPicker(Gtk.Revealer):
             flow.set_column_spacing(GAP)
             flow.set_halign(Gtk.Align.START)
             flow.set_max_children_per_line(1000)
-            for title_key, size, spawn, build_preview in entries:
-                tile_wrap = Gtk.FlowBoxChild()
-                tile_wrap.set_focusable(False)
-                tile_wrap.set_child(_PreviewTile(title_key, size, spawn, build_preview, self._on_tile_activated))
-                flow.append(tile_wrap)
             section.append(flow)
             self._body.append(section)
+
+            for entry in entries:
+                self._build_queue.append((flow, entry))
+
+        self._build_source_id = GLib.idle_add(self._pump_build_queue)
+
+    def _pump_build_queue(self) -> bool:
+        if not self._build_queue:
+            self._build_source_id = None
+            return GLib.SOURCE_REMOVE
+        flow, (title_key, size, spawn, build_preview) = self._build_queue.pop(0)
+        tile_wrap = Gtk.FlowBoxChild()
+        tile_wrap.set_focusable(False)
+        tile_wrap.set_child(_PreviewTile(title_key, size, spawn, build_preview, self._on_tile_activated))
+        flow.append(tile_wrap)
+        return GLib.SOURCE_CONTINUE
 
     def _on_tile_activated(self, size: tuple[int, int], spawn):
         self._on_pick(size, spawn)

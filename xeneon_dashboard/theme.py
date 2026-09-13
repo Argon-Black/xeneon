@@ -52,7 +52,7 @@ _style_manager_signal_connected = False
 
 _SWATCH_STATIC_CSS = (
     f".{SWATCH_CSS_CLASS} {{ min-width: 22px; min-height: 22px; padding: 0; border-radius: 999px;"
-    " border: 2px solid transparent; }}\n"
+    " border: 2px solid transparent; }\n"
     + "\n".join(f".{SWATCH_CSS_CLASS}-{key} {{ background-color: {hex_value}; }}" for key, hex_value in ACCENT_PRESETS)
     + f"\n.{SWATCH_SELECTED_CSS_CLASS} {{ border-color: #ffffff; }}"
 )

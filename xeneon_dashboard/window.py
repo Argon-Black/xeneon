@@ -92,6 +92,14 @@ class XeneonWindow(Adw.ApplicationWindow):
         # space, so it appearing/hiding never reflows page content.
         carousel_overlay.add_overlay(self._indicator)
 
+        # Same overlay, same technique as the page indicator right above -
+        # floats above the carousel instead of taking flow space, so it can
+        # cover the whole page (and, while fullscreen/kiosk, that's the
+        # whole window - the header bar is bypassed then anyway) without
+        # another layer of Gtk.Overlay wrapping the rest of the window.
+        self._widget_picker = WidgetPicker(self._on_widget_picked)
+        carousel_overlay.add_overlay(self._widget_picker)
+
         self._content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         # AdwToolbarView normally tags its content "view" for a flat
         # background; without it (bypassed while fullscreen) the window's
@@ -99,19 +107,7 @@ class XeneonWindow(Adw.ApplicationWindow):
         self._content_box.add_css_class("view")
         self._content_box.append(carousel_overlay)
 
-        # Wraps _content_box so the widget picker (see widget_picker.py) can
-        # sit above literally everything - carousel, page indicator, header
-        # bar when windowed - as a full-window overlay rather than a
-        # popover. Swapped in wherever _content_box used to be set as
-        # content directly (here and in _on_fullscreened_changed) so this
-        # covers both the windowed (behind _toolbar_view) and fullscreen
-        # (bypassing it) cases the same way.
-        self._root_overlay = Gtk.Overlay()
-        self._root_overlay.set_child(self._content_box)
-        self._widget_picker = WidgetPicker(self._on_widget_picked)
-        self._root_overlay.add_overlay(self._widget_picker)
-
-        self._toolbar_view.set_content(self._root_overlay)
+        self._toolbar_view.set_content(self._content_box)
         self.set_content(self._toolbar_view)
 
         self._build_pages()
@@ -126,11 +122,11 @@ class XeneonWindow(Adw.ApplicationWindow):
         # in windowed mode so the window stays usable for development
         # (move/close/resize). Guarded against "notify::fullscreened" firing
         # more than once per transition.
-        if self.is_fullscreen() and self.get_content() is not self._root_overlay:
+        if self.is_fullscreen() and self.get_content() is not self._content_box:
             self._toolbar_view.set_content(None)
-            self.set_content(self._root_overlay)
+            self.set_content(self._content_box)
         elif not self.is_fullscreen() and self.get_content() is not self._toolbar_view:
-            self._toolbar_view.set_content(self._root_overlay)
+            self._toolbar_view.set_content(self._content_box)
             self.set_content(self._toolbar_view)
 
     def goto_settings(self):
