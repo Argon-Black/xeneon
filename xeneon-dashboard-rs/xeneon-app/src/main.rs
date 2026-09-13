@@ -41,7 +41,6 @@ mod widgets;
 use adw::prelude::*;
 use page_indicator::PageIndicator;
 use relm4::prelude::*;
-use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use xeneon_core::config;
@@ -430,40 +429,34 @@ impl SimpleComponent for AppModel {
                 if let Some(index) = target {
                     let grid = &self.real_grids[index];
                     grid.add_widget(descriptor.title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
-                    // Deferred to the page's own "map" signal rather than
-                    // called inline: a page just created above via
+                    // Deferred until the new page actually has a size,
+                    // polled once per frame via a tick callback, rather
+                    // than called inline: a page just created above via
                     // carousel.insert() hasn't been allocated a size yet
                     // in this same call, and AdwCarousel computes
                     // scroll_to's target offset from each page's
                     // allocated width - so scrolling immediately here can
                     // silently fall short of a brand-new last page (the
                     // widget still gets added correctly, it's only the
-                    // page switch that's visually wrong). A plain idle
-                    // callback was tried first and wasn't reliable either
-                    // - idle sources can run before the frame clock's
-                    // layout pass, same problem one step removed. "map"
-                    // only fires once a widget has a real surface to draw
-                    // into, which GTK guarantees happens after it has a
-                    // valid allocation - a stronger guarantee than timing
-                    // relative to some other source's priority.
+                    // page switch that's visually wrong). Two signal-based
+                    // attempts were tried and measured (via temporary
+                    // debug logging) to not work here: an idle callback
+                    // can run before the frame clock's layout pass, and -
+                    // confirmed by that logging - the page is already
+                    // mapped (width 0) *before* insert() even returns, so
+                    // its own "map" signal never fires afterwards to hang
+                    // a callback off of. Polling `width() > 0` every frame
+                    // sidesteps needing to know exactly which signal or
+                    // priority is guaranteed to land after allocation.
                     let carousel = self.carousel.clone();
                     let page = grid.widget().clone();
-                    let handler_id: Rc<Cell<Option<gtk::glib::SignalHandlerId>>> = Rc::new(Cell::new(None));
-                    let id = page.connect_map({
-                        let handler_id = handler_id.clone();
-                        move |page| {
-                            carousel.scroll_to(page, true);
-                            // One-shot: without disconnecting, a later
-                            // unrelated remap (e.g. the whole window
-                            // hidden and reshown) would yank the carousel
-                            // back to this page even if the user had
-                            // since navigated elsewhere.
-                            if let Some(id) = handler_id.take() {
-                                page.disconnect(id);
-                            }
+                    page.add_tick_callback(move |page, _frame_clock| {
+                        if page.width() == 0 {
+                            return gtk::glib::ControlFlow::Continue;
                         }
+                        carousel.scroll_to(page, true);
+                        gtk::glib::ControlFlow::Break
                     });
-                    handler_id.set(Some(id));
                 }
             }
             AppMsg::PageEmptied(page_id) => {
