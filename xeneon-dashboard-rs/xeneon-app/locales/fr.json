@@ -62,6 +62,11 @@
   "widgets.dummy.label_sx": "SX",
   "widgets.dummy.label_ssx": "SSX",
 
+  "widgets.audio.title": "Musique",
+  "widgets.audio.empty": "Aucun lecteur en cours",
+  "widgets.audio.unknown_title": "Titre inconnu",
+  "widgets.audio.unknown_artist": "Artiste inconnu",
+
   "widgets.clock.title": "Horloge",
   "widgets.clock.settings.time_font": "Police (heure)",
   "widgets.clock.settings.label_font": "Police (ville/date)",

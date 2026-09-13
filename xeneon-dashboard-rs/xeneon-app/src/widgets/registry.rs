@@ -45,6 +45,16 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         spawn: crate::widgets::clock::spawn,
         restore: crate::widgets::clock::restore,
     },
+    // Step 1 of the audio port: SIZE_L only. A "audio_sq" entry sharing
+    // the same widgets/audio.rs code is added once the SQ variant exists
+    // - see that module's own doc comment for the step breakdown.
+    WidgetDescriptor {
+        kind: "audio_l",
+        title_key: "widgets.audio.title",
+        size: SIZE_L,
+        spawn: crate::widgets::audio::spawn,
+        restore: crate::widgets::audio::restore,
+    },
     WidgetDescriptor {
         kind: "dummy_s",
         title_key: "widgets.dummy.title_s",
