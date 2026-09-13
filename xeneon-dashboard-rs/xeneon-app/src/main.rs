@@ -250,10 +250,11 @@ impl SimpleComponent for AppModel {
             }
         }
 
-        // Dev-mode-only page: one of every registered kind, to validate
-        // move/snap/delete/swipe (and, for Clock, live settings) on
-        // demand. Its widgets are never persisted (WidgetGrid::ephemeral)
-        // - regenerated fresh in code every launch instead.
+        // Dev-mode-only page: one of every dummy size preset, to validate
+        // move/snap/delete/swipe on demand. Its widgets are never
+        // persisted (WidgetGrid::ephemeral) - regenerated fresh in code
+        // every launch instead, so it always comes back exactly like
+        // this regardless of anything done to it in a previous session.
         let dev_grid = dev_mode_enabled().then(|| {
             let grid = WidgetGrid::ephemeral(PAGE_W, PAGE_H, real_grids.len());
             // Not persisted (WidgetGrid::ephemeral guards set_custom_name
@@ -261,6 +262,16 @@ impl SimpleComponent for AppModel {
             // the page indicator shows for this page.
             grid.set_custom_name(Some(i18n_runtime::t("widgets.dev_page.title")));
             for descriptor in widgets::registry::CATALOG {
+                // Clock isn't a size preset to validate - it's a real
+                // plugin, already exercised through the normal widget
+                // picker - and being medium-sized itself, adding it here
+                // ahead of the dummies ate up exactly the column space
+                // dummy_l (a full-height column) needs, so dummy_l would
+                // silently fail to place (add_widget returns None when
+                // there's no room) and just be missing from the page.
+                if descriptor.kind == "clock" {
+                    continue;
+                }
                 grid.add_widget(descriptor.title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
             }
             Rc::new(grid)
