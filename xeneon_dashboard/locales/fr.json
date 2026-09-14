@@ -4,6 +4,7 @@
   "window.title": "Xeneon Dashboard",
   "header.settings_tooltip": "Réglages",
   "portal.fullscreen_description": "Basculer le Xeneon Dashboard en plein écran",
+  "carousel.add_page_tooltip": "Ajouter une page",
 
   "settings.title": "Réglages",
   "settings.shortcuts_group": "Raccourcis clavier",

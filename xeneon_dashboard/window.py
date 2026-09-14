@@ -87,7 +87,13 @@ class XeneonWindow(Adw.ApplicationWindow):
         carousel_overlay.set_child(self.carousel)
         app = self.get_application()
         hide_delay = app.config.get("indicator_hide_delay_seconds") if app else None
-        self._indicator = PageIndicator(self.carousel, self._settings_page, hide_delay_seconds=hide_delay or 2)
+        self._indicator = PageIndicator(
+            self.carousel,
+            self._settings_page,
+            hide_delay_seconds=hide_delay or 2,
+            on_add_page=self._on_add_page_clicked,
+            max_widget_pages=MAX_WIDGET_PAGES,
+        )
         # Floats over the carousel's bottom edge instead of taking flow
         # space, so it appearing/hiding never reflows page content.
         carousel_overlay.add_overlay(self._indicator)
@@ -163,6 +169,11 @@ class XeneonWindow(Adw.ApplicationWindow):
 
     def widget_pages(self) -> list[WidgetGrid]:
         return list(self._widget_pages)
+
+    def _on_add_page_clicked(self) -> None:
+        page = self.add_widget_page()
+        if page is not None:
+            self.carousel.scroll_to(page, True)
 
     def save_page(self, page: WidgetGrid) -> None:
         self._save_page(page)

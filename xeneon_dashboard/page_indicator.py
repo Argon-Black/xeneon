@@ -5,6 +5,8 @@ gi.require_version("Adw", "1")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
+from xeneon_dashboard import i18n
+
 DEFAULT_HIDE_DELAY_SECONDS = 2
 # Sized off the Xeneon Edge's actual pixel density, not a round guess: it's
 # a 14.5" 32:9 panel at 2560x720, so diagonal = sqrt(2560^2 + 720^2) ~=
@@ -69,6 +71,15 @@ button.xeneon-page-settings {{
 button.xeneon-page-settings.active {{
   opacity: 1;
 }}
+button.xeneon-page-add {{
+  min-width: {TOUCH_TARGET_PX}px;
+  min-height: {TOUCH_TARGET_PX}px;
+  padding: 6px;
+  margin: 0 8px;
+  opacity: {inactive_opacity:.2f};
+  border-radius: 18px;
+  {color_rule}
+}}
 """
 
 
@@ -79,12 +90,27 @@ class PageIndicator(Gtk.Revealer):
     auto-hidden otherwise, except on the settings page where it always stays
     up (see _show/_is_on_settings_page)."""
 
-    def __init__(self, carousel: Adw.Carousel, settings_page: Gtk.Widget, hide_delay_seconds: int = DEFAULT_HIDE_DELAY_SECONDS):
+    def __init__(
+        self,
+        carousel: Adw.Carousel,
+        settings_page: Gtk.Widget,
+        hide_delay_seconds: int = DEFAULT_HIDE_DELAY_SECONDS,
+        *,
+        on_add_page=None,
+        max_widget_pages: int | None = None,
+    ):
         super().__init__()
         self._carousel = carousel
         self._settings_page = settings_page
         self._hide_delay_seconds = hide_delay_seconds
         self._hide_source_id: int | None = None
+        # Called (no args) when the add-page button is tapped - see
+        # XeneonWindow._on_add_page_clicked, which creates the page and
+        # navigates to it. max_widget_pages, if given, hides that button
+        # once XeneonWindow.MAX_WIDGET_PAGES worth of pages already exist,
+        # rather than leaving a button that would silently no-op on tap.
+        self._on_add_page = on_add_page
+        self._max_widget_pages = max_widget_pages
 
         self.set_transition_type(Gtk.RevealerTransitionType.CROSSFADE)
         self.set_transition_duration(200)
@@ -122,41 +148,64 @@ class PageIndicator(Gtk.Revealer):
             self._box.remove(child)
             child = next_child
 
-        for i in range(self._carousel.get_n_pages()):
+        n_pages = self._carousel.get_n_pages()
+        n_widget_pages = 0
+        for i in range(n_pages):
             page = self._carousel.get_nth_page(i)
+            if page is self._settings_page:
+                continue
+            n_widget_pages += 1
             button = Gtk.Button()
             button.add_css_class("flat")
-            # Rounded square rather than GTK's "circular" style class (which
-            # would force a perfect circle/pill via its own border-radius) -
-            # a squarer shape is more forgiving of an off-center tap on a
-            # touch target this size, and stays legible with a name label
-            # (see xeneon-page-number's own border-radius above/below).
-            if page is self._settings_page:
-                icon = Gtk.Image.new_from_icon_name("preferences-system-symbolic")
-                icon.set_pixel_size(SETTINGS_ICON_PIXEL_SIZE)
-                button.set_child(icon)
-                button.add_css_class("xeneon-page-settings")
+            button.add_css_class("xeneon-page-number")
+            # A renamed page shows its name instead of a bare number -
+            # getattr rather than an import/isinstance check since the
+            # only thing this module needs from a WidgetGrid page is
+            # this one attribute. Falls back to the number (by carousel
+            # position, not page.page_index - always the same value
+            # since settings is always last, but the carousel is the
+            # thing actually being counted here) for an unnamed page,
+            # same as before.
+            custom_name = getattr(page, "custom_name", None)
+            if custom_name:
+                label = Gtk.Label(label=custom_name)
+                label.set_max_width_chars(10)
+                label.set_ellipsize(Pango.EllipsizeMode.END)
+                label.set_single_line_mode(True)
+                button.set_child(label)
             else:
-                # A renamed page shows its name instead of a bare number -
-                # getattr rather than an import/isinstance check since the
-                # only thing this module needs from a WidgetGrid page is
-                # this one attribute. Falls back to the number (by carousel
-                # position, not page.page_index - always the same value
-                # since settings is always last, but the carousel is the
-                # thing actually being counted here) for an unnamed page,
-                # same as before.
-                custom_name = getattr(page, "custom_name", None)
-                if custom_name:
-                    label = Gtk.Label(label=custom_name)
-                    label.set_max_width_chars(10)
-                    label.set_ellipsize(Pango.EllipsizeMode.END)
-                    label.set_single_line_mode(True)
-                    button.set_child(label)
-                else:
-                    button.set_label(str(i + 1))
-                button.add_css_class("xeneon-page-number")
+                button.set_label(str(i + 1))
+            button._xeneon_page = page
             button.connect("clicked", self._on_dot_clicked, page)
             self._box.append(button)
+
+        # Sits right before the settings button, not tied to any carousel
+        # page itself - just an action. Hidden once at capacity rather than
+        # left there to silently no-op on tap.
+        at_capacity = self._max_widget_pages is not None and n_widget_pages >= self._max_widget_pages
+        if self._on_add_page is not None and not at_capacity:
+            add_button = Gtk.Button(icon_name="list-add-symbolic")
+            add_button.add_css_class("flat")
+            add_button.add_css_class("xeneon-page-add")
+            add_button.set_tooltip_text(i18n._("carousel.add_page_tooltip"))
+            add_button.connect("clicked", lambda _b: self._on_add_page())
+            self._box.append(add_button)
+
+        settings_button = Gtk.Button()
+        settings_button.add_css_class("flat")
+        # Rounded square rather than GTK's "circular" style class (which
+        # would force a perfect circle/pill via its own border-radius) -
+        # a squarer shape is more forgiving of an off-center tap on a
+        # touch target this size, and stays legible with a name label
+        # (see xeneon-page-number's own border-radius above/below).
+        icon = Gtk.Image.new_from_icon_name("preferences-system-symbolic")
+        icon.set_pixel_size(SETTINGS_ICON_PIXEL_SIZE)
+        settings_button.set_child(icon)
+        settings_button.add_css_class("xeneon-page-settings")
+        settings_button._xeneon_page = self._settings_page
+        settings_button.connect("clicked", self._on_dot_clicked, self._settings_page)
+        self._box.append(settings_button)
+
         self._update_active()
 
     def _on_dot_clicked(self, _button, page):
@@ -165,8 +214,9 @@ class PageIndicator(Gtk.Revealer):
 
     def _update_active(self):
         position = round(self._carousel.get_position())
-        for i, child in enumerate(self._iter_children()):
-            if i == position:
+        current_page = self._carousel.get_nth_page(position)
+        for child in self._iter_children():
+            if getattr(child, "_xeneon_page", None) is current_page:
                 child.add_css_class("active")
             else:
                 child.remove_css_class("active")
