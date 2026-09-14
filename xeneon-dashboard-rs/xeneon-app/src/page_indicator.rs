@@ -22,6 +22,23 @@ const TOUCH_TARGET_PX: i32 = 72;
 const SETTINGS_ICON_PIXEL_SIZE: i32 = 36;
 pub const DEFAULT_OPACITY_PERCENT: u32 = 55;
 
+// Vertical padding baked into every indicator button's own CSS rule (see
+// set_style()'s "padding: 6px" on .xeneon-page-number/.xeneon-page-settings/
+// .xeneon-page-add below) - doubled since it applies above and below.
+const BUTTON_VERTICAL_PADDING_PX: i32 = 6;
+// Space PageIndicator::new()'s own `row` box keeps between its buttons and
+// the window's bottom edge (`row.set_margin_bottom(10)`).
+const ROW_MARGIN_BOTTOM_PX: i32 = 10;
+
+/// Total height the indicator bar actually occupies at the bottom of the
+/// window - button touch target plus its own vertical padding plus the
+/// row's margin below it. Exposed so the settings page (where the bar
+/// stays permanently visible, unlike every other page where it auto-hides
+/// after a swipe) can reserve exactly this much space at its own bottom
+/// edge instead of letting its content run underneath the bar - see
+/// settings_page.rs's own use of this constant.
+pub const RESERVED_HEIGHT_PX: i32 = TOUCH_TARGET_PX + 2 * BUTTON_VERTICAL_PADDING_PX + ROW_MARGIN_BOTTOM_PX;
+
 static INSTALL: Once = Once::new();
 thread_local! {
     static PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };

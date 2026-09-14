@@ -87,7 +87,13 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     root.set_hexpand(true);
     root.set_vexpand(true);
     root.set_margin_top(24);
-    root.set_margin_bottom(24);
+    // The page indicator bar stays permanently visible here (unlike every
+    // other page, where it auto-hides after a swipe - see
+    // page_indicator.rs's own module doc comment), so this page alone
+    // needs extra bottom room to keep its own content from running
+    // underneath that bar. Only this page's margin grows - a regular
+    // widget page is unaffected.
+    root.set_margin_bottom(24 + crate::page_indicator::RESERVED_HEIGHT_PX);
     root.set_margin_start(24);
     root.set_margin_end(24);
 

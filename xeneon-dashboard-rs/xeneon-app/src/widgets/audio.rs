@@ -68,6 +68,39 @@ fn truncate(text: &str, max_chars: usize) -> String {
     short
 }
 
+// Resolved relative to this crate's own source directory, like
+// `i18n_runtime::init`'s `locales_dir` - reliable under `cargo run`/
+// `cargo build` regardless of the process's current working directory.
+const EMPTY_STATE_ICON_PATH: &str = "assets/audio-empty.svg";
+
+thread_local! {
+    // Loaded once and reused by every AudioContent instance rather than
+    // re-decoding the SVG from disk per widget - it never changes, so
+    // there's nothing to invalidate. `RefCell<Option<...>>` rather than
+    // a plain `OnceCell` because a failed load (missing file, no SVG
+    // loader available) still needs to cache the "gave up" result too,
+    // not retry on every single widget construction.
+    static EMPTY_STATE_TEXTURE: RefCell<Option<Option<gtk::gdk::Texture>>> = RefCell::new(None);
+}
+
+/// The illustration shown in place of the album art when no MPRIS player
+/// is active - `None` if the SVG failed to load (missing file, or no SVG
+/// support in the system's gdk-pixbuf), in which case the empty state
+/// just falls back to text only.
+fn empty_state_texture() -> Option<gtk::gdk::Texture> {
+    EMPTY_STATE_TEXTURE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none() {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(EMPTY_STATE_ICON_PATH);
+            let texture = gtk::gdk::Texture::from_filename(&path)
+                .inspect_err(|err| eprintln!("xeneon-dashboard: failed to load {}: {err}", path.display()))
+                .ok();
+            *cell = Some(texture);
+        }
+        cell.clone().unwrap()
+    })
+}
+
 static INSTALL_CSS: Once = Once::new();
 
 /// One shared, display-wide stylesheet - like `dummy.rs`'s `ensure_css_installed`,
@@ -252,6 +285,7 @@ struct AudioState {
     bottom: gtk::Box,
     title_label: gtk::Label,
     artist_label: gtk::Label,
+    empty_box: gtk::Box,
     empty_label: gtk::Label,
     elapsed_label: gtk::Label,
     duration_label: gtk::Label,
@@ -265,7 +299,7 @@ impl AudioState {
     fn set_has_player(&self, has_player: bool) {
         self.badge.set_visible(has_player);
         self.bottom.set_visible(has_player);
-        self.empty_label.set_visible(!has_player);
+        self.empty_box.set_visible(!has_player);
         if !has_player {
             self.background.set_paintable(gtk::gdk::Paintable::NONE);
         }
@@ -533,11 +567,29 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
     badge.append(&badge_label);
     overlay.add_overlay(&badge);
 
+    let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    empty_box.set_hexpand(true);
+    empty_box.set_vexpand(true);
+    // The icon is a vector (SVG), so - unlike the JPEG/PNG album art -
+    // it can just grow to fill the card with no quality loss. `Cover`
+    // (not `Contain`) crops it flush to the widget's own aspect ratio
+    // instead of letterboxing, which would otherwise show the card's own
+    // background color in the gap on the wider/taller side.
+    let empty_icon = gtk::Picture::new();
+    empty_icon.set_content_fit(gtk::ContentFit::Cover);
+    empty_icon.set_hexpand(true);
+    empty_icon.set_vexpand(true);
+    empty_icon.set_can_shrink(true);
+    if let Some(texture) = empty_state_texture() {
+        empty_icon.set_paintable(Some(&texture));
+    }
+    empty_box.append(&empty_icon);
     let empty_label = gtk::Label::new(None);
     empty_label.add_css_class("xeneon-audio-empty");
     empty_label.set_halign(gtk::Align::Center);
-    empty_label.set_valign(gtk::Align::Center);
-    overlay.add_overlay(&empty_label);
+    empty_label.set_margin_bottom(16);
+    empty_box.append(&empty_label);
+    overlay.add_overlay(&empty_box);
 
     let bottom = gtk::Box::new(gtk::Orientation::Vertical, 4);
     bottom.set_valign(gtk::Align::End);
@@ -608,6 +660,7 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
         bottom,
         title_label,
         artist_label,
+        empty_box,
         empty_label,
         elapsed_label,
         duration_label,
