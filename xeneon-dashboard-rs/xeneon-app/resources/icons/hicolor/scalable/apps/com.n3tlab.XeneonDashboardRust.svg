@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Fond sombre style Dark Mode / Desktop App -->
+    <radialGradient id="bgGlow" cx="50%" cy="50%" r="75%">
+      <stop offset="0%" stop-color="#161823"/>
+      <stop offset="100%" stop-color="#090a0f"/>
+    </radialGradient>
+
+    <!-- Dégradé dynamique du contour de l'écran Edge (Cyan & Violet) -->
+    <linearGradient id="edgeBorder" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00f2fe"/>
+      <stop offset="50%" stop-color="#7f00ff"/>
+      <stop offset="100%" stop-color="#e100ff"/>
+    </linearGradient>
+
+    <!-- Dégradé pour les widgets internes -->
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00c6ff"/>
+      <stop offset="100%" stop-color="#0072ff"/>
+    </linearGradient>
+
+    <!-- Ombre et lueur néon -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#00f2fe" flood-opacity="0.3"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#e100ff" flood-opacity="0.2"/>
+    </filter>
+  </defs>
+
+  <!-- Fond avec coins arrondis (icône d'application) -->
+  <rect width="512" height="512" rx="110" fill="url(#bgGlow)"/>
+  <rect width="510" height="510" x="1" y="1" rx="109" fill="none" stroke="#252836" stroke-width="2"/>
+
+  <!-- Groupe principal centrée (L'écran Ultrawide Xeneon Edge) -->
+  <g filter="url(#glow)">
+
+    <!-- Chassis de l'écran Xeneon Edge (Ratio Ultrawide 32:9) -->
+    <rect x="56" y="196" width="400" height="120" rx="16" fill="#0d0e15" stroke="url(#edgeBorder)" stroke-width="6"/>
+
+    <!-- Ligne de séparation ou biseau sous le châssis -->
+    <path d="M 120,324 L 392,324" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.15"/>
+
+    <!-- Éléments d'interface / Widgets tactiles sur l'écran -->
+    
+    <!-- Widget 1 : Jauge de volume / CPU (Gauche) -->
+    <rect x="86" y="226" width="60" height="60" rx="10" fill="#151724" stroke="#2b2e42" stroke-width="2"/>
+    <path d="M 100,266 C 100,246 132,246 132,266" fill="none" stroke="url(#accentGrad)" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="116" cy="256" r="4" fill="#00f2fe"/>
+
+    <!-- Widget 2 : Panneau de contrôle central (Graphique / Sliders) -->
+    <rect x="162" y="226" width="188" height="60" rx="10" fill="#151724" stroke="#2b2e42" stroke-width="2"/>
+    
+    <!-- Sliders tactiles -->
+    <line x1="182" y1="244" x2="330" y2="244" stroke="#232638" stroke-width="6" stroke-linecap="round"/>
+    <line x1="182" y1="244" x2="270" y2="244" stroke="#00f2fe" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="270" cy="244" r="7" fill="#ffffff"/>
+
+    <line x1="182" y1="268" x2="330" y2="268" stroke="#232638" stroke-width="6" stroke-linecap="round"/>
+    <line x1="182" y1="268" x2="230" y2="268" stroke="#e100ff" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="230" cy="268" r="7" fill="#ffffff"/>
+
+    <!-- Widget 3 : Boutons d'action rapides (Droite) -->
+    <rect x="366" y="226" width="60" height="60" rx="10" fill="#151724" stroke="#2b2e42" stroke-width="2"/>
+    <!-- Icône d'éclair / Macro -->
+    <path d="M 398,238 L 388,256 L 397,256 L 394,274 L 404,256 L 395,256 Z" fill="#e100ff"/>
+
+  </g>
+</svg>

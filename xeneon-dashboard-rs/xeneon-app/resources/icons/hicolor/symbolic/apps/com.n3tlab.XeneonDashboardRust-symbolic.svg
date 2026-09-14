@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Icône de status bar / Tray (Monochrome 24x24) -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Contour de l'écran Ultrawide Xeneon Edge -->
+    <rect x="2" y="7" width="20" height="10" rx="2" stroke-width="2"/>
+    
+    <!-- Éléments internes représentatifs (Widgets/Dashboard) -->
+    <!-- Widget CPU / Jauge -->
+    <path d="M 5,12 A 2,2 0 0,1 9,12" stroke-width="1.5"/>
+    <circle cx="7" cy="12" r="0.5" fill="#ffffff"/>
+    
+    <!-- Sliders tactiles -->
+    <line x1="11" y1="10.5" x2="15" y2="10.5" stroke-width="1.5"/>
+    <line x1="11" y1="13.5" x2="14" y2="13.5" stroke-width="1.5"/>
+    
+    <!-- Bouton / Macro -->
+    <rect x="17" y="10" width="3" height="4" rx="0.5" stroke-width="1"/>
+  </g>
+</svg>

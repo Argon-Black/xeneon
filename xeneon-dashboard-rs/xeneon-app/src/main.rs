@@ -55,6 +55,11 @@ use grid_widget::WidgetGrid;
 const WINDOW_WIDTH: i32 = 2560;
 const WINDOW_HEIGHT: i32 = 720;
 
+/// GApplication id, also reused as the icon name below - both need to
+/// agree so a future .desktop file's `Icon=` key (conventionally set to
+/// the app id) resolves to the same icon this window already uses.
+const APP_ID: &str = "com.n3tlab.XeneonDashboardRust";
+
 /// Hard cap on real (non-dev, non-settings) pages, matching the limit the
 /// user asked for so a runaway sequence of "add a widget" calls can't
 /// grow the carousel without bound. Past this, `AddWidget` shows a toast
@@ -327,7 +332,12 @@ impl SimpleComponent for AppModel {
         // while building it. Detected *before* building the model so
         // `fullscreened` starts true (hiding the header bar below)
         // instead of only becoming true after a subsequent F11 toggle.
-        let xeneon = gtk::gdk::Display::default().and_then(|d| xeneon_monitor(&d));
+        let display = gtk::gdk::Display::default();
+        if let Some(display) = &display {
+            register_app_icon(display);
+        }
+
+        let xeneon = display.and_then(|d| xeneon_monitor(&d));
         let fullscreened = xeneon.is_some();
         header_bar.set_visible(!fullscreened);
 
@@ -536,7 +546,26 @@ fn xeneon_monitor(display: &gtk::gdk::Display) -> Option<gtk::gdk::Monitor> {
     })
 }
 
+/// Points the icon theme at `resources/icons/hicolor/...` (freedesktop
+/// hicolor layout - `scalable/apps/<name>.svg`, `symbolic/apps/<name>-symbolic.svg`)
+/// and sets the app icon name from that lookup, so both the window and
+/// (once one exists) a future tray icon resolve "com.n3tlab.XeneonDashboardRust"
+/// the same way an installed .desktop file's `Icon=` key would.
+///
+/// Resolved from `CARGO_MANIFEST_DIR` at compile time rather than an
+/// installed system path - there's no packaging/install step yet (see
+/// CLAUDE.md's Flatpak notes), so this only works run from a source
+/// checkout (`cargo run`/the built binary staying next to its source
+/// tree). Revisit this once packaging exists: an installed icon would
+/// live under `/usr/share/icons/hicolor/...` or a Flatpak's equivalent,
+/// found by the icon theme automatically with no search path needed.
+fn register_app_icon(display: &gtk::gdk::Display) {
+    let icons_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/icons");
+    gtk::IconTheme::for_display(display).add_search_path(icons_dir);
+    gtk::Window::set_default_icon_name(APP_ID);
+}
+
 fn main() {
-    let app = RelmApp::new("com.n3tlab.XeneonDashboardRust");
+    let app = RelmApp::new(APP_ID);
     app.run::<AppModel>(());
 }
