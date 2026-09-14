@@ -73,6 +73,19 @@ fn truncate(text: &str, max_chars: usize) -> String {
 // `cargo build` regardless of the process's current working directory.
 const EMPTY_STATE_ICON_PATH: &str = "assets/audio-empty.svg";
 
+// `Texture::from_file` (what a raster file needs) rasterizes an SVG with
+// no explicit target size at its own `viewBox` - 256px here - then GTK
+// upscales that fixed bitmap ~3x to cover a SIZE_L card, which is exactly
+// as blurry as stretching a 256px PNG would be: a vector source doesn't
+// help once it's been turned into a bitmap at the wrong resolution.
+// Rasterizing once at this larger, fixed size up front (via
+// `Pixbuf::from_file_at_size`, which asks the SVG loader to render
+// directly at that resolution) instead keeps it crisp - comfortably
+// above SIZE_L's own footprint, so even the largest widget never
+// upscales it, and any smaller size (SQ/M, once ported) only ever
+// downscales, which doesn't blur.
+const EMPTY_STATE_ICON_RASTER_PX: i32 = 768;
+
 thread_local! {
     // Loaded once and reused by every AudioContent instance rather than
     // re-decoding the SVG from disk per widget - it never changes, so
@@ -92,7 +105,8 @@ fn empty_state_texture() -> Option<gtk::gdk::Texture> {
         let mut cell = cell.borrow_mut();
         if cell.is_none() {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(EMPTY_STATE_ICON_PATH);
-            let texture = gtk::gdk::Texture::from_filename(&path)
+            let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&path, EMPTY_STATE_ICON_RASTER_PX, EMPTY_STATE_ICON_RASTER_PX)
+                .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
                 .inspect_err(|err| eprintln!("xeneon-dashboard: failed to load {}: {err}", path.display()))
                 .ok();
             *cell = Some(texture);
@@ -124,12 +138,12 @@ fn ensure_css_installed() {
              .xeneon-audio-badge-label { color: #ffffff; font-size: 20px; }\n\
              .xeneon-audio-title { color: #ffffff; font-size: 22px; font-weight: 700; }\n\
              .xeneon-audio-subtitle { color: rgba(255, 255, 255, 0.75); font-size: 20px; }\n\
-             .xeneon-audio-time { color: rgba(255, 255, 255, 0.75); font-size: 11px; }\n\
+             .xeneon-audio-time { color: rgba(255, 255, 255, 0.75); font-size: 15px; }\n\
              .xeneon-audio-empty { color: rgba(255, 255, 255, 0.6); }\n\
              .xeneon-audio-transport { color: #ffffff; }\n\
              .xeneon-audio-play-button {\
                background-color: rgba(15, 15, 15, 0.85); color: #ffffff;\
-               min-width: 44px; min-height: 44px; border-radius: 999px;\
+               min-width: 56px; min-height: 56px; border-radius: 999px;\
              }\n\
              .xeneon-audio-play-button:hover { background-color: rgba(0, 0, 0, 0.95); }\n\
              .xeneon-audio-progress trough { min-height: 4px; }\n",
@@ -285,13 +299,19 @@ struct AudioState {
     bottom: gtk::Box,
     title_label: gtk::Label,
     artist_label: gtk::Label,
-    empty_box: gtk::Box,
     empty_label: gtk::Label,
     elapsed_label: gtk::Label,
     duration_label: gtk::Label,
     progress_scale: gtk::Scale,
     prev_button: gtk::Button,
     play_button: gtk::Button,
+    // The play/pause icon toggles at runtime (see refresh_active_display)
+    // - kept as its own handle rather than going through
+    // `play_button.set_icon_name()`, which would replace the button's
+    // child with GTK's own auto-managed image at the *default* icon
+    // size, silently undoing the explicit `set_pixel_size` this image
+    // was given in `build_content`.
+    play_icon: gtk::Image,
     next_button: gtk::Button,
 }
 
@@ -299,9 +319,19 @@ impl AudioState {
     fn set_has_player(&self, has_player: bool) {
         self.badge.set_visible(has_player);
         self.bottom.set_visible(has_player);
-        self.empty_box.set_visible(!has_player);
+        self.empty_label.set_visible(!has_player);
         if !has_player {
-            self.background.set_paintable(gtk::gdk::Paintable::NONE);
+            // Reuses the same `background` Picture album art uses (rather
+            // than a separate icon widget layered on top) specifically so
+            // it's guaranteed to fill the card exactly the same way art
+            // already does - a separate overlay-child box ended up short
+            // of the card's full bounds, leaving a gap at the bottom
+            // (visible as the card's own background color showing
+            // through once someone picks a non-default one).
+            match empty_state_texture() {
+                Some(texture) => self.background.set_paintable(Some(&texture)),
+                None => self.background.set_paintable(gtk::gdk::Paintable::NONE),
+            }
         }
     }
 
@@ -461,7 +491,7 @@ impl AudioState {
         self.progress_scale.set_sensitive(length_seconds > 0.0);
 
         let playing = player.playback_status() == "Playing";
-        self.play_button.set_icon_name(if playing { "media-playback-pause-symbolic" } else { "media-playback-start-symbolic" });
+        self.play_icon.set_icon_name(Some(if playing { "media-playback-pause-symbolic" } else { "media-playback-start-symbolic" }));
         self.play_button.set_tooltip_text(Some(&i18n::t(if playing { "widgets.audio.pause" } else { "widgets.audio.play" })));
 
         if resync_position {
@@ -567,29 +597,14 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
     badge.append(&badge_label);
     overlay.add_overlay(&badge);
 
-    let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    empty_box.set_hexpand(true);
-    empty_box.set_vexpand(true);
-    // The icon is a vector (SVG), so - unlike the JPEG/PNG album art -
-    // it can just grow to fill the card with no quality loss. `Cover`
-    // (not `Contain`) crops it flush to the widget's own aspect ratio
-    // instead of letterboxing, which would otherwise show the card's own
-    // background color in the gap on the wider/taller side.
-    let empty_icon = gtk::Picture::new();
-    empty_icon.set_content_fit(gtk::ContentFit::Cover);
-    empty_icon.set_hexpand(true);
-    empty_icon.set_vexpand(true);
-    empty_icon.set_can_shrink(true);
-    if let Some(texture) = empty_state_texture() {
-        empty_icon.set_paintable(Some(&texture));
-    }
-    empty_box.append(&empty_icon);
+    // Just a caption over the empty-state icon (set on `background`
+    // itself in `set_has_player` - see that method's comment for why).
     let empty_label = gtk::Label::new(None);
     empty_label.add_css_class("xeneon-audio-empty");
     empty_label.set_halign(gtk::Align::Center);
-    empty_label.set_margin_bottom(16);
-    empty_box.append(&empty_label);
-    overlay.add_overlay(&empty_box);
+    empty_label.set_valign(gtk::Align::End);
+    empty_label.set_margin_bottom(20);
+    overlay.add_overlay(&empty_label);
 
     let bottom = gtk::Box::new(gtk::Orientation::Vertical, 4);
     bottom.set_valign(gtk::Align::End);
@@ -628,18 +643,24 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
     let transport_row = gtk::Box::new(gtk::Orientation::Horizontal, 20);
     transport_row.set_halign(gtk::Align::Center);
     transport_row.set_margin_top(8);
-    let make_transport_button = |icon_name: &str| {
-        let button = gtk::Button::from_icon_name(icon_name);
+    // Built from a plain `Image` (not `Button::from_icon_name`, which
+    // only offers GTK's default icon size) so the icon glyph itself can
+    // be sized independently of the button's own min-width/height.
+    let make_transport_button = |icon_name: &str, pixel_size: i32| {
+        let button = gtk::Button::new();
         button.add_css_class("flat");
         button.add_css_class("circular");
         button.add_css_class("xeneon-audio-transport");
-        button
+        let image = gtk::Image::from_icon_name(icon_name);
+        image.set_pixel_size(pixel_size);
+        button.set_child(Some(&image));
+        (button, image)
     };
-    let prev_button = make_transport_button("media-skip-backward-symbolic");
-    let play_button = make_transport_button("media-playback-start-symbolic");
+    let (prev_button, _prev_icon) = make_transport_button("media-skip-backward-symbolic", 26);
+    let (play_button, play_icon) = make_transport_button("media-playback-start-symbolic", 30);
     play_button.add_css_class("xeneon-audio-play-button");
     play_button.remove_css_class("xeneon-audio-transport");
-    let next_button = make_transport_button("media-skip-forward-symbolic");
+    let (next_button, _next_icon) = make_transport_button("media-skip-forward-symbolic", 26);
     transport_row.append(&prev_button);
     transport_row.append(&play_button);
     transport_row.append(&next_button);
@@ -660,13 +681,13 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
         bottom,
         title_label,
         artist_label,
-        empty_box,
         empty_label,
         elapsed_label,
         duration_label,
         progress_scale,
         prev_button,
         play_button,
+        play_icon,
         next_button,
     });
     state.set_has_player(false);
