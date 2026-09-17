@@ -463,12 +463,24 @@ impl ShortcutsState {
             let segment = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             segment.add_css_class(&self.backdrop_css_class);
             segment.add_css_class(&corner_class);
-            let x0 = self.cell_x(min_col) - pad;
-            let y0 = self.cell_y(row) - pad;
-            let x1 = self.cell_x(max_col) + self.cell_w + pad;
-            let y1 = self.cell_y(row) + self.cell_h + pad;
-            segment.set_size_request((x1 - x0).round() as i32, (y1 - y0).round() as i32);
-            self.fixed.put(&segment, x0, y0);
+            // Round every edge to a whole pixel *before* taking
+            // differences, rather than rounding the position and size
+            // separately from the raw floats - two adjoining rows share
+            // the exact same boundary expression (row A's bottom edge and
+            // row B's top edge both reduce to `cell_y(rowA) + cell_h +
+            // GAP/2`), so rounding that one shared value once and reusing
+            // it guarantees both segments agree on the seam to the pixel.
+            // Rounding width/height independently from an unrounded
+            // position (the previous version of this code) let the two
+            // edges round to *different* pixels, showing as a hairline
+            // seam between two rows that were supposed to look like one
+            // continuous panel - reported on real hardware.
+            let x0 = (self.cell_x(min_col) - pad).round() as i32;
+            let y0 = (self.cell_y(row) - pad).round() as i32;
+            let x1 = (self.cell_x(max_col) + self.cell_w + pad).round() as i32;
+            let y1 = (self.cell_y(row) + self.cell_h + pad).round() as i32;
+            segment.set_size_request(x1 - x0, y1 - y0);
+            self.fixed.put(&segment, x0 as f64, y0 as f64);
             // New children land on top by default (last = painted last) -
             // move each segment to the very back so it never covers a tile.
             segment.insert_after(&self.fixed, None::<&gtk::Widget>);
