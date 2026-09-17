@@ -122,14 +122,19 @@ fn family_label_key(family: &str) -> &'static str {
     }
 }
 
-/// Every CATALOG entry, bucketed by `size_family` and sorted narrowest
-/// first within each bucket (a stable sort, so entries of the same width
-/// keep CATALOG's own relative order) - mirrors `_grouped_catalog` in
-/// widget_picker.py. A family with nothing in it is omitted rather than
-/// shown as an empty section.
+/// Every CATALOG entry except the dummy placeholders (dev/test-only
+/// footprint fillers, never meant to be a real user-facing choice here),
+/// bucketed by `size_family` and sorted narrowest first within each bucket
+/// (a stable sort, so entries of the same width keep CATALOG's own
+/// relative order) - mirrors `_grouped_catalog` in widget_picker.py. A
+/// family with nothing in it is omitted rather than shown as an empty
+/// section.
 fn grouped_catalog() -> Vec<(&'static str, Vec<&'static WidgetDescriptor>)> {
     let mut buckets: [Vec<&'static WidgetDescriptor>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for descriptor in CATALOG {
+        if descriptor.kind.starts_with("dummy_") {
+            continue;
+        }
         let index = FAMILY_ORDER.iter().position(|&f| f == size_family(descriptor.size)).unwrap();
         buckets[index].push(descriptor);
     }
