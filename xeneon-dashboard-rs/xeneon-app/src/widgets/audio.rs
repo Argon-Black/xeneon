@@ -410,19 +410,26 @@ impl AudioState {
         }
     }
 
-    /// A pinned `preferred_bus_name` wins as long as that player is still
-    /// around; otherwise, whichever is `Playing` wins, falling back to
-    /// whatever was discovered first if nothing is.
+    /// A pinned `preferred_bus_name` is shown exclusively - if it isn't
+    /// currently running, the widget goes to its empty state rather than
+    /// falling back to showing some *other* player, which would defeat
+    /// the point of pinning one in the first place (that fallback was
+    /// the original behavior - changed after the user found it
+    /// confusing to see an unrelated player show up whenever their
+    /// pinned one wasn't open). With no pin at all, auto-follow applies:
+    /// whichever player is `Playing` wins, falling back to whatever was
+    /// discovered first if nothing is.
     fn pick_active_player(self: &Rc<Self>) {
         let candidate = {
             let players = self.players.borrow();
-            self.preferred_bus_name
-                .borrow()
-                .as_ref()
-                .and_then(|name| players.get(name))
-                .cloned()
-                .or_else(|| players.values().find(|p| p.playback_status() == "Playing").cloned())
-                .or_else(|| players.values().next().cloned())
+            match self.preferred_bus_name.borrow().as_ref() {
+                Some(preferred) => players.get(preferred).cloned(),
+                None => players
+                    .values()
+                    .find(|p| p.playback_status() == "Playing")
+                    .cloned()
+                    .or_else(|| players.values().next().cloned()),
+            }
         };
         let changed = {
             let active = self.active.borrow();
@@ -962,27 +969,19 @@ fn build_settings(state: Rc<AudioState>) -> (gtk::Widget, Box<dyn Fn()>) {
     // back to the right bus name (or lack of one).
     let entries: Rc<RefCell<Vec<Option<String>>>> = Rc::new(RefCell::new(vec![None]));
 
-    let refresh: Rc<dyn Fn()> = Rc::new({
-        let state = state.clone();
-        let dropdown = dropdown.clone();
-        let entries = entries.clone();
-        move || {
-            let mut names = vec![i18n::t("widgets.audio.settings.player_auto")];
-            let mut list: Vec<Option<String>> = vec![None];
-            for (bus_name, identity) in state.player_list() {
-                names.push(identity);
-                list.push(Some(bus_name));
-            }
-            let current = state.preferred_bus_name.borrow().clone();
-            let selected_index = list.iter().position(|entry| *entry == current).unwrap_or(0);
-            dropdown.set_model(Some(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>())));
-            dropdown.set_selected(selected_index as u32);
-            *entries.borrow_mut() = list;
-        }
-    });
-    refresh();
-
-    dropdown.connect_selected_notify({
+    // Connected before `refresh` exists, so `refresh` can block it for
+    // the duration of its own programmatic `set_selected` call below -
+    // without that, the pinned player briefly not being in `player_list`
+    // (e.g. simply not launched yet at app startup, or quit and not
+    // restarted) would make refresh() fall back to the "Automatic" row
+    // *exactly like a real user pick would*, since GTK's "selected"
+    // notify doesn't distinguish the two. That silently overwrote a
+    // valid saved preference with "Automatic" - not just in this
+    // popover's display, but for real the next time anything saved this
+    // widget's state (closing the popover, moving it...), since this
+    // same dropdown is what feeds set_preferred_player.
+    let selected_handler = Rc::new(RefCell::new(None));
+    let handler = dropdown.connect_selected_notify({
         let state = state.clone();
         let entries = entries.clone();
         move |dropdown| {
@@ -992,6 +991,32 @@ fn build_settings(state: Rc<AudioState>) -> (gtk::Widget, Box<dyn Fn()>) {
             }
         }
     });
+    *selected_handler.borrow_mut() = Some(handler);
+
+    let refresh: Rc<dyn Fn()> = Rc::new({
+        let state = state.clone();
+        let dropdown = dropdown.clone();
+        let entries = entries.clone();
+        let selected_handler = selected_handler.clone();
+        move || {
+            let mut names = vec![i18n::t("widgets.audio.settings.player_auto")];
+            let mut list: Vec<Option<String>> = vec![None];
+            for (bus_name, identity) in state.player_list() {
+                names.push(identity);
+                list.push(Some(bus_name));
+            }
+            let current = state.preferred_bus_name.borrow().clone();
+            let selected_index = list.iter().position(|entry| *entry == current).unwrap_or(0);
+            let handler_ref = selected_handler.borrow();
+            let handler = handler_ref.as_ref().expect("connected above, before this closure can run");
+            dropdown.block_signal(handler);
+            dropdown.set_model(Some(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>())));
+            dropdown.set_selected(selected_index as u32);
+            dropdown.unblock_signal(handler);
+            *entries.borrow_mut() = list;
+        }
+    });
+    refresh();
 
     // Same reasoning as AudioContent's own player list: refreshed on a
     // timer rather than only when this popover happens to be reopened,
