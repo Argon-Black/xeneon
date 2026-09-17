@@ -139,6 +139,11 @@
   "widgets.agenda.months_long.oct": "octobre",
   "widgets.agenda.months_long.nov": "novembre",
   "widgets.agenda.months_long.dec": "décembre",
+  "widgets.agenda.all_day": "Toute la journée",
+  "widgets.agenda.settings.calendars": "Calendriers",
+  "widgets.agenda.settings.no_calendars": "Aucun calendrier trouvé - active-en un dans Réglages > Comptes en ligne.",
+  "widgets.agenda.settings.weekend_color": "Couleur week-end",
+  "widgets.agenda.settings.content_scale": "Taille du contenu",
 
   "widgets.weather.title": "Météo",
   "widgets.weather.loading": "Chargement…",

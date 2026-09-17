@@ -139,6 +139,11 @@
   "widgets.agenda.months_long.oct": "October",
   "widgets.agenda.months_long.nov": "November",
   "widgets.agenda.months_long.dec": "December",
+  "widgets.agenda.all_day": "All day",
+  "widgets.agenda.settings.calendars": "Calendars",
+  "widgets.agenda.settings.no_calendars": "No calendar found - enable one in Settings > Online Accounts.",
+  "widgets.agenda.settings.weekend_color": "Weekend color",
+  "widgets.agenda.settings.content_scale": "Content size",
 
   "widgets.weather.title": "Weather",
   "widgets.weather.loading": "Loading…",
