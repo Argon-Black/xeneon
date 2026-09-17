@@ -12,9 +12,10 @@
 //! (source badge, album art, title, artist), a click-to-seek progress bar,
 //! transport controls (previous/play-pause/next), `AudioSettings` (pin a
 //! specific player instead of auto-following whichever is `Playing`) with
-//! `to_dict`/`apply_dict` persistence, and now both `SIZE_L` and `SIZE_SQ`
-//! (registered as separate kinds, "audio_l"/"audio_sq", sharing every bit
-//! of this code - see `spawn_l`/`spawn_sq` at the bottom). `Position` isn't
+//! `to_dict`/`apply_dict` persistence, and now `SIZE_L`, `SIZE_M` and
+//! `SIZE_SQ` (registered as separate kinds, "audio_l"/"audio_m"/
+//! "audio_sq", sharing every bit of this code - see `spawn_l`/`spawn_m`/
+//! `spawn_sq` at the bottom). `Position` isn't
 //! covered by MPRIS's own `PropertiesChanged` signal (excluded by the spec
 //! itself, since it'd fire continuously during playback) - handled the
 //! same way as the Python original: fetched on demand (player picked/
@@ -46,7 +47,7 @@ use std::sync::Once;
 
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::WidgetInstance;
-use xeneon_core::grid::{Size, SIZE_L, SIZE_SQ};
+use xeneon_core::grid::{Size, SIZE_L, SIZE_M, SIZE_SQ};
 
 const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
@@ -649,6 +650,8 @@ impl AudioState {
 
     fn retranslate(&self) {
         self.empty_label.set_label(&i18n::t("widgets.audio.empty"));
+        self.prev_button.set_tooltip_text(Some(&i18n::t("widgets.audio.previous")));
+        self.next_button.set_tooltip_text(Some(&i18n::t("widgets.audio.next")));
         // Re-run in full rather than just the empty-state label: the
         // "unknown title/unknown artist" fallbacks and the play/pause
         // tooltip are translated text too, and need updating just as live
@@ -903,6 +906,10 @@ fn build_content(size: Size) -> (Rc<AudioState>, gtk::Widget) {
     }
 
     state.discover_players();
+    // Sets the initial empty-state text and prev/next tooltips - without
+    // this, they'd stay blank/unset until the next actual language
+    // switch, since on_change below only fires on a *future* one.
+    state.retranslate();
 
     i18n::on_change({
         let state = state.clone();
@@ -1045,4 +1052,10 @@ pub fn spawn_sq() -> WidgetInstance {
 }
 pub fn restore_sq(data: &serde_json::Value) -> WidgetInstance {
     restore_at(SIZE_SQ, data)
+}
+pub fn spawn_m() -> WidgetInstance {
+    spawn_at(SIZE_M)
+}
+pub fn restore_m(data: &serde_json::Value) -> WidgetInstance {
+    restore_at(SIZE_M, data)
 }

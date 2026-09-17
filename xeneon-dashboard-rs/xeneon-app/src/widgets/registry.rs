@@ -56,6 +56,13 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         restore: crate::widgets::audio::restore_l,
     },
     WidgetDescriptor {
+        kind: "audio_m",
+        title_key: "widgets.audio.title",
+        size: SIZE_M,
+        spawn: crate::widgets::audio::spawn_m,
+        restore: crate::widgets::audio::restore_m,
+    },
+    WidgetDescriptor {
         kind: "audio_sq",
         title_key: "widgets.audio.title",
         size: SIZE_SQ,
