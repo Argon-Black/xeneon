@@ -463,7 +463,16 @@ fn move_icon(state: &Rc<ShortcutsState>, tile: &Rc<IconTile>, col: i32, row: i32
     icon.row = row;
     state.icons.borrow_mut().insert(new_key, icon);
 
-    if let Some(tile_rc) = state.tiles.borrow_mut().remove(&old_key) {
+    // Split into two statements rather than `if let Some(x) =
+    // state.tiles.borrow_mut().remove(...) { state.tiles.borrow_mut()... }`
+    // - the temporary RefMut from the condition's own borrow_mut() lives
+    // for the whole if-let block (Rust extends a condition's temporaries
+    // to the block's scope), so a second borrow_mut() inside that block
+    // panics with "RefCell already borrowed" (hit on real hardware moving
+    // an icon a second time). A `let` statement's temporary is dropped
+    // immediately after it, before the `if let` below ever runs.
+    let moved_tile = state.tiles.borrow_mut().remove(&old_key);
+    if let Some(tile_rc) = moved_tile {
         state.tiles.borrow_mut().insert(new_key, tile_rc);
     }
     tile.col.set(col);
