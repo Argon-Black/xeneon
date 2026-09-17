@@ -274,6 +274,19 @@ impl WidgetGrid {
         self.save_page_state();
     }
 
+    /// Persists this page's current state (id/index/name) immediately -
+    /// exposed so a caller that just created a brand-new page (see
+    /// `AppModel::create_page` in main.rs) can give it a `pages/<id>.json`
+    /// file right away, rather than leaving it unpersisted until the user
+    /// happens to rename it or add a widget (whose own save records the
+    /// page_index but not the page itself). A no-op for a genuinely empty,
+    /// unnamed page is pointless to distinguish from "not yet touched" -
+    /// writing the file either way is what makes an intentionally-created
+    /// empty page actually survive a restart.
+    pub fn save_state(&self) {
+        self.save_page_state();
+    }
+
     fn save_page_state(&self) {
         if !self.persist {
             return;

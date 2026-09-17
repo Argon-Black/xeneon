@@ -505,6 +505,15 @@ impl AppModel {
         let new_index = self.real_grids.len();
         let grid = WidgetGrid::new(PAGE_W, PAGE_H, new_index, self.widgets_dir.clone(), self.pages_dir.clone());
         grid.set_background_image(config_store::get().app_background_image_path.as_deref());
+        // Without this, a page with no name and no widgets on it yet has no
+        // pages/<id>.json and no widgets/<id>.json referencing its index -
+        // nothing on disk points back to it at all, so it silently vanishes
+        // on the next restart (init()'s page_count is derived from the max
+        // page_index seen across both files). Saving here the moment the
+        // page is created - not just later on rename - is what makes an
+        // intentionally-added empty page (the whole point of the "+"
+        // button/AddPage) actually survive a restart.
+        grid.save_state();
         let grid = Rc::new(grid);
         register_page_emptied(&grid, sender);
         self._page_indicator.register_page(grid.widget(), grid.clone());
