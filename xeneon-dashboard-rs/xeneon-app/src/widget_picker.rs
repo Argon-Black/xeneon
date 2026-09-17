@@ -353,22 +353,29 @@ impl WidgetPicker {
             label.set_halign(gtk::Align::Start);
             section.append(&label);
 
-            let flow = gtk::FlowBox::new();
-            flow.set_selection_mode(gtk::SelectionMode::None);
-            flow.set_homogeneous(false);
-            flow.set_row_spacing(GAP as u32);
-            flow.set_column_spacing(GAP as u32);
-            flow.set_halign(gtk::Align::Start);
-            flow.set_max_children_per_line(1000);
+            // A plain (non-wrapping) Box, not FlowBox: every entry in
+            // `entries` now shares the exact same preset (grouped_catalog
+            // groups by exact size, not just a broad family - see that
+            // function's own doc comment), so there's no reflow-to-
+            // multiple-lines need FlowBox exists for. Switched to this
+            // after FlowBox's own row-height negotiation - shared across
+            // every child in a line even with homogeneous(false), which
+            // only turns off shared *column width* - produced a bizarre
+            // square allocation for two SIZE_M tiles sharing a row
+            // (830x830 measured, instead of 832x336) neither of their own
+            // intrinsic sizes explains. A Box lays out each child at its
+            // own request with no such cross-child height coupling.
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, GAP);
+            row.set_halign(gtk::Align::Start);
             for descriptor in entries {
                 let picker = self.clone();
                 let tile = build_tile(descriptor, move |kind| {
                     (picker.on_pick)(kind);
                     picker.close();
                 });
-                flow.append(&tile);
+                row.append(&tile);
             }
-            section.append(&flow);
+            section.append(&row);
 
             self.body.append(&section);
         }
