@@ -79,6 +79,8 @@
   "widgets.audio.pause": "Pause",
   "widgets.audio.previous": "Piste précédente",
   "widgets.audio.next": "Piste suivante",
+  "widgets.audio.settings.player": "Lecteur",
+  "widgets.audio.settings.player_auto": "Automatique",
 
   "widgets.cpu_temp.title": "Température système",
   "widgets.cpu_temp.label": "CPU",

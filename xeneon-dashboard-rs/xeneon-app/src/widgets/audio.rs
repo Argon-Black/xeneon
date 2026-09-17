@@ -37,7 +37,7 @@ use std::rc::Rc;
 use std::sync::Once;
 
 use crate::i18n_runtime as i18n;
-use crate::widgets::registry::{self, WidgetInstance};
+use crate::widgets::registry::WidgetInstance;
 
 const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
@@ -276,6 +276,12 @@ impl MprisPlayer {
 struct AudioState {
     players: RefCell<HashMap<String, Rc<MprisPlayer>>>,
     active: RefCell<Option<Rc<MprisPlayer>>>,
+    // Set via AudioSettings' dropdown - when present and still among
+    // `players`, it overrides the "whichever is Playing" auto-follow in
+    // `pick_active_player`. Not persisted yet (see the module doc
+    // comment) - resets to auto-follow on every restart until the next
+    // step wires up to_dict/apply_dict.
+    preferred_bus_name: RefCell<Option<String>>,
     // Kept so `NameOwnerChanged` watching stops - and its closure's
     // `Rc<AudioState>` clone is dropped - when the widget is torn down
     // (see the `connect_destroy` handler in `build_content`), rather than
@@ -335,17 +341,19 @@ impl AudioState {
         }
     }
 
-    /// First `Playing` player wins; with none playing, falls back to
-    /// whichever was discovered first. No "pin a specific player" option
-    /// yet - that's `AudioSettings`, deferred to a later step.
+    /// A pinned `preferred_bus_name` wins as long as that player is still
+    /// around; otherwise, whichever is `Playing` wins, falling back to
+    /// whatever was discovered first if nothing is.
     fn pick_active_player(self: &Rc<Self>) {
         let candidate = {
             let players = self.players.borrow();
-            players
-                .values()
-                .find(|p| p.playback_status() == "Playing")
-                .or_else(|| players.values().next())
+            self.preferred_bus_name
+                .borrow()
+                .as_ref()
+                .and_then(|name| players.get(name))
                 .cloned()
+                .or_else(|| players.values().find(|p| p.playback_status() == "Playing").cloned())
+                .or_else(|| players.values().next().cloned())
         };
         let changed = {
             let active = self.active.borrow();
@@ -359,6 +367,22 @@ impl AudioState {
             *self.active.borrow_mut() = candidate;
             self.refresh_active_display(true);
         }
+    }
+
+    /// Pins a specific player (by bus name) as the one always shown,
+    /// overriding auto-follow - `None` goes back to automatic. Called
+    /// from AudioSettings' dropdown.
+    fn set_preferred_player(self: &Rc<Self>, bus_name: Option<String>) {
+        *self.preferred_bus_name.borrow_mut() = bus_name;
+        self.pick_active_player();
+    }
+
+    /// `(bus_name, display identity)` for every currently known player -
+    /// what AudioSettings' dropdown lists, refreshed on its own timer
+    /// since players can appear/disappear at any time, not just while
+    /// the popover happens to be open.
+    fn player_list(&self) -> Vec<(String, String)> {
+        self.players.borrow().iter().map(|(bus_name, player)| (bus_name.clone(), player.identity())).collect()
     }
 
     fn add_player(self: &Rc<Self>, bus_name: &str) {
@@ -671,6 +695,7 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
     let state = Rc::new(AudioState {
         players: RefCell::new(HashMap::new()),
         active: RefCell::new(None),
+        preferred_bus_name: RefCell::new(None),
         subscription: RefCell::new(None),
         tick_id: RefCell::new(None),
         local_position: Cell::new(0.0),
@@ -791,9 +816,91 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
     (state, overlay.upcast())
 }
 
+/// Lets the user pin one specific player instead of auto-following
+/// whichever is currently `Playing` (see `AudioState::pick_active_player`).
+/// Returns a `resync` closure (matching Clock's `build_settings` shape)
+/// that re-reads the dropdown's selection from `state` - used by the
+/// appearance popover's reset button in a later step, and reused here
+/// for the initial fill too rather than duplicating that logic.
+fn build_settings(state: Rc<AudioState>) -> (gtk::Widget, Box<dyn Fn()>) {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    root.set_size_request(220, -1);
+
+    let label = gtk::Label::new(Some(&i18n::t("widgets.audio.settings.player")));
+    label.set_halign(gtk::Align::Start);
+    root.append(&label);
+
+    let dropdown = gtk::DropDown::new(None::<gtk::StringList>, None::<gtk::Expression>);
+    dropdown.set_hexpand(true);
+    root.append(&dropdown);
+
+    // Index 0 is always "Automatic" (`None`); index N+1 is the Nth
+    // entry from `player_list()` at the time of the last refresh - kept
+    // in lockstep with the dropdown's own model so a selected index maps
+    // back to the right bus name (or lack of one).
+    let entries: Rc<RefCell<Vec<Option<String>>>> = Rc::new(RefCell::new(vec![None]));
+
+    let refresh: Rc<dyn Fn()> = Rc::new({
+        let state = state.clone();
+        let dropdown = dropdown.clone();
+        let entries = entries.clone();
+        move || {
+            let mut names = vec![i18n::t("widgets.audio.settings.player_auto")];
+            let mut list: Vec<Option<String>> = vec![None];
+            for (bus_name, identity) in state.player_list() {
+                names.push(identity);
+                list.push(Some(bus_name));
+            }
+            let current = state.preferred_bus_name.borrow().clone();
+            let selected_index = list.iter().position(|entry| *entry == current).unwrap_or(0);
+            dropdown.set_model(Some(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>())));
+            dropdown.set_selected(selected_index as u32);
+            *entries.borrow_mut() = list;
+        }
+    });
+    refresh();
+
+    dropdown.connect_selected_notify({
+        let state = state.clone();
+        let entries = entries.clone();
+        move |dropdown| {
+            let index = dropdown.selected() as usize;
+            if let Some(entry) = entries.borrow().get(index) {
+                state.set_preferred_player(entry.clone());
+            }
+        }
+    });
+
+    // Same reasoning as AudioContent's own player list: refreshed on a
+    // timer rather than only when this popover happens to be reopened,
+    // since a player can appear/disappear at any time.
+    let refresh_id = glib::timeout_add_seconds_local(2, {
+        let refresh = refresh.clone();
+        move || {
+            refresh();
+            glib::ControlFlow::Continue
+        }
+    });
+    root.connect_destroy({
+        let refresh_id = RefCell::new(Some(refresh_id));
+        move |_| {
+            if let Some(id) = refresh_id.borrow_mut().take() {
+                id.remove();
+            }
+        }
+    });
+
+    let resync = {
+        let refresh = refresh.clone();
+        move || refresh()
+    };
+    (root.upcast(), Box::new(resync))
+}
+
 pub fn spawn() -> WidgetInstance {
-    let (_state, content) = build_content();
-    registry::instance_without_settings(content)
+    let (state, content) = build_content();
+    let (settings, _resync) = build_settings(state);
+    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(|| serde_json::Value::Null), on_reset: None }
 }
 
 pub fn restore(_data: &serde_json::Value) -> WidgetInstance {
