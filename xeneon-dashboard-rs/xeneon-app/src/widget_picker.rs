@@ -64,6 +64,17 @@ impl WidgetPicker {
 
         let surface = gtk::Box::new(gtk::Orientation::Vertical, 0);
         surface.add_css_class("xeneon-widget-picker-surface");
+        // Opaque, same mechanism (not just the same color) as every other
+        // page including Settings: "view" is the flat-background class
+        // main.rs applies to the root gtk::Overlay for the same reason
+        // (see its own comment) - reusing it here means this page always
+        // matches Settings/the dashboard's own background exactly, in
+        // light or dark, without hardcoding a color that could drift out
+        // of sync. Without it the surface was fully transparent (the
+        // xeneon-widget-picker-surface class above has no style rule of
+        // its own - kept as a hook for later polish, not for the
+        // background itself), which is the bug this fixes.
+        surface.add_css_class("view");
 
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header.add_css_class("xeneon-widget-picker-header");
