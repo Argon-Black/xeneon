@@ -77,6 +77,16 @@
   "widgets.audio.previous": "Previous track",
   "widgets.audio.next": "Next track",
 
+  "widgets.cpu_temp.title": "System Temperature",
+  "widgets.cpu_temp.label": "CPU",
+  "widgets.cpu_temp.unavailable": "No sensor found",
+  "widgets.cpu_temp.settings.sensor": "Sensor",
+  "widgets.cpu_temp.settings.sensor_auto": "Automatic",
+  "widgets.cpu_temp.settings.custom_label": "Display name",
+  "widgets.cpu_temp.settings.unit": "Unit",
+  "widgets.cpu_temp.settings.unit_celsius": "°C",
+  "widgets.cpu_temp.settings.unit_fahrenheit": "°F",
+
   "widgets.clock.title": "Clock",
   "widgets.clock.settings.time_font": "Font (time)",
   "widgets.clock.settings.label_font": "Font (city/date)",

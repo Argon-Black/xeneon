@@ -77,6 +77,16 @@
   "widgets.audio.previous": "Piste précédente",
   "widgets.audio.next": "Piste suivante",
 
+  "widgets.cpu_temp.title": "Température système",
+  "widgets.cpu_temp.label": "CPU",
+  "widgets.cpu_temp.unavailable": "Aucun capteur trouvé",
+  "widgets.cpu_temp.settings.sensor": "Capteur",
+  "widgets.cpu_temp.settings.sensor_auto": "Automatique",
+  "widgets.cpu_temp.settings.custom_label": "Nom affiché",
+  "widgets.cpu_temp.settings.unit": "Unité",
+  "widgets.cpu_temp.settings.unit_celsius": "°C",
+  "widgets.cpu_temp.settings.unit_fahrenheit": "°F",
+
   "widgets.clock.title": "Horloge",
   "widgets.clock.settings.time_font": "Police (heure)",
   "widgets.clock.settings.label_font": "Police (ville/date)",
