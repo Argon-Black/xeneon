@@ -4,23 +4,30 @@
 //! Replaces the earlier `adw::Dialog` stand-in (see git history) that only
 //! proved the add-a-widget flow end to end.
 //!
-//! Ported in two steps, tracked in the memory system so a future session
+//! Ported in three steps, tracked in the memory system so a future session
 //! can resume cleanly:
 //! - **Step 1**: the overlay mechanics only - reveal/hide animation, input
 //!   handling, Escape-to-close - with a plain list of catalog entries.
 //!   Landed first, deliberately, to validate the trickiest part (a
 //!   full-screen Gtk.Revealer/gtk::Overlay combo) on the real Xeneon
 //!   hardware before adding the heavier size-grouped live-preview content.
-//! - **Step 2 (this one)**: the plain list is replaced with `gtk::FlowBox`
-//!   sections grouped by size family (compact/medium/large - see
-//!   `size_family`/`grouped_catalog` below, mirroring `_size_family`/
-//!   `_grouped_catalog` in widget_picker.py), each tile showing the real,
-//!   live widget content via `(descriptor.spawn)().content` instead of
-//!   just a title row. Rebuilt fresh every time the picker opens and torn
-//!   down on close (see `open`/`close`) rather than built once and kept
-//!   alive - several entries (Clock, Audio, CpuTemp, TempGauge) own a live
-//!   GLib timer or a D-Bus watch, and there's no reason to keep those
-//!   ticking/polling while nobody can see them.
+//! - **Step 2**: the plain list is replaced with `gtk::FlowBox` sections
+//!   grouped by size family (compact/medium/large - see `size_family`/
+//!   `grouped_catalog` below, mirroring `_size_family`/`_grouped_catalog`
+//!   in widget_picker.py), each tile showing the real, live widget content
+//!   via `(descriptor.spawn)().content` instead of just a title row.
+//!   Rebuilt fresh every time the picker opens and torn down on close (see
+//!   `open`/`close`) rather than built once and kept alive - several
+//!   entries (Clock, Audio, CpuTemp, TempGauge) own a live GLib timer or a
+//!   D-Bus watch, and there's no reason to keep those ticking/polling
+//!   while nobody can see them.
+//! - **Step 3 (this one)**: accent-color styling (`ensure_css_installed`/
+//!   `PICKER_CSS` below) - a tile's border highlights in the app's current
+//!   accent on hover, and the close button's hover fill uses it too.
+//!   References the `@accent_color` named color `theme.rs` defines
+//!   display-wide (see that module's own doc comment for why a plain
+//!   reference here needs no reload of its own even when the accent
+//!   changes later).
 //!
 //! **The `can_target` gotcha** (the actual bug that cost the most time
 //! porting this from Python, see feedback_rust_gtk_dev_loop_gotchas in the
@@ -39,6 +46,54 @@ use gtk::glib;
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::{WidgetDescriptor, CATALOG};
 use xeneon_core::grid::{Size, GAP, SIZE_L, SIZE_M};
+
+/// Static (never reloaded) - only ever references `@accent_color` by name,
+/// which `theme.rs`'s own provider keeps redefining display-wide on every
+/// `apply_accent()` call. GTK resolves named colors at style-computation
+/// time, not at parse time, so this provider never needs to know when the
+/// accent changes - unlike theme.rs's own provider, which owns the actual
+/// value and does need to reload.
+const PICKER_CSS: &str = "
+.xeneon-widget-picker-header {
+  padding: 18px 24px 14px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.xeneon-widget-picker-close:hover {
+  background-color: alpha(@accent_color, 0.25);
+}
+.xeneon-widget-picker-family {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+}
+.xeneon-widget-picker-tile {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.xeneon-widget-picker-tile:hover {
+  border-color: @accent_color;
+}
+.xeneon-widget-picker-tile-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffffff;
+  background-color: rgba(0, 0, 0, 0.5);
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+";
+
+static INSTALL_CSS: std::sync::Once = std::sync::Once::new();
+
+fn ensure_css_installed() {
+    INSTALL_CSS.call_once(|| {
+        let Some(display) = gtk::gdk::Display::default() else { return };
+        let provider = gtk::CssProvider::new();
+        provider.load_from_string(PICKER_CSS);
+        gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    });
+}
 
 /// Buckets a footprint by height alone, same three "shelves" the grid
 /// itself already tiles into (see grid.rs's SIZE_* comments): SQ shares M's
@@ -149,6 +204,8 @@ impl WidgetPicker {
     }
 
     pub fn new(on_pick: impl Fn(&'static str) + 'static) -> std::rc::Rc<Self> {
+        ensure_css_installed();
+
         let revealer = gtk::Revealer::new();
         revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
         revealer.set_transition_duration(550);
@@ -182,6 +239,7 @@ impl WidgetPicker {
         let close_button = gtk::Button::new();
         close_button.add_css_class("flat");
         close_button.add_css_class("circular");
+        close_button.add_css_class("xeneon-widget-picker-close");
         close_button.set_icon_name("window-close-symbolic");
         close_button.set_tooltip_text(Some(&i18n::t("widgets.appearance.close_tooltip")));
         header.append(&close_button);
