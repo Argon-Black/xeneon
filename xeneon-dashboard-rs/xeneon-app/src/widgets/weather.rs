@@ -1,13 +1,24 @@
-//! Weather widget, steps 1-2 of the port from `widgets/weather.py`
-//! (Python): current conditions (icon, temperature, humidity/pressure/
-//! wind/UV index), plus (step 2) `WeatherSettings` - free-text city
-//! search via Open-Meteo's geocoding endpoint, and a °C/°F toggle. The
-//! per-instance content-size slider is step 3. Laid out as three centered
-//! columns -
-//! temperature (large, bold) with the city name below; the condition icon
-//! (large) with wind speed below; humidity/pressure/UV index stacked as
-//! small icon+value rows - exactly mirroring the Python original's final
-//! design (see CLAUDE.md's `xeneon_dashboard/widgets/weather.py`).
+//! Weather widget, full port of `widgets/weather.py`: current conditions
+//! (icon, temperature, humidity/pressure/wind/UV index), `WeatherSettings`
+//! (free-text city search via Open-Meteo's geocoding endpoint, a °C/°F
+//! toggle, and a content-size slider), laid out as three centered columns
+//! - temperature (large, bold) with the city name below; the condition
+//! icon (large) with wind speed below; humidity/pressure/UV index stacked
+//! as small icon+value rows - exactly mirroring the Python original's
+//! final design (see CLAUDE.md's `xeneon_dashboard/widgets/weather.py`).
+//!
+//! Every font, icon and gap grows or shrinks together off
+//! `WeatherState::content_scale` (see `apply_content_scale`) - the same
+//! technique `temp_gauge.rs` borrowed from this same Python widget (see
+//! that file's own doc comment), just realized differently here: since
+//! this widget already renders its text as inline Pango markup spans
+//! (`markup()`) rather than through `add_css_class`-styled `Label`s, the
+//! font size is just a number baked into that markup string on every
+//! `render()` - no per-instance CSS provider/class plumbing needed at all
+//! for the text (unlike `temp_gauge.rs`'s `GaugeCss`, or the Python
+//! original's own `_rules`/`_reload_css`). Icon pixel sizes and box
+//! spacing still scale imperatively via `set_pixel_size`/`set_spacing`,
+//! same as everywhere else this technique is used.
 //!
 //! Data comes from Open-Meteo (no API key). Unlike Clock or the audio
 //! widget's MPRIS calls (local D-Bus, a synchronous call is cheap enough
@@ -49,17 +60,25 @@ const GEOCODING_RESULT_COUNT: u32 = 8;
 const REQUEST_TIMEOUT_SECONDS: u64 = 8;
 const REFRESH_INTERVAL_SECONDS: u32 = 15 * 60;
 
-const TEMP_FONT: &str = "Sans 72";
-const CITY_FONT: &str = "Sans 18";
-const STAT_FONT: &str = "Sans 15";
+// Every size below is at `content_scale == 1.0` (100%) - font points, icon
+// pixel sizes, and box spacing all scale off these together (see
+// `WeatherState::apply_content_scale`), so "bigger" grows the whole
+// layout in proportion instead of just the text.
+const BASE_TEMP_FONT_PT: f64 = 72.0;
+const BASE_CITY_FONT_PT: f64 = 18.0;
+const BASE_STAT_FONT_PT: f64 = 15.0;
 
-const ICON_PIXEL_SIZE: i32 = 104;
-const STAT_ICON_PIXEL_SIZE: i32 = 18;
-const COLUMN_SPACING: i32 = 32;
-const TEMP_COLUMN_SPACING: i32 = 4;
-const ICON_COLUMN_SPACING: i32 = 8;
-const STATS_COLUMN_SPACING: i32 = 8;
-const STAT_ROW_SPACING: i32 = 4;
+const BASE_ICON_PIXEL_SIZE: f64 = 104.0;
+const BASE_STAT_ICON_PIXEL_SIZE: f64 = 18.0;
+const BASE_COLUMN_SPACING: f64 = 32.0;
+const BASE_TEMP_COLUMN_SPACING: f64 = 4.0;
+const BASE_ICON_COLUMN_SPACING: f64 = 8.0;
+const BASE_STATS_COLUMN_SPACING: f64 = 8.0;
+const BASE_STAT_ROW_SPACING: f64 = 4.0;
+
+const MIN_CONTENT_SCALE: f64 = 0.5;
+const MAX_CONTENT_SCALE: f64 = 2.0;
+const DEFAULT_CONTENT_SCALE: f64 = 1.0;
 
 /// WMO weather code (Open-Meteo's `current.weather_code`) -> (i18n
 /// condition key suffix, day icon, night icon) - same grouping as the
@@ -106,10 +125,11 @@ fn weather_code_info(code: i64) -> (&'static str, &'static str, &'static str) {
         .unwrap_or(UNKNOWN_CODE)
 }
 
-fn markup(text: &str, font_desc: &str) -> String {
+fn markup(text: &str, base_pt: f64, scale: f64) -> String {
+    let font_desc = format!("Sans {}", (base_pt * scale).round() as i32);
     format!(
         "<span font_desc=\"{}\" foreground=\"#ffffff\">{}</span>",
-        glib::markup_escape_text(font_desc),
+        glib::markup_escape_text(&font_desc),
         glib::markup_escape_text(text)
     )
 }
@@ -273,16 +293,30 @@ enum FetchStatus {
 }
 
 struct WeatherState {
+    root: gtk::Box,
+    temp_column: gtk::Box,
+    icon_column: gtk::Box,
+    stats_column: gtk::Box,
+
     temp_label: gtk::Label,
     city_label: gtk::Label,
     icon: gtk::Image,
+    wind_row: gtk::Box,
+    wind_icon: gtk::Image,
     wind_label: gtk::Label,
+    humidity_row: gtk::Box,
+    humidity_icon: gtk::Image,
     humidity_label: gtk::Label,
+    pressure_row: gtk::Box,
+    pressure_icon: gtk::Image,
     pressure_label: gtk::Label,
+    uv_row: gtk::Box,
+    uv_icon: gtk::Image,
     uv_label: gtk::Label,
 
     location: RefCell<Location>,
     unit_fahrenheit: Cell<bool>,
+    content_scale: Cell<f64>,
     status: Cell<FetchStatus>,
     current_celsius: Cell<Option<f64>>,
     weather_code: Cell<Option<i64>>,
@@ -303,8 +337,8 @@ fn fmt_stat(value: Option<f64>, suffix: &str, placeholder: &str) -> String {
 
 impl WeatherState {
     fn set_location(&self, location: Location) {
-        self.city_label.set_markup(&markup(&location.name, CITY_FONT));
         *self.location.borrow_mut() = location;
+        self.refresh_city_label();
         self.status.set(FetchStatus::Loading);
         self.render();
     }
@@ -314,15 +348,49 @@ impl WeatherState {
         self.render();
     }
 
+    fn refresh_city_label(&self) {
+        let scale = self.content_scale.get();
+        self.city_label.set_markup(&markup(&self.location.borrow().name, BASE_CITY_FONT_PT, scale));
+    }
+
+    /// Grows or shrinks every font, icon and gap together - see the
+    /// module doc comment for why text goes through `markup()`'s own
+    /// scale-aware font size rather than a CSS class like `temp_gauge.rs`.
+    fn set_content_scale(&self, scale: f64) {
+        self.content_scale.set(scale.clamp(MIN_CONTENT_SCALE, MAX_CONTENT_SCALE));
+        self.apply_content_scale();
+    }
+
+    fn apply_content_scale(&self) {
+        let scale = self.content_scale.get();
+        self.icon.set_pixel_size((BASE_ICON_PIXEL_SIZE * scale).round() as i32);
+        for icon in [&self.wind_icon, &self.humidity_icon, &self.pressure_icon, &self.uv_icon] {
+            icon.set_pixel_size((BASE_STAT_ICON_PIXEL_SIZE * scale).round() as i32);
+        }
+        self.root.set_spacing((BASE_COLUMN_SPACING * scale).round() as i32);
+        self.temp_column.set_spacing((BASE_TEMP_COLUMN_SPACING * scale).round() as i32);
+        self.icon_column.set_spacing((BASE_ICON_COLUMN_SPACING * scale).round() as i32);
+        self.stats_column.set_spacing((BASE_STATS_COLUMN_SPACING * scale).round() as i32);
+        for row in [&self.wind_row, &self.humidity_row, &self.pressure_row, &self.uv_row] {
+            row.set_spacing((BASE_STAT_ROW_SPACING * scale).round() as i32);
+        }
+        self.refresh_city_label();
+        self.render();
+    }
+
     fn render(&self) {
+        let scale = self.content_scale.get();
         match self.status.get() {
             FetchStatus::Ok => {
                 let celsius = self.current_celsius.get().unwrap_or(0.0);
                 let value =
                     if self.unit_fahrenheit.get() { celsius * 9.0 / 5.0 + 32.0 } else { celsius };
                 let unit_symbol = if self.unit_fahrenheit.get() { "°F" } else { "°C" };
-                self.temp_label
-                    .set_markup(&markup(&format!("{}{}", value.round() as i64, unit_symbol), TEMP_FONT));
+                self.temp_label.set_markup(&markup(
+                    &format!("{}{}", value.round() as i64, unit_symbol),
+                    BASE_TEMP_FONT_PT,
+                    scale,
+                ));
 
                 let code = self.weather_code.get().unwrap_or(-1);
                 let (condition_key, day_icon, night_icon) = weather_code_info(code);
@@ -330,25 +398,31 @@ impl WeatherState {
                 self.icon
                     .set_tooltip_text(Some(&i18n::t(&format!("widgets.weather.conditions.{condition_key}"))));
 
-                self.humidity_label.set_markup(&markup(&fmt_stat(self.humidity.get(), "%", "--%"), STAT_FONT));
-                self.pressure_label
-                    .set_markup(&markup(&fmt_stat(self.pressure.get(), " hPa", "-- hPa"), STAT_FONT));
-                self.wind_label
-                    .set_markup(&markup(&fmt_stat(self.wind_speed.get(), " km/h", "-- km/h"), STAT_FONT));
-                self.uv_label.set_markup(&markup(&fmt_stat(self.uv_index.get(), "", "--"), STAT_FONT));
+                self.humidity_label.set_markup(&markup(&fmt_stat(self.humidity.get(), "%", "--%"), BASE_STAT_FONT_PT, scale));
+                self.pressure_label.set_markup(&markup(
+                    &fmt_stat(self.pressure.get(), " hPa", "-- hPa"),
+                    BASE_STAT_FONT_PT,
+                    scale,
+                ));
+                self.wind_label.set_markup(&markup(
+                    &fmt_stat(self.wind_speed.get(), " km/h", "-- km/h"),
+                    BASE_STAT_FONT_PT,
+                    scale,
+                ));
+                self.uv_label.set_markup(&markup(&fmt_stat(self.uv_index.get(), "", "--"), BASE_STAT_FONT_PT, scale));
             }
             FetchStatus::Loading | FetchStatus::Error => {
                 let is_error = self.status.get() == FetchStatus::Error;
                 let icon_name = if is_error { "weather-severe-alert-symbolic" } else { "weather-clear-symbolic" };
                 let tooltip_key = if is_error { "widgets.weather.error" } else { "widgets.weather.loading" };
 
-                self.temp_label.set_markup(&markup("--°", TEMP_FONT));
+                self.temp_label.set_markup(&markup("--°", BASE_TEMP_FONT_PT, scale));
                 self.icon.set_icon_name(Some(icon_name));
                 self.icon.set_tooltip_text(Some(&i18n::t(tooltip_key)));
-                self.humidity_label.set_markup(&markup("--%", STAT_FONT));
-                self.pressure_label.set_markup(&markup("-- hPa", STAT_FONT));
-                self.wind_label.set_markup(&markup("-- km/h", STAT_FONT));
-                self.uv_label.set_markup(&markup("--", STAT_FONT));
+                self.humidity_label.set_markup(&markup("--%", BASE_STAT_FONT_PT, scale));
+                self.pressure_label.set_markup(&markup("-- hPa", BASE_STAT_FONT_PT, scale));
+                self.wind_label.set_markup(&markup("-- km/h", BASE_STAT_FONT_PT, scale));
+                self.uv_label.set_markup(&markup("--", BASE_STAT_FONT_PT, scale));
             }
         }
     }
@@ -357,6 +431,7 @@ impl WeatherState {
         serde_json::json!({
             "location": self.location.borrow().to_json(),
             "unit_fahrenheit": self.unit_fahrenheit.get(),
+            "content_scale": self.content_scale.get(),
         })
     }
 
@@ -369,6 +444,9 @@ impl WeatherState {
         }
         if let Some(v) = data.get("unit_fahrenheit").and_then(|v| v.as_bool()) {
             self.set_unit_fahrenheit(v);
+        }
+        if let Some(v) = data.get("content_scale").and_then(|v| v.as_f64()) {
+            self.set_content_scale(v);
         }
     }
 }
@@ -409,44 +487,42 @@ fn trigger_fetch(state: &Rc<WeatherState>) {
     });
 }
 
-fn make_stat_row(icon_name: &str) -> (gtk::Box, gtk::Label) {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, STAT_ROW_SPACING);
+fn make_stat_row(icon_name: &str) -> (gtk::Box, gtk::Image, gtk::Label) {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     row.set_halign(gtk::Align::Start);
     let icon = gtk::Image::from_icon_name(icon_name);
-    icon.set_pixel_size(STAT_ICON_PIXEL_SIZE);
     row.append(&icon);
     let label = gtk::Label::new(None);
     row.append(&label);
-    (row, label)
+    (row, icon, label)
 }
 
 fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
-    let root = gtk::Box::new(gtk::Orientation::Horizontal, COLUMN_SPACING);
+    let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     root.set_halign(gtk::Align::Center);
     root.set_valign(gtk::Align::Center);
 
     let temp_label = gtk::Label::new(None);
     let city_label = gtk::Label::new(None);
-    let temp_column = gtk::Box::new(gtk::Orientation::Vertical, TEMP_COLUMN_SPACING);
+    let temp_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     temp_column.set_valign(gtk::Align::Center);
     temp_column.append(&temp_label);
     temp_column.append(&city_label);
     root.append(&temp_column);
 
     let icon = gtk::Image::new();
-    icon.set_pixel_size(ICON_PIXEL_SIZE);
-    let (wind_row, wind_label) = make_stat_row("weather-windy-symbolic");
-    let icon_column = gtk::Box::new(gtk::Orientation::Vertical, ICON_COLUMN_SPACING);
+    let (wind_row, wind_icon, wind_label) = make_stat_row("weather-windy-symbolic");
+    let icon_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     icon_column.set_halign(gtk::Align::Center);
     icon_column.set_valign(gtk::Align::Center);
     icon_column.append(&icon);
     icon_column.append(&wind_row);
     root.append(&icon_column);
 
-    let (humidity_row, humidity_label) = make_stat_row("weather-showers-symbolic");
-    let (pressure_row, pressure_label) = make_stat_row("speedometer-symbolic");
-    let (uv_row, uv_label) = make_stat_row("brightness-high-symbolic");
-    let stats_column = gtk::Box::new(gtk::Orientation::Vertical, STATS_COLUMN_SPACING);
+    let (humidity_row, humidity_icon, humidity_label) = make_stat_row("weather-showers-symbolic");
+    let (pressure_row, pressure_icon, pressure_label) = make_stat_row("speedometer-symbolic");
+    let (uv_row, uv_icon, uv_label) = make_stat_row("brightness-high-symbolic");
+    let stats_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     stats_column.set_valign(gtk::Align::Center);
     stats_column.append(&humidity_row);
     stats_column.append(&pressure_row);
@@ -454,18 +530,30 @@ fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
     root.append(&stats_column);
 
     let default_location = Location::default_paris();
-    city_label.set_markup(&markup(&default_location.name, CITY_FONT));
 
     let state = Rc::new(WeatherState {
+        root: root.clone(),
+        temp_column,
+        icon_column,
+        stats_column,
         temp_label,
         city_label,
         icon,
+        wind_row,
+        wind_icon,
         wind_label,
+        humidity_row,
+        humidity_icon,
         humidity_label,
+        pressure_row,
+        pressure_icon,
         pressure_label,
+        uv_row,
+        uv_icon,
         uv_label,
         location: RefCell::new(default_location),
         unit_fahrenheit: Cell::new(false),
+        content_scale: Cell::new(DEFAULT_CONTENT_SCALE),
         status: Cell::new(FetchStatus::Loading),
         current_celsius: Cell::new(None),
         weather_code: Cell::new(None),
@@ -476,7 +564,7 @@ fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
         uv_index: Cell::new(None),
         fetch_generation: Cell::new(0),
     });
-    state.render();
+    state.apply_content_scale();
     trigger_fetch(&state);
 
     let timeout_id = glib::timeout_add_seconds_local(REFRESH_INTERVAL_SECONDS, {
@@ -571,6 +659,18 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
     celsius_button.set_active(!state.unit_fahrenheit.get());
     fahrenheit_button.set_active(state.unit_fahrenheit.get());
     root.append(&make_row(&[unit_label.upcast_ref(), celsius_button.upcast_ref(), fahrenheit_button.upcast_ref()]));
+
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let scale_label = gtk::Label::new(Some(&i18n::t("widgets.weather.settings.content_scale")));
+    scale_label.set_halign(gtk::Align::Start);
+    root.append(&scale_label);
+    let scale_slider =
+        gtk::Scale::with_range(gtk::Orientation::Horizontal, MIN_CONTENT_SCALE * 100.0, MAX_CONTENT_SCALE * 100.0, 1.0);
+    scale_slider.set_value(state.content_scale.get() * 100.0);
+    scale_slider.set_draw_value(true);
+    scale_slider.set_value_pos(gtk::PositionType::Right);
+    root.append(&scale_slider);
 
     // --- search wiring ---
     // Holds the results a response actually produced, indexed the same
@@ -680,6 +780,10 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
         let state = state.clone();
         move |b| state.set_unit_fahrenheit(b.is_active())
     });
+    scale_slider.connect_value_changed({
+        let state = state.clone();
+        move |s| state.set_content_scale(s.value() / 100.0)
+    });
 
     // --- retranslation ---
     i18n::on_change({
@@ -689,6 +793,7 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
         let unit_label = unit_label.clone();
         let celsius_button = celsius_button.clone();
         let fahrenheit_button = fahrenheit_button.clone();
+        let scale_label = scale_label.clone();
         move || {
             location_title.set_label(&i18n::t("widgets.weather.settings.location"));
             search_entry.set_placeholder_text(Some(&i18n::t("widgets.weather.settings.search_placeholder")));
@@ -696,6 +801,7 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
             unit_label.set_label(&i18n::t("widgets.weather.settings.unit"));
             celsius_button.set_label(&i18n::t("widgets.weather.settings.unit_celsius"));
             fahrenheit_button.set_label(&i18n::t("widgets.weather.settings.unit_fahrenheit"));
+            scale_label.set_label(&i18n::t("widgets.weather.settings.content_scale"));
         }
     });
     search_entry.set_placeholder_text(Some(&i18n::t("widgets.weather.settings.search_placeholder")));

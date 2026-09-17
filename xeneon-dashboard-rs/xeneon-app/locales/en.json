@@ -122,6 +122,7 @@
   "widgets.weather.settings.unit": "Unit",
   "widgets.weather.settings.unit_celsius": "°C",
   "widgets.weather.settings.unit_fahrenheit": "°F",
+  "widgets.weather.settings.content_scale": "Content size",
   "widgets.weather.conditions.clear": "Clear sky",
   "widgets.weather.conditions.mainly_clear": "Mainly clear",
   "widgets.weather.conditions.partly_cloudy": "Partly cloudy",
