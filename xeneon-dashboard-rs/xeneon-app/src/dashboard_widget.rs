@@ -47,6 +47,16 @@ pub fn build(
     root.set_size_request(w, h);
     root.add_css_class("card");
     root.add_css_class(&css_class);
+    // CSS border-radius (from WidgetAppearance's "rounded" setting, or
+    // the theme's own ".card" look) only ever affects this widget's own
+    // background/border painting - it does NOT clip whatever content is
+    // composited on top of it, so a widget whose content paints edge to
+    // edge (e.g. the audio widget's full-bleed album art) visually
+    // overflows past the rounded corner and the border on top of it.
+    // `overflow: hidden` isn't a real GTK CSS property; this widget-level
+    // property is the actual clipping mechanism - same fix already
+    // applied to the widget picker's own preview tiles (widget_picker.rs).
+    root.set_overflow(gtk::Overflow::Hidden);
     root.set_child(Some(content));
 
     // Never steals clicks meant for the content underneath it - same fix
