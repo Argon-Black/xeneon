@@ -8,24 +8,32 @@
 //! `appearance_css.rs`'s use of `gio::File` for the same reason) -
 //! consistent with this project's minimal-dependencies preference.
 //!
-//! **Step 1+2 scope** (see the step breakdown agreed with the user): MPRIS
-//! discovery, display (source badge, album art, title, artist), a
-//! click-to-seek progress bar, and transport controls
-//! (previous/play-pause/next) - always at `SIZE_L`. `Position` isn't
+//! Steps 1-4 of the agreed breakdown are done: MPRIS discovery, display
+//! (source badge, album art, title, artist), a click-to-seek progress bar,
+//! transport controls (previous/play-pause/next), `AudioSettings` (pin a
+//! specific player instead of auto-following whichever is `Playing`) with
+//! `to_dict`/`apply_dict` persistence, and now both `SIZE_L` and `SIZE_SQ`
+//! (registered as separate kinds, "audio_l"/"audio_sq", sharing every bit
+//! of this code - see `spawn_l`/`spawn_sq` at the bottom). `Position` isn't
 //! covered by MPRIS's own `PropertiesChanged` signal (excluded by the spec
 //! itself, since it'd fire continuously during playback) - handled the
 //! same way as the Python original: fetched on demand (player picked/
 //! track changed/seeked) and ticked locally once a second the rest of the
-//! time. Deliberately still deferred to later steps:
-//! - `AudioSettings` (pin a specific player instead of auto-following
-//!   whichever is `Playing`) and its `to_dict`/`apply_dict` persistence;
-//! - the `SIZE_SQ`/`SIZE_M` variants and the font/control-size tuning that
-//!   only matters once more than one size exists.
+//! time.
 //!
-//! Title/artist/badge font sizes (22/20/20px) and the 20/30-character
-//! truncation limits are carried over as already-decided values - the
-//! Python side went through several rounds of mockups and live testing to
-//! land on them, so there's no reason to re-derive them from scratch here.
+//! Title/artist/badge font sizes (22/20/20px), transport control sizes,
+//! and the 20/30-character truncation limits are carried over as
+//! already-decided values, fixed regardless of widget size (overflow is
+//! handled by truncating text, not by shrinking it) - the Python side
+//! went through several rounds of mockups and live testing to land on
+//! this, so there's no reason to re-derive it from scratch here. What
+//! *does* scale with the widget's footprint - badge padding/dot size,
+//! outer margins, inter-element spacing, the elapsed/duration time font -
+//! is computed from a per-instance `scale` factor (`size` relative to
+//! `SIZE_L`) and rendered as a small per-instance CSS class, the same
+//! `{css_class: rule}` shared-provider pattern `appearance_css.rs` and
+//! `WeatherContent` (Python) use for the same reason: two instances at
+//! different sizes need different numbers from the same class names.
 
 use gtk::gio;
 use gtk::glib;
@@ -38,6 +46,7 @@ use std::sync::Once;
 
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::WidgetInstance;
+use xeneon_core::grid::{Size, SIZE_L, SIZE_SQ};
 
 const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
@@ -115,12 +124,36 @@ fn empty_state_texture() -> Option<gtk::gdk::Texture> {
     })
 }
 
+// Sizes that scale with the widget's own footprint (padding/dot size/font
+// that has no fixed-size floor, unlike title/artist/badge text or the
+// transport controls - see the module doc comment) - all at scale == 1.0,
+// i.e. SIZE_L. Multiplied by `AudioContent::scale` (size relative to
+// SIZE_L) in `apply_scale`, same technique as `WeatherContent`'s
+// `BASE_*`/`content_scale` in the Python original.
+const BASE_BADGE_MARGIN_PX: f64 = 16.0;
+const BASE_BADGE_GAP_PX: f64 = 6.0;
+const BASE_BADGE_PADDING_V_PX: f64 = 4.0;
+const BASE_BADGE_PADDING_LEFT_PX: f64 = 8.0;
+const BASE_BADGE_PADDING_RIGHT_PX: f64 = 12.0;
+const BASE_BADGE_DOT_PX: f64 = 8.0;
+const BASE_BOTTOM_MARGIN_H_PX: f64 = 24.0;
+const BASE_BOTTOM_MARGIN_BOTTOM_PX: f64 = 20.0;
+const BASE_BOTTOM_SPACING_PX: f64 = 4.0;
+const BASE_ARTIST_MARGIN_BOTTOM_PX: f64 = 10.0;
+const BASE_PROGRESS_ROW_SPACING_PX: f64 = 8.0;
+const BASE_TIME_FONT_PX: f64 = 15.0;
+
+fn scaled(base_px: f64, scale: f64) -> i32 {
+    (base_px * scale).round() as i32
+}
+
 static INSTALL_CSS: Once = Once::new();
 
-/// One shared, display-wide stylesheet - like `dummy.rs`'s `ensure_css_installed`,
-/// good enough while every size shares the same fixed font sizes (see the
-/// module doc comment; this'll need per-instance scoped CSS, the same way
-/// `appearance_css.rs` does it, once `SIZE_SQ` needs different numbers).
+/// The static look that never changes with scale (colors, gradient,
+/// hover, border-radius) - shared by every instance regardless of size.
+/// Scale-dependent sizes live in a second, per-instance provider instead
+/// (see `SCALE_RULES`/`apply_scale` below), the same split
+/// `appearance_css.rs` uses for its own per-instance CSS.
 fn ensure_css_installed() {
     INSTALL_CSS.call_once(|| {
         let Some(display) = gtk::gdk::Display::default() else { return };
@@ -129,16 +162,12 @@ fn ensure_css_installed() {
             ".xeneon-audio-gradient {\
                background-image: linear-gradient(to bottom, rgba(0,0,0,0) 30%, rgba(0,0,0,0.78) 100%);\
              }\n\
-             .xeneon-audio-badge {\
-               background-color: rgba(0,0,0,0.45); border-radius: 999px; padding: 4px 12px 4px 8px;\
-             }\n\
-             .xeneon-audio-badge-dot {\
-               background-color: #3fd67a; border-radius: 999px; min-width: 8px; min-height: 8px;\
-             }\n\
+             .xeneon-audio-badge { background-color: rgba(0,0,0,0.45); border-radius: 999px; }\n\
+             .xeneon-audio-badge-dot { background-color: #3fd67a; border-radius: 999px; }\n\
              .xeneon-audio-badge-label { color: #ffffff; font-size: 20px; }\n\
              .xeneon-audio-title { color: #ffffff; font-size: 22px; font-weight: 700; }\n\
              .xeneon-audio-subtitle { color: rgba(255, 255, 255, 0.75); font-size: 20px; }\n\
-             .xeneon-audio-time { color: rgba(255, 255, 255, 0.75); font-size: 15px; }\n\
+             .xeneon-audio-time { color: rgba(255, 255, 255, 0.75); }\n\
              .xeneon-audio-empty { color: rgba(255, 255, 255, 0.6); }\n\
              .xeneon-audio-transport { color: #ffffff; }\n\
              .xeneon-audio-play-button {\
@@ -150,6 +179,45 @@ fn ensure_css_installed() {
         );
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     });
+}
+
+thread_local! {
+    // Per-instance scaled rules (badge padding/dot size, time font size),
+    // keyed by each AudioContent's own unique class so a SIZE_L instance
+    // and a SIZE_SQ instance on the same page never fight over the same
+    // selector - same pattern as `appearance_css.rs`'s `RULES`.
+    static SCALE_RULES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static SCALE_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
+    static NEXT_INSTANCE_ID: Cell<u64> = const { Cell::new(0) };
+}
+
+fn ensure_scale_provider() -> gtk::CssProvider {
+    SCALE_PROVIDER.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none() {
+            let provider = gtk::CssProvider::new();
+            if let Some(display) = gtk::gdk::Display::default() {
+                gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            }
+            *cell = Some(provider);
+        }
+        cell.as_ref().unwrap().clone()
+    })
+}
+
+fn reload_scale_css() {
+    SCALE_RULES.with(|rules| {
+        let css: String = rules.borrow().values().cloned().collect::<Vec<_>>().join("\n");
+        ensure_scale_provider().load_from_string(&css);
+    });
+}
+
+fn next_instance_css_class() -> String {
+    NEXT_INSTANCE_ID.with(|id| {
+        let value = id.get() + 1;
+        id.set(value);
+        format!("xeneon-audio-{value}")
+    })
 }
 
 /// `GDBusProxy`'s `g-properties-changed`/`g-signal` GObject-signal
@@ -611,10 +679,33 @@ impl AudioState {
     }
 }
 
-fn build_content() -> (Rc<AudioState>, gtk::Widget) {
+fn build_content(size: Size) -> (Rc<AudioState>, gtk::Widget) {
     ensure_css_installed();
+    // Purely spatial sizes (margins/padding/gaps - see the BASE_* consts
+    // and the module doc comment) shrink with the widget's own footprint
+    // relative to SIZE_L; text/controls don't.
+    let scale = (size.w as f64 / SIZE_L.w as f64).min(size.h as f64 / SIZE_L.h as f64);
+    let css_class = next_instance_css_class();
+    SCALE_RULES.with(|rules| {
+        rules.borrow_mut().insert(
+            css_class.clone(),
+            format!(
+                ".{class} .xeneon-audio-badge {{ padding: {pad_v}px {pad_r}px {pad_v}px {pad_l}px; }}\n\
+                 .{class} .xeneon-audio-badge-dot {{ min-width: {dot}px; min-height: {dot}px; }}\n\
+                 .{class} .xeneon-audio-time {{ font-size: {time}px; }}",
+                class = css_class,
+                pad_v = scaled(BASE_BADGE_PADDING_V_PX, scale),
+                pad_r = scaled(BASE_BADGE_PADDING_RIGHT_PX, scale),
+                pad_l = scaled(BASE_BADGE_PADDING_LEFT_PX, scale),
+                dot = scaled(BASE_BADGE_DOT_PX, scale),
+                time = scaled(BASE_TIME_FONT_PX, scale),
+            ),
+        );
+    });
+    reload_scale_css();
 
     let overlay = gtk::Overlay::new();
+    overlay.add_css_class(&css_class);
 
     let background = gtk::Picture::new();
     background.set_content_fit(gtk::ContentFit::Cover);
@@ -627,12 +718,12 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
     gradient.set_vexpand(true);
     overlay.add_overlay(&gradient);
 
-    let badge = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let badge = gtk::Box::new(gtk::Orientation::Horizontal, scaled(BASE_BADGE_GAP_PX, scale));
     badge.add_css_class("xeneon-audio-badge");
     badge.set_halign(gtk::Align::Start);
     badge.set_valign(gtk::Align::Start);
-    badge.set_margin_start(16);
-    badge.set_margin_top(16);
+    badge.set_margin_start(scaled(BASE_BADGE_MARGIN_PX, scale));
+    badge.set_margin_top(scaled(BASE_BADGE_MARGIN_PX, scale));
     let badge_dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     badge_dot.add_css_class("xeneon-audio-badge-dot");
     badge_dot.set_valign(gtk::Align::Center);
@@ -648,14 +739,14 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
     empty_label.add_css_class("xeneon-audio-empty");
     empty_label.set_halign(gtk::Align::Center);
     empty_label.set_valign(gtk::Align::End);
-    empty_label.set_margin_bottom(20);
+    empty_label.set_margin_bottom(scaled(BASE_BOTTOM_MARGIN_BOTTOM_PX, scale));
     overlay.add_overlay(&empty_label);
 
-    let bottom = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let bottom = gtk::Box::new(gtk::Orientation::Vertical, scaled(BASE_BOTTOM_SPACING_PX, scale));
     bottom.set_valign(gtk::Align::End);
-    bottom.set_margin_start(24);
-    bottom.set_margin_end(24);
-    bottom.set_margin_bottom(20);
+    bottom.set_margin_start(scaled(BASE_BOTTOM_MARGIN_H_PX, scale));
+    bottom.set_margin_end(scaled(BASE_BOTTOM_MARGIN_H_PX, scale));
+    bottom.set_margin_bottom(scaled(BASE_BOTTOM_MARGIN_BOTTOM_PX, scale));
 
     let title_label = gtk::Label::new(None);
     title_label.add_css_class("xeneon-audio-title");
@@ -667,10 +758,10 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
     artist_label.add_css_class("xeneon-audio-subtitle");
     artist_label.set_halign(gtk::Align::Start);
     artist_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    artist_label.set_margin_bottom(10);
+    artist_label.set_margin_bottom(scaled(BASE_ARTIST_MARGIN_BOTTOM_PX, scale));
     bottom.append(&artist_label);
 
-    let progress_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let progress_row = gtk::Box::new(gtk::Orientation::Horizontal, scaled(BASE_PROGRESS_ROW_SPACING_PX, scale));
     let elapsed_label = gtk::Label::new(Some("0:00"));
     elapsed_label.add_css_class("xeneon-audio-time");
     progress_row.append(&elapsed_label);
@@ -685,6 +776,9 @@ fn build_content() -> (Rc<AudioState>, gtk::Widget) {
     progress_row.append(&duration_label);
     bottom.append(&progress_row);
 
+    // Transport controls (icons, button diameter, spacing) are fixed
+    // regardless of size - see the module doc comment - so nothing here
+    // uses `scaled()`.
     let transport_row = gtk::Box::new(gtk::Orientation::Horizontal, 20);
     transport_row.set_halign(gtk::Align::Center);
     transport_row.set_margin_top(8);
@@ -918,14 +1012,14 @@ fn build_settings(state: Rc<AudioState>) -> (gtk::Widget, Box<dyn Fn()>) {
     (root.upcast(), Box::new(resync))
 }
 
-pub fn spawn() -> WidgetInstance {
-    let (state, content) = build_content();
+fn spawn_at(size: Size) -> WidgetInstance {
+    let (state, content) = build_content(size);
     let (settings, _resync) = build_settings(state.clone());
     WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None }
 }
 
-pub fn restore(data: &serde_json::Value) -> WidgetInstance {
-    let (state, content) = build_content();
+fn restore_at(size: Size, data: &serde_json::Value) -> WidgetInstance {
+    let (state, content) = build_content(size);
     state.apply_dict(data);
     // build_content()'s own MPRIS discovery has already run by this
     // point, so re-picking now (rather than waiting for the next
@@ -935,4 +1029,20 @@ pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     state.pick_active_player();
     let (settings, _resync) = build_settings(state.clone());
     WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None }
+}
+
+// One pair of tiny wrappers per size so the registry's static CATALOG
+// table (which needs plain `fn` pointers, not closures) can name each -
+// same reasoning as `dummy.rs`'s per-size spawn/restore wrappers.
+pub fn spawn_l() -> WidgetInstance {
+    spawn_at(SIZE_L)
+}
+pub fn restore_l(data: &serde_json::Value) -> WidgetInstance {
+    restore_at(SIZE_L, data)
+}
+pub fn spawn_sq() -> WidgetInstance {
+    spawn_at(SIZE_SQ)
+}
+pub fn restore_sq(data: &serde_json::Value) -> WidgetInstance {
+    restore_at(SIZE_SQ, data)
 }
