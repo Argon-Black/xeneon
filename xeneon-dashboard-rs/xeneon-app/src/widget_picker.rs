@@ -1,11 +1,12 @@
-//! A simple list of every registered widget kind, opened with Ctrl+Plus
-//! (matching the Python app's `app.add-widget` accelerators - Ctrl+=, the
-//! numpad +, and bare Ctrl+= since shift is annoying to reach). Picking an
-//! entry closes the dialog and reports the chosen `kind` back to the
-//! caller. Much simpler than `WidgetPicker` in widget_picker.py (no
-//! per-size grouping, no live preview tiles) - good enough to prove the
-//! add-a-widget flow end to end; the fancier picker UI is a later polish
-//! pass.
+//! A simple list of every registered widget kind, opened with Ctrl+Shift+A
+//! (diverges from the Python app's `app.add-widget` accelerators - Ctrl+=,
+//! the numpad +, bare Ctrl+= - which get eaten by the Audio widget's
+//! progress `Gtk.Scale` when it has focus; see the key controller in
+//! main.rs for the full explanation). Picking an entry closes the dialog
+//! and reports the chosen `kind` back to the caller. Much simpler than
+//! `WidgetPicker` in widget_picker.py (no per-size grouping, no live
+//! preview tiles) - good enough to prove the add-a-widget flow end to
+//! end; the fancier picker UI is a later polish pass.
 
 use adw::prelude::*;
 

@@ -7,8 +7,8 @@
 //! file per widget/page, exactly like the Python app's `widget_store.py`/
 //! `page_store.py`) and reloaded on startup. The settings page (language
 //! switcher, page rename, plus a dev-only restart button) is always the
-//! carousel's last page. Ctrl+Plus/Ctrl+= (also the numpad +) opens a
-//! simple list of every registered widget kind - a reduced stand-in for
+//! carousel's last page. Ctrl+Shift+A opens a simple list of every
+//! registered widget kind - a reduced stand-in for
 //! `WidgetPicker` in widget_picker.py - and adds the chosen one to the
 //! current page (or the next real page with room, same overflow-forward
 //! scan as `XeneonWindow.add_widget`). Unlike the Python original -
@@ -157,20 +157,31 @@ impl SimpleComponent for AppModel {
             #[watch]
             set_decorated: !model.fullscreened,
 
-            // Global F11 (fullscreen), Ctrl+Plus/Ctrl+=/numpad + (open the
-            // widget picker) and Ctrl+, (go to settings) toggles. The
+            // Global F11 (fullscreen), Ctrl+Shift+A (open the widget
+            // picker) and Ctrl+, (go to settings) toggles. The
             // Python app instead registers Gio.SimpleActions with
             // accelerators at the application level (plus a
             // global-shortcuts portal binding for F11 so it works even
             // unfocused) - deferred to a later phase, see
             // settings_page.rs's own note on the shortcuts group.
+            //
+            // The widget picker's shortcut used to be Ctrl+Plus/Ctrl+=/
+            // numpad + (matching the Python original), but GtkRange
+            // (the Audio widget's progress Gtk.Scale) binds bare
+            // "+"/"-" to its own value increment/decrement by default -
+            // with that scale focused (e.g. while a track is playing),
+            // Ctrl+Plus got eaten by the scale before ever reaching this
+            // window-level controller. Ctrl+Shift+A sidesteps the whole
+            // class of conflict: no GTK widget binds Shift+letter combos
+            // by default, unlike +/-/arrows/Home/End/Page-Up-Down.
             add_controller = gtk::EventControllerKey {
                 connect_key_pressed[sender] => move |_, key, _, modifiers| {
                     if key == gtk::gdk::Key::F11 {
                         sender.input(AppMsg::ToggleFullscreen);
                         gtk::glib::Propagation::Stop
                     } else if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-                        && matches!(key, gtk::gdk::Key::plus | gtk::gdk::Key::equal | gtk::gdk::Key::KP_Add)
+                        && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                        && matches!(key, gtk::gdk::Key::a | gtk::gdk::Key::A)
                     {
                         sender.input(AppMsg::ShowWidgetPicker);
                         gtk::glib::Propagation::Stop
