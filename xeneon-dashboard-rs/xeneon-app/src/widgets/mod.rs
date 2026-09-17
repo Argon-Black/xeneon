@@ -1,3 +1,4 @@
+pub mod agenda;
 pub mod audio;
 pub mod clock;
 pub mod cpu_temp;
