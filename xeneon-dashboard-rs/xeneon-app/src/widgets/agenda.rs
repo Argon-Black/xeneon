@@ -561,10 +561,14 @@ fn fetch_month_events(
         ) else {
             continue;
         };
-        let Some((object_path, bus_name)) = open_reply.get::<(glib::variant::ObjectPath, String)>() else {
+        // `OpenCalendar`'s object-path out-param is typed plain `s`, not
+        // `o` (confirmed against a real reply's signature, `"(ss)"`, while
+        // debugging why no events ever came back) - `glib::variant::ObjectPath`
+        // (GVariant type `o`) doesn't match it, so `.get()` silently failed
+        // and every calendar got skipped.
+        let Some((object_path, bus_name)) = open_reply.get::<(String, String)>() else {
             continue;
         };
-        let object_path: String = object_path.into();
 
         // `Open()`'s own return value (backend property strings) isn't
         // needed - only that the call succeeds before querying.
@@ -1300,5 +1304,36 @@ mod tests {
                 NaiveDate::from_ymd_opt(2026, 9, 30).unwrap(),
             ]
         );
+    }
+
+    /// Not a real test (hits the live session bus / real calendars) -
+    /// temporary diagnostic for a user-reported bug: run with
+    /// `cargo test -p xeneon-app agenda::tests::debug_real_fetch -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn debug_real_fetch() {
+        let today = Local::now().date_naive();
+        let days = month_grid(today.year(), today.month());
+        let (start, end) = (days[0], *days.last().unwrap());
+        println!("grid range: {start} .. {end}");
+
+        let connection = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>).unwrap();
+        let sources = list_calendar_sources(&connection);
+        println!("sources found: {}", sources.len());
+        for s in &sources {
+            println!("  uid={} enabled={} color={} name={}", s.uid, s.enabled, s.color, s.display_name);
+        }
+
+        let selected: HashSet<String> = sources.iter().filter(|s| s.enabled).map(|s| s.uid.clone()).collect();
+        println!("selected uids: {selected:?}");
+        let events = fetch_month_events(&selected, start, end);
+        println!("days with events: {}", events.len());
+        let mut dates: Vec<&NaiveDate> = events.keys().collect();
+        dates.sort();
+        for date in dates {
+            for e in &events[date] {
+                println!("  {date} time={:?} all_day={} summary={:?} color={}", e.time, e.all_day, e.summary, e.color);
+            }
+        }
     }
 }
