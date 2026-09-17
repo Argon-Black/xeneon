@@ -57,6 +57,12 @@
   "widgets.add_menu.family_compact": "Compact",
   "widgets.add_menu.family_medium": "Medium",
   "widgets.add_menu.family_large": "Large",
+  "widgets.add_menu.size_l": "Large",
+  "widgets.add_menu.size_m": "Medium",
+  "widgets.add_menu.size_sq": "Square",
+  "widgets.add_menu.size_s": "Compact",
+  "widgets.add_menu.size_sx": "Mini",
+  "widgets.add_menu.size_ssx": "Micro",
 
   "widgets.dummy.title_s": "Dummy S",
   "widgets.dummy.title_m": "Dummy M",

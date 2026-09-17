@@ -45,7 +45,7 @@ use gtk::glib;
 
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::{WidgetDescriptor, CATALOG};
-use xeneon_core::grid::{Size, GAP, SIZE_L, SIZE_M};
+use xeneon_core::grid::{Size, GAP, SIZE_L, SIZE_M, SIZE_S, SIZE_SQ, SIZE_SSX, SIZE_SX};
 
 /// Static (never reloaded) - only ever references `@accent_color` by name,
 /// which `theme.rs`'s own provider keeps redefining display-wide on every
@@ -95,54 +95,55 @@ fn ensure_css_installed() {
     });
 }
 
-/// Buckets a footprint by height alone, same three "shelves" the grid
-/// itself already tiles into (see grid.rs's SIZE_* comments): SQ shares M's
-/// height and SSX/SX/S all share S's, so every preset lands in exactly one
-/// of these. Shown smallest first since that's also screen-space order -
-/// at the panel's real 720px height a single SIZE_L already fills 95% of
-/// it, so "large" is always the last (and often the only) family visible
-/// without scrolling.
-fn size_family(size: Size) -> &'static str {
-    if size.h >= SIZE_L.h {
-        "large"
-    } else if size.h >= SIZE_M.h {
-        "medium"
-    } else {
-        "compact"
-    }
-}
+/// Every grid preset, smallest footprint first, paired with the i18n key
+/// naming it - the single source of truth for both the section headers
+/// and grouping below. Ordered by screen-space (area), not just height:
+/// SSX/SX/S share S's height but differ in width, so listing them by
+/// area rather than declaring an arbitrary tie order keeps "smallest
+/// first" actually true.
+const SIZE_ORDER: [(Size, &str); 6] = [
+    (SIZE_SSX, "widgets.add_menu.size_ssx"),
+    (SIZE_SX, "widgets.add_menu.size_sx"),
+    (SIZE_S, "widgets.add_menu.size_s"),
+    (SIZE_SQ, "widgets.add_menu.size_sq"),
+    (SIZE_M, "widgets.add_menu.size_m"),
+    (SIZE_L, "widgets.add_menu.size_l"),
+];
 
-const FAMILY_ORDER: [&str; 3] = ["compact", "medium", "large"];
-
-fn family_label_key(family: &str) -> &'static str {
-    match family {
-        "compact" => "widgets.add_menu.family_compact",
-        "medium" => "widgets.add_menu.family_medium",
-        _ => "widgets.add_menu.family_large",
-    }
+fn size_label_key(size: Size) -> &'static str {
+    SIZE_ORDER.iter().find(|(candidate, _)| *candidate == size).map(|(_, key)| *key).unwrap_or_else(|| {
+        // Shouldn't happen - every CATALOG entry uses one of the six
+        // presets above - but degrades to *some* label rather than
+        // panicking if a future preset is ever added here without a
+        // matching entry in SIZE_ORDER.
+        "widgets.add_menu.size_m"
+    })
 }
 
 /// Every CATALOG entry except the dummy placeholders (dev/test-only
 /// footprint fillers, never meant to be a real user-facing choice here),
-/// bucketed by `size_family` and sorted narrowest first within each bucket
-/// (a stable sort, so entries of the same width keep CATALOG's own
-/// relative order) - mirrors `_grouped_catalog` in widget_picker.py. A
-/// family with nothing in it is omitted rather than shown as an empty
-/// section.
+/// grouped by *exact* preset rather than the old three broad
+/// small/medium/large families - two different presets sharing a family
+/// (e.g. SQ and M, both "medium"-height) previously ended up side by
+/// side in the same row with no visual cue telling them apart beyond a
+/// text label. One section per preset makes the actual footprint the
+/// grouping itself, not just a caption on top of it. A preset with
+/// nothing in it is omitted rather than shown as an empty section.
+/// Catalog order is kept within a section (already same-size, so
+/// there's nothing meaningful left to sort by).
 fn grouped_catalog() -> Vec<(&'static str, Vec<&'static WidgetDescriptor>)> {
-    let mut buckets: [Vec<&'static WidgetDescriptor>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut buckets: Vec<Vec<&'static WidgetDescriptor>> = vec![Vec::new(); SIZE_ORDER.len()];
     for descriptor in CATALOG {
         if descriptor.kind.starts_with("dummy_") {
             continue;
         }
-        let index = FAMILY_ORDER.iter().position(|&f| f == size_family(descriptor.size)).unwrap();
-        buckets[index].push(descriptor);
+        if let Some(index) = SIZE_ORDER.iter().position(|(size, _)| *size == descriptor.size) {
+            buckets[index].push(descriptor);
+        }
     }
-    for bucket in &mut buckets {
-        bucket.sort_by_key(|d| d.size.w);
-    }
-    FAMILY_ORDER
+    SIZE_ORDER
         .into_iter()
+        .map(|(_, key)| key)
         .zip(buckets)
         .filter(|(_, entries)| !entries.is_empty())
         .collect()
@@ -174,6 +175,18 @@ fn build_tile(descriptor: &'static WidgetDescriptor, on_activate: impl Fn(&'stat
     let tile = gtk::Overlay::new();
     tile.add_css_class("xeneon-widget-picker-tile");
     tile.set_size_request(descriptor.size.w, descriptor.size.h);
+    // GTK computes a widget's *effective* hexpand/vexpand from its
+    // descendants when not set explicitly on the widget itself - content
+    // above requests both (needed so it fills a real DashboardWidget's
+    // Gtk.Fixed-allocated rect on an actual page), and that request
+    // otherwise propagates all the way up through card/tile to this
+    // tile's GtkFlowBoxChild, stretching it to share whatever space is
+    // left in its row instead of staying at the size_request set above -
+    // every tile in a row ends up the same rendered width regardless of
+    // its actual preset, defeating the whole point of this preview.
+    // Setting it explicitly here stops that propagation at this widget.
+    tile.set_hexpand(false);
+    tile.set_vexpand(false);
     // Clips the card's content to the tile's own rounded corners - CSS
     // `overflow: hidden` isn't a real GTK CSS property, this widget-level
     // property is the actual mechanism (same fix needed on the Python
@@ -181,7 +194,16 @@ fn build_tile(descriptor: &'static WidgetDescriptor, on_activate: impl Fn(&'stat
     tile.set_overflow(gtk::Overflow::Hidden);
     tile.set_child(Some(&card));
 
-    let name_label = gtk::Label::new(Some(&i18n::t(descriptor.title_key)));
+    // Includes the size name (e.g. "Musique · Grand") - two entries for
+    // the same plugin (audio_l/audio_m/audio_sq) otherwise show the exact
+    // same text and are only told apart by comparing tile dimensions,
+    // which isn't obvious at a glance without something to compare
+    // against side by side.
+    let name_label = gtk::Label::new(Some(&format!(
+        "{} · {}",
+        i18n::t(descriptor.title_key),
+        i18n::t(size_label_key(descriptor.size))
+    )));
     name_label.add_css_class("xeneon-widget-picker-tile-name");
     name_label.set_halign(gtk::Align::Start);
     name_label.set_valign(gtk::Align::End);
@@ -323,10 +345,10 @@ impl WidgetPicker {
 
     fn rebuild_body(self: &std::rc::Rc<Self>) {
         self.clear_body();
-        for (family, entries) in grouped_catalog() {
+        for (size_key, entries) in grouped_catalog() {
             let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
-            let label = gtk::Label::new(Some(&i18n::t(family_label_key(family))));
+            let label = gtk::Label::new(Some(&i18n::t(size_key)));
             label.add_css_class("xeneon-widget-picker-family");
             label.set_halign(gtk::Align::Start);
             section.append(&label);
