@@ -16,7 +16,11 @@
 //! (the current page is full, or the widget is too big to ever fit an
 //! empty one) creates a fresh page and lands the widget there, up to
 //! `MAX_PAGES`; past that cap, adding is refused with a toast instead
-//! (see `AppMsg::AddWidget`).
+//! (see `AppMsg::AddWidget`). The page indicator also carries its own
+//! "+" button (`AppMsg::AddPage`) to create an empty page directly,
+//! independent of adding a widget - not in the Python original, added
+//! directly here. Both paths share the actual page-creation logic (see
+//! `AppModel::create_page`/`scroll_to_once_sized`).
 //!
 //! Startup layout: whatever was saved (or one empty page, on a first run
 //! with nothing saved yet), then - only in dev mode (see
@@ -124,6 +128,10 @@ enum AppMsg {
     /// between the delete closure firing (deep inside `grid_widget.rs`,
     /// with no view of `AppModel`) and this message being handled.
     PageEmptied(String),
+    /// The page indicator's "+" button (see page_indicator.rs's module
+    /// doc comment) - creates a brand new empty page and navigates to it.
+    /// Not in the Python original; added directly in this Rust port.
+    AddPage,
 }
 
 #[relm4::component]
@@ -296,7 +304,10 @@ impl SimpleComponent for AppModel {
         // below needs a live indicator to refresh on rename. Building the
         // shell first and filling it in after breaks that cycle.
         let settings_root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let page_indicator = PageIndicator::new(&carousel, &settings_root);
+        let page_indicator = PageIndicator::new(&carousel, &settings_root, {
+            let sender = sender.clone();
+            move || sender.input(AppMsg::AddPage)
+        });
         page_indicator.set_hide_delay_seconds(app_config.indicator_hide_delay_seconds);
         page_indicator.set_style(app_config.indicator_opacity, app_config.indicator_button_color.as_deref());
         for grid in &real_grids {
@@ -424,66 +435,20 @@ impl SimpleComponent for AppModel {
                 // read the same way through has_room_for/find_free_position:
                 // simply "no free spot"). Overflow forward onto a brand
                 // new page instead of giving up, same as the scan above
-                // already does across existing pages - capped at
-                // MAX_PAGES so this can't grow the carousel without bound.
-                let target = target.or_else(|| {
-                    if self.real_grids.len() >= MAX_PAGES {
-                        let toast = adw::Toast::new(&i18n_runtime::t_args(
-                            "widgets.add_menu.max_pages_toast",
-                            &[("max", &MAX_PAGES.to_string())],
-                        ));
-                        toast.set_timeout(4);
-                        self.toast_overlay.add_toast(toast);
-                        return None;
-                    }
-
-                    let new_index = self.real_grids.len();
-                    let grid = WidgetGrid::new(PAGE_W, PAGE_H, new_index, self.widgets_dir.clone(), self.pages_dir.clone());
-                    grid.set_background_image(config_store::get().app_background_image_path.as_deref());
-                    let grid = Rc::new(grid);
-                    register_page_emptied(&grid, &sender);
-                    self._page_indicator.register_page(grid.widget(), grid.clone());
-                    // Insert right after the last real page - ahead of the
-                    // dev-mode test page and/or the settings page, which
-                    // always come after real_grids in the carousel (see
-                    // the append order at the end of init()).
-                    self.carousel.insert(grid.widget(), new_index as i32);
-                    self.pages_handle.add_page(grid.clone());
-                    self.real_grids.push(grid);
-                    Some(new_index)
-                });
+                // already does across existing pages - create_page() itself
+                // enforces MAX_PAGES so this can't grow the carousel
+                // without bound.
+                let target = target.or_else(|| self.create_page(&sender));
 
                 if let Some(index) = target {
                     let grid = &self.real_grids[index];
                     grid.add_widget(descriptor.title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
-                    // Deferred until the new page actually has a size,
-                    // polled once per frame via a tick callback, rather
-                    // than called inline: a page just created above via
-                    // carousel.insert() hasn't been allocated a size yet
-                    // in this same call, and AdwCarousel computes
-                    // scroll_to's target offset from each page's
-                    // allocated width - so scrolling immediately here can
-                    // silently fall short of a brand-new last page (the
-                    // widget still gets added correctly, it's only the
-                    // page switch that's visually wrong). Two signal-based
-                    // attempts were tried and measured (via temporary
-                    // debug logging) to not work here: an idle callback
-                    // can run before the frame clock's layout pass, and -
-                    // confirmed by that logging - the page is already
-                    // mapped (width 0) *before* insert() even returns, so
-                    // its own "map" signal never fires afterwards to hang
-                    // a callback off of. Polling `width() > 0` every frame
-                    // sidesteps needing to know exactly which signal or
-                    // priority is guaranteed to land after allocation.
-                    let carousel = self.carousel.clone();
-                    let page = grid.widget().clone();
-                    page.add_tick_callback(move |page, _frame_clock| {
-                        if page.width() == 0 {
-                            return gtk::glib::ControlFlow::Continue;
-                        }
-                        carousel.scroll_to(page, true);
-                        gtk::glib::ControlFlow::Break
-                    });
+                    self.scroll_to_once_sized(index);
+                }
+            }
+            AppMsg::AddPage => {
+                if let Some(index) = self.create_page(&sender) {
+                    self.scroll_to_once_sized(index);
                 }
             }
             AppMsg::PageEmptied(page_id) => {
@@ -510,6 +475,70 @@ impl SimpleComponent for AppModel {
                 }
             }
         }
+    }
+}
+
+impl AppModel {
+    /// Creates a fresh, empty real page - background applied, delete/empty
+    /// callback wired, inserted into the carousel right after the existing
+    /// real pages (ahead of the dev-mode test page and/or the settings
+    /// page, which always come after `real_grids` - see the append order
+    /// at the end of `init()`), registered with the page indicator and the
+    /// Settings "Pages" rename list, and pushed onto `real_grids`. Returns
+    /// its index, or `None` (after showing a "max pages" toast) once
+    /// `MAX_PAGES` is already reached.
+    ///
+    /// Shared by `AddWidget`'s page-overflow fallback and `AddPage` (the
+    /// page indicator's "+" button) - both used to duplicate this same
+    /// create/register/insert/push sequence inline.
+    fn create_page(&mut self, sender: &ComponentSender<Self>) -> Option<usize> {
+        if self.real_grids.len() >= MAX_PAGES {
+            let toast = adw::Toast::new(&i18n_runtime::t_args(
+                "widgets.add_menu.max_pages_toast",
+                &[("max", &MAX_PAGES.to_string())],
+            ));
+            toast.set_timeout(4);
+            self.toast_overlay.add_toast(toast);
+            return None;
+        }
+
+        let new_index = self.real_grids.len();
+        let grid = WidgetGrid::new(PAGE_W, PAGE_H, new_index, self.widgets_dir.clone(), self.pages_dir.clone());
+        grid.set_background_image(config_store::get().app_background_image_path.as_deref());
+        let grid = Rc::new(grid);
+        register_page_emptied(&grid, sender);
+        self._page_indicator.register_page(grid.widget(), grid.clone());
+        self.carousel.insert(grid.widget(), new_index as i32);
+        self.pages_handle.add_page(grid.clone());
+        self.real_grids.push(grid);
+        Some(new_index)
+    }
+
+    /// Scrolls the carousel to `real_grids[index]`'s page once it actually
+    /// has a size, polled once per frame via a tick callback rather than
+    /// called inline: a page just inserted via `carousel.insert()` hasn't
+    /// been allocated a size yet in the same call, and `AdwCarousel`
+    /// computes `scroll_to`'s target offset from each page's allocated
+    /// width - so scrolling immediately can silently fall short of a
+    /// brand-new last page (correctly added, just visually not switched
+    /// to). Two signal-based attempts were tried and measured (via
+    /// temporary debug logging) to not work here: an idle callback can run
+    /// before the frame clock's layout pass, and - confirmed by that
+    /// logging - the page is already mapped (width 0) *before* insert()
+    /// even returns, so its own "map" signal never fires afterwards to
+    /// hang a callback off of. Polling `width() > 0` every frame
+    /// sidesteps needing to know exactly which signal/priority is
+    /// guaranteed to land after allocation.
+    fn scroll_to_once_sized(&self, index: usize) {
+        let carousel = self.carousel.clone();
+        let page = self.real_grids[index].widget().clone();
+        page.add_tick_callback(move |page, _frame_clock| {
+            if page.width() == 0 {
+                return gtk::glib::ControlFlow::Continue;
+            }
+            carousel.scroll_to(page, true);
+            gtk::glib::ControlFlow::Break
+        });
     }
 }
 

@@ -3,6 +3,8 @@
 
   "window.title": "Xeneon Dashboard",
 
+  "carousel.add_page_tooltip": "Add a page",
+
   "settings.title": "Settings",
   "settings.interface_group": "Interface",
   "settings.hide_delay_row.title": "Page bar hide delay",

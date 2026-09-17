@@ -5,6 +5,13 @@
 //! opacity/color customization driven by `Config.indicator_opacity`/
 //! `indicator_button_color` (see `set_style`/`set_hide_delay_seconds`,
 //! wired to the "Interface" settings group).
+//!
+//! Also carries a "+" button (`.xeneon-page-add`), sitting right before the
+//! settings gear icon - not tied to any carousel page itself, just an
+//! action wired to `on_add_page` in `PageIndicator::new` (see
+//! `AppMsg::AddPage`/`AppModel::create_page` in main.rs for what it
+//! actually does: create an empty page and navigate to it). This one isn't
+//! in the Python original - it was added directly in this Rust port.
 
 use adw::prelude::*;
 use std::cell::RefCell;
@@ -13,6 +20,7 @@ use std::rc::Rc;
 use std::sync::Once;
 
 use crate::grid_widget::WidgetGrid;
+use crate::i18n_runtime;
 
 const DEFAULT_HIDE_DELAY_SECONDS: u32 = 2;
 // Sized off the Xeneon Edge's actual pixel density (2560x720 over a 14.5"
@@ -91,6 +99,15 @@ pub fn set_style(opacity_percent: u32, color_hex: Option<&str>) {
         button.xeneon-page-settings.active {{
           opacity: 1;
         }}
+        button.xeneon-page-add {{
+          min-width: {tpx}px;
+          min-height: {tpx}px;
+          padding: 6px;
+          margin: 0 8px;
+          opacity: {op:.2};
+          border-radius: 18px;
+          {color_rule}
+        }}
         ",
         tpx = TOUCH_TARGET_PX,
         op = inactive_opacity,
@@ -116,6 +133,17 @@ struct Inner {
     named_pages: RefCell<HashMap<gtk::Widget, Rc<WidgetGrid>>>,
     hide_delay_seconds: RefCell<u32>,
     hide_source: RefCell<Option<gtk::glib::SourceId>>,
+    // Called (no args) when the "+" button is tapped - see the module doc
+    // comment above and AppMsg::AddPage in main.rs.
+    on_add_page: Box<dyn Fn()>,
+    // (button, its page) pairs rebuilt every refresh() - lets update_active()
+    // below match the *current carousel page* against the button that
+    // represents it, rather than assuming the row's Nth child is always the
+    // Nth carousel page. That assumption broke the moment the "+" button
+    // (not tied to any page) was inserted into the row between the last
+    // numbered button and the settings one - only page-associated buttons
+    // go in here, so the "+" button is simply never matched/never active.
+    page_buttons: RefCell<Vec<(gtk::Widget, gtk::Widget)>>,
 }
 
 impl Inner {
@@ -123,53 +151,90 @@ impl Inner {
         while let Some(child) = self.row.first_child() {
             self.row.remove(&child);
         }
+        self.page_buttons.borrow_mut().clear();
 
+        // Settings is always the carousel's last page (see main.rs's
+        // append order), but skipped here by identity rather than assumed
+        // by position - it's built separately below, after the "+" button,
+        // so the two don't end up interleaved by whatever order n_pages
+        // happens to iterate in.
         for i in 0..self.carousel.n_pages() {
             let page = self.carousel.nth_page(i);
+            if page == self.settings_page {
+                continue;
+            }
             let button = gtk::Button::new();
             button.add_css_class("flat");
+            button.add_css_class("xeneon-page-number");
 
             let custom_name = self.named_pages.borrow().get(&page).and_then(|grid| grid.custom_name());
-
-            if page == self.settings_page {
-                let icon = gtk::Image::from_icon_name("preferences-system-symbolic");
-                icon.set_pixel_size(SETTINGS_ICON_PIXEL_SIZE);
-                button.set_child(Some(&icon));
-                button.add_css_class("xeneon-page-settings");
-            } else if let Some(name) = custom_name {
+            if let Some(name) = custom_name {
                 let label = gtk::Label::new(Some(&name));
                 label.set_max_width_chars(10);
                 label.set_ellipsize(gtk::pango::EllipsizeMode::End);
                 label.set_single_line_mode(true);
                 button.set_child(Some(&label));
-                button.add_css_class("xeneon-page-number");
             } else {
                 button.set_label(&(i + 1).to_string());
-                button.add_css_class("xeneon-page-number");
             }
 
             let inner = self.clone();
+            let page_for_click = page.clone();
             button.connect_clicked(move |_| {
-                inner.carousel.scroll_to(&page, true);
+                inner.carousel.scroll_to(&page_for_click, true);
                 inner.show();
             });
+            self.page_buttons.borrow_mut().push((button.clone().upcast(), page));
             self.row.append(&button);
         }
+
+        // The "+" button: sits right before the settings gear icon, not
+        // tied to any carousel page - see the module doc comment above.
+        let add_button = gtk::Button::from_icon_name("list-add-symbolic");
+        add_button.add_css_class("flat");
+        add_button.add_css_class("xeneon-page-add");
+        add_button.set_tooltip_text(Some(&i18n_runtime::t("carousel.add_page_tooltip")));
+        let inner = self.clone();
+        add_button.connect_clicked(move |_| (inner.on_add_page)());
+        self.row.append(&add_button);
+
+        let settings_button = gtk::Button::new();
+        settings_button.add_css_class("flat");
+        let icon = gtk::Image::from_icon_name("preferences-system-symbolic");
+        icon.set_pixel_size(SETTINGS_ICON_PIXEL_SIZE);
+        settings_button.set_child(Some(&icon));
+        settings_button.add_css_class("xeneon-page-settings");
+        let inner = self.clone();
+        let settings_page_for_click = self.settings_page.clone();
+        settings_button.connect_clicked(move |_| {
+            inner.carousel.scroll_to(&settings_page_for_click, true);
+            inner.show();
+        });
+        self.page_buttons.borrow_mut().push((settings_button.clone().upcast(), self.settings_page.clone()));
+        self.row.append(&settings_button);
+
         self.update_active();
     }
 
     fn update_active(self: &Rc<Self>) {
-        let position = self.carousel.position().round() as i32;
-        let mut i = 0;
-        let mut child = self.row.first_child();
-        while let Some(c) = child {
-            if i == position {
-                c.add_css_class("active");
+        // Guards nth_page() below: it panics (asserts n < n_pages()) on an
+        // empty carousel, which is exactly the state the very first
+        // refresh() runs in - PageIndicator::new() calls it before main.rs
+        // has appended a single page yet. The pre-existing is_on_settings_page()
+        // has the same nth_page() call but was never at risk of this, since
+        // it's only reached from show(), itself only ever triggered by a
+        // carousel signal that can't fire before there's at least one page.
+        if self.carousel.n_pages() == 0 {
+            return;
+        }
+        let position = self.carousel.position().round().max(0.0) as u32;
+        let current_page = self.carousel.nth_page(position);
+        for (button, page) in self.page_buttons.borrow().iter() {
+            if *page == current_page {
+                button.add_css_class("active");
             } else {
-                c.remove_css_class("active");
+                button.remove_css_class("active");
             }
-            child = c.next_sibling();
-            i += 1;
         }
     }
 
@@ -214,7 +279,11 @@ pub struct PageIndicator {
 }
 
 impl PageIndicator {
-    pub fn new(carousel: &adw::Carousel, settings_page: &impl IsA<gtk::Widget>) -> Self {
+    /// `on_add_page` fires (no args) whenever the "+" button is tapped -
+    /// the caller decides what that actually means (main.rs wires it to
+    /// `AppMsg::AddPage`, which creates an empty page and navigates to it,
+    /// or shows a "max pages" toast if already at the cap).
+    pub fn new(carousel: &adw::Carousel, settings_page: &impl IsA<gtk::Widget>, on_add_page: impl Fn() + 'static) -> Self {
         set_style(DEFAULT_OPACITY_PERCENT, None);
 
         let revealer = gtk::Revealer::new();
@@ -241,6 +310,8 @@ impl PageIndicator {
             named_pages: RefCell::new(HashMap::new()),
             hide_delay_seconds: RefCell::new(DEFAULT_HIDE_DELAY_SECONDS),
             hide_source: RefCell::new(None),
+            on_add_page: Box::new(on_add_page),
+            page_buttons: RefCell::new(Vec::new()),
         });
         inner.refresh();
 
