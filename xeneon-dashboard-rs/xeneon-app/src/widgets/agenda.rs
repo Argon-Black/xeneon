@@ -1248,14 +1248,14 @@ fn build_settings(state: Rc<AgendaState>) -> gtk::Widget {
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
     let settings = build_settings(state.clone());
-    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None }
+    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None, on_change_ready: None }
 }
 
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content();
     state.apply_dict(data);
     let settings = build_settings(state.clone());
-    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None }
+    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None, on_change_ready: None }
 }
 
 #[cfg(test)]

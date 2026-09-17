@@ -177,6 +177,13 @@
   "widgets.weather.conditions.thunderstorm_hail": "Thunderstorm with hail",
   "widgets.weather.conditions.unknown": "Unknown",
 
+  "widgets.shortcuts.title": "Shortcuts",
+  "widgets.shortcuts.empty_hint": "Click + at the top-left to add an application",
+  "widgets.shortcuts.context.add": "Add an application…",
+  "widgets.shortcuts.picker.title": "Add a shortcut",
+  "widgets.shortcuts.picker.search_placeholder": "Search an application…",
+  "widgets.shortcuts.picker.apps_group": "Installed applications",
+
   "widgets.clock.title": "Clock",
   "widgets.clock.settings.time_font": "Font (time)",
   "widgets.clock.settings.label_font": "Font (city/date)",

@@ -550,6 +550,7 @@ pub fn spawn() -> WidgetInstance {
         // CpuTempContent has no `reset()`): the generic appearance reset
         // the popover already provides is enough here.
         on_reset: None,
+        on_change_ready: None,
     }
 }
 
@@ -562,5 +563,6 @@ pub fn restore(data: &serde_json::Value) -> WidgetInstance {
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
         on_reset: None,
+        on_change_ready: None,
     }
 }

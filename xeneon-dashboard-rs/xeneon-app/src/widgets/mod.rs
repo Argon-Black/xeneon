@@ -4,5 +4,6 @@ pub mod clock;
 pub mod cpu_temp;
 pub mod dummy;
 pub mod registry;
+pub mod shortcuts;
 pub mod temp_gauge;
 pub mod weather;

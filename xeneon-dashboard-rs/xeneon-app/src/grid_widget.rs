@@ -409,7 +409,7 @@ impl WidgetGrid {
     }
 
     fn insert_at(&self, id: String, kind: String, title_key: &str, rect: Rect, appearance: WidgetAppearance, instance: WidgetInstance) {
-        let WidgetInstance { content, settings, to_dict, on_reset } = instance;
+        let WidgetInstance { content, settings, to_dict, on_reset, on_change_ready } = instance;
         let to_dict: Rc<dyn Fn() -> serde_json::Value> = Rc::from(to_dict);
         let css_class = format!("xeneon-appearance-{id}");
         let handles = crate::dashboard_widget::build(
@@ -434,8 +434,13 @@ impl WidgetGrid {
             to_dict: to_dict.clone(),
         });
 
-        {
-            let popover = &handles.settings_popover;
+        // Factored out so both the popover's own "closed" save and a
+        // plugin's own change-triggered save (see `on_change_ready` below)
+        // share one definition of "what does saving this widget mean" -
+        // reads the *current* rect/appearance/content fresh every call
+        // (via `placed.borrow()`) rather than baking anything in at
+        // construction time, since either trigger can fire long after this.
+        let save_now: Rc<dyn Fn()> = Rc::new({
             let widgets_dir = self.widgets_dir.clone();
             let page_index = self.page_index.clone();
             let persist = self.persist;
@@ -444,7 +449,7 @@ impl WidgetGrid {
             let kind = kind.clone();
             let to_dict = to_dict.clone();
             let appearance = handles.appearance.clone();
-            popover.connect_closed(move |_| {
+            move || {
                 if !persist {
                     return;
                 }
@@ -463,7 +468,21 @@ impl WidgetGrid {
                 if let Err(err) = widget_state::save(&widgets_dir, &state) {
                     eprintln!("xeneon-dashboard: failed to save widget {id}: {err}");
                 }
-            });
+            }
+        });
+
+        handles.settings_popover.connect_closed({
+            let save_now = save_now.clone();
+            move |_| save_now()
+        });
+
+        // A plugin whose own state can change straight on the canvas,
+        // outside the popover entirely (the shortcuts grid, adding/moving/
+        // deleting an icon) gets this same save closure handed to it
+        // directly here - see `WidgetInstance::on_change_ready`'s own doc
+        // comment for why that's needed at all.
+        if let Some(on_change_ready) = on_change_ready {
+            on_change_ready(save_now.clone());
         }
 
         {

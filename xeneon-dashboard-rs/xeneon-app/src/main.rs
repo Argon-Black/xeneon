@@ -286,7 +286,7 @@ impl SimpleComponent for AppModel {
                 continue;
             };
             match widgets::registry::find(&state.kind) {
-                Some(descriptor) => grid.restore_widget(state, descriptor.title_key, (descriptor.restore)(&state.content)),
+                Some(descriptor) => grid.restore_widget(state, descriptor.card_title_key, (descriptor.restore)(&state.content)),
                 None => eprintln!("xeneon-dashboard: widget {} has unknown kind {:?}, skipped", state.id, state.kind),
             }
         }
@@ -472,7 +472,7 @@ impl SimpleComponent for AppModel {
 
                 if let Some(index) = target {
                     let grid = &self.real_grids[index];
-                    grid.add_widget(descriptor.title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
+                    grid.add_widget(descriptor.card_title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
                     self.scroll_to_once_sized(index);
                 }
             }

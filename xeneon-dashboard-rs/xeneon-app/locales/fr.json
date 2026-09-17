@@ -177,6 +177,13 @@
   "widgets.weather.conditions.thunderstorm_hail": "Orage avec grêle",
   "widgets.weather.conditions.unknown": "Inconnu",
 
+  "widgets.shortcuts.title": "Raccourcis",
+  "widgets.shortcuts.empty_hint": "Cliquer sur + en haut à gauche pour ajouter une application",
+  "widgets.shortcuts.context.add": "Ajouter une application…",
+  "widgets.shortcuts.picker.title": "Ajouter un raccourci",
+  "widgets.shortcuts.picker.search_placeholder": "Rechercher une application…",
+  "widgets.shortcuts.picker.apps_group": "Applications installées",
+
   "widgets.clock.title": "Horloge",
   "widgets.clock.settings.time_font": "Police (heure)",
   "widgets.clock.settings.label_font": "Police (ville/date)",

@@ -601,6 +601,7 @@ pub fn spawn() -> WidgetInstance {
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
         on_reset: Some(Box::new(on_reset)),
+        on_change_ready: None,
     }
 }
 
@@ -620,5 +621,6 @@ pub fn restore(data: &serde_json::Value) -> WidgetInstance {
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
         on_reset: Some(Box::new(on_reset)),
+        on_change_ready: None,
     }
 }

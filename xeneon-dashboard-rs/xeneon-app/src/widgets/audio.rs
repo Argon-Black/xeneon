@@ -1022,7 +1022,7 @@ fn build_settings(state: Rc<AudioState>) -> (gtk::Widget, Box<dyn Fn()>) {
 fn spawn_at(size: Size) -> WidgetInstance {
     let (state, content) = build_content(size);
     let (settings, _resync) = build_settings(state.clone());
-    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None }
+    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None, on_change_ready: None }
 }
 
 fn restore_at(size: Size, data: &serde_json::Value) -> WidgetInstance {
@@ -1035,7 +1035,7 @@ fn restore_at(size: Size, data: &serde_json::Value) -> WidgetInstance {
     // land on first.
     state.pick_active_player();
     let (settings, _resync) = build_settings(state.clone());
-    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None }
+    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None, on_change_ready: None }
 }
 
 // One pair of tiny wrappers per size so the registry's static CATALOG
