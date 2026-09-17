@@ -717,7 +717,24 @@ fn place_icon(state: &Rc<ShortcutsState>, icon: ShortcutIcon) {
     tile.delete_button.connect_clicked({
         let state = state.clone();
         let tile = tile.clone();
-        move |_| remove_icon(&state, &tile)
+        move |_| {
+            // Deferred to the next main-loop idle iteration rather than
+            // done synchronously here: this handler runs while GTK is
+            // still finishing its own dispatch of delete_button's click,
+            // and delete_button lives inside tile.root - the very widget
+            // remove_icon removes from the canvas. Removing it synchronously
+            // out from under that still-in-flight dispatch crashes inside
+            // GTK4's own crossing-event synthesis (confirmed via
+            // coredumpctl on real hardware) - see
+            // feedback_rust_gtk_dev_loop_gotchas item 5, and
+            // grid_widget.rs's own connect_drag_end for the same fix
+            // applied to a whole-widget move/delete.
+            let state = state.clone();
+            let tile = tile.clone();
+            gtk::glib::idle_add_local_once(move || {
+                remove_icon(&state, &tile);
+            });
+        }
     });
 
     let drag = gtk::GestureDrag::new();
@@ -774,7 +791,21 @@ fn place_icon(state: &Rc<ShortcutsState>, icon: ShortcutIcon) {
             if state.icons.borrow().contains_key(&(col, row)) {
                 return;
             }
-            move_icon(&state, &tile, col, row);
+            // Deferred to the next main-loop idle iteration rather than
+            // done synchronously here: this handler runs while GTK is
+            // still finishing its own dispatch of the drag gesture
+            // attached to tile.move_button, which lives inside tile.root -
+            // moving tile.root out from under that still-in-flight event
+            // processing crashes inside GTK4's own crossing-event
+            // synthesis (confirmed via coredumpctl on real hardware) - see
+            // feedback_rust_gtk_dev_loop_gotchas item 5, and
+            // grid_widget.rs's own connect_drag_end for the same fix
+            // applied to a whole-widget move.
+            let state = state.clone();
+            let tile = tile.clone();
+            gtk::glib::idle_add_local_once(move || {
+                move_icon(&state, &tile, col, row);
+            });
         }
     });
     tile.move_button.add_controller(drag);
