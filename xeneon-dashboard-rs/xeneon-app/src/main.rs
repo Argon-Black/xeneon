@@ -173,10 +173,24 @@ impl SimpleComponent for AppModel {
             // "+"/"-" to its own value increment/decrement by default -
             // with that scale focused (e.g. while a track is playing),
             // Ctrl+Plus got eaten by the scale before ever reaching this
-            // window-level controller. Ctrl+Shift+A sidesteps the whole
-            // class of conflict: no GTK widget binds Shift+letter combos
-            // by default, unlike +/-/arrows/Home/End/Page-Up-Down.
+            // window-level controller. Ctrl+Shift+A sidesteps that
+            // specific conflict (no GTK widget binds Shift+letter combos
+            // by default), but the underlying class of bug is broader:
+            // an EventController's default propagation phase is Bubble,
+            // so it only sees a key event *after* it's already been
+            // offered to whichever widget currently has focus (and that
+            // widget's own ancestors) - any focused widget/row that
+            // consumes the event first (a Switch, a ListBoxRow, ...)
+            // means it never reaches this controller at all, which read
+            // as the shortcut "sometimes" not firing depending on what
+            // had focus. Capture phase fixes that class of bug outright:
+            // this controller sees every key press *before* GTK
+            // dispatches it to the focused widget, so nothing downstream
+            // can eat it first - matches how the Python original's
+            // Gio.SimpleAction + set_accels_for_action shortcuts behave
+            // (an app-level accelerator, not a per-widget one).
             add_controller = gtk::EventControllerKey {
+                set_propagation_phase: gtk::PropagationPhase::Capture,
                 connect_key_pressed[sender] => move |_, key, _, modifiers| {
                     if key == gtk::gdk::Key::F11 {
                         sender.input(AppMsg::ToggleFullscreen);
