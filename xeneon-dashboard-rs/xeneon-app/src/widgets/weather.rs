@@ -1,8 +1,9 @@
-//! Weather widget, step 1 of the port from `widgets/weather.py` (Python):
-//! current conditions (icon, temperature, humidity/pressure/wind/UV index)
-//! for a fixed default location (Paris - free-text city search, matching
-//! `WeatherSettings` in the Python original, is step 2; the per-instance
-//! content-size slider is step 3). Laid out as three centered columns -
+//! Weather widget, steps 1-2 of the port from `widgets/weather.py`
+//! (Python): current conditions (icon, temperature, humidity/pressure/
+//! wind/UV index), plus (step 2) `WeatherSettings` - free-text city
+//! search via Open-Meteo's geocoding endpoint, and a °C/°F toggle. The
+//! per-instance content-size slider is step 3. Laid out as three centered
+//! columns -
 //! temperature (large, bold) with the city name below; the condition icon
 //! (large) with wind speed below; humidity/pressure/UV index stacked as
 //! small icon+value rows - exactly mirroring the Python original's final
@@ -31,9 +32,9 @@
 //! from a superseded request a no-op when it lands - mirrors
 //! `WeatherContent._fetch_generation` in the Python original.
 
+use adw::prelude::*;
 use gtk::gio;
 use gtk::glib;
-use gtk::prelude::*;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -43,6 +44,8 @@ use crate::i18n_runtime as i18n;
 use crate::widgets::registry::WidgetInstance;
 
 const FORECAST_URL: &str = "https://api.open-meteo.com/v1/forecast";
+const GEOCODING_URL: &str = "https://geocoding-api.open-meteo.com/v1/search";
+const GEOCODING_RESULT_COUNT: u32 = 8;
 const REQUEST_TIMEOUT_SECONDS: u64 = 8;
 const REFRESH_INTERVAL_SECONDS: u32 = 15 * 60;
 
@@ -159,6 +162,22 @@ impl Location {
     }
 }
 
+/// "City, Region, Country" - skips a region that just repeats the city
+/// name (common for big cities in the geocoding API's results) and any
+/// part that's empty, so it degrades gracefully for an older saved
+/// location missing some of these fields. Mirrors the Python original's
+/// `format_location()`.
+fn format_location(location: &Location) -> String {
+    let mut parts = vec![location.name.as_str()];
+    if !location.admin1.is_empty() && location.admin1 != location.name {
+        parts.push(&location.admin1);
+    }
+    if !location.country.is_empty() {
+        parts.push(&location.country);
+    }
+    parts.join(", ")
+}
+
 /// One successful fetch's worth of current conditions - a plain `Send`
 /// data type (no GTK objects), since it's built on GIO's blocking thread
 /// pool and has to cross back to the main thread.
@@ -210,6 +229,40 @@ fn fetch_current_weather(location: &Location) -> Result<CurrentWeather, String> 
         wind_speed: current.get("wind_speed_10m").and_then(|v| v.as_f64()),
         uv_index: current.get("uv_index").and_then(|v| v.as_f64()),
     })
+}
+
+/// Blocking geocoding lookup (city name -> candidate locations) - runs on
+/// GIO's thread pool via `gio::spawn_blocking`, same as
+/// `fetch_current_weather`. Mirrors `WeatherSettings._on_search` in the
+/// Python original.
+fn search_locations(query: &str, language: &str) -> Result<Vec<Location>, String> {
+    let mut response = ureq::get(GEOCODING_URL)
+        .query("name", query)
+        .query("count", GEOCODING_RESULT_COUNT.to_string())
+        .query("language", language)
+        .query("format", "json")
+        .config()
+        .timeout_global(Some(Duration::from_secs(REQUEST_TIMEOUT_SECONDS)))
+        .build()
+        .call()
+        .map_err(|e| e.to_string())?;
+
+    let body = response.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let results = json.get("results").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+    Ok(results
+        .iter()
+        .filter_map(|entry| {
+            Some(Location {
+                name: entry.get("name")?.as_str()?.to_string(),
+                admin1: entry.get("admin1").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                country: entry.get("country").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                latitude: entry.get("latitude")?.as_f64()?,
+                longitude: entry.get("longitude")?.as_f64()?,
+            })
+        })
+        .collect())
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -454,11 +507,208 @@ fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
     (state, root.upcast())
 }
 
+fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    for w in widgets {
+        row.append(*w);
+    }
+    row
+}
+
+/// The weather widget's own settings, shown next to the generic
+/// appearance controls in the same configure popover (see
+/// `clock.rs::build_settings` for the reference layout this follows): a
+/// free-text city search (queries Open-Meteo's geocoding endpoint, see
+/// `search_locations`) and a °C/°F unit toggle. No resync/`on_reset` is
+/// wired - nothing outside these controls' own signal handlers ever
+/// mutates `state.location`/`unit_fahrenheit` (matches the Python
+/// original: `_spawn_weather` never passes `on_reset` either).
+fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    root.set_size_request(280, -1);
+
+    let location_title = gtk::Label::new(Some(&i18n::t("widgets.weather.settings.location")));
+    location_title.set_halign(gtk::Align::Start);
+    root.append(&location_title);
+
+    let current_location_label = gtk::Label::new(Some(&format_location(&state.location.borrow())));
+    current_location_label.set_halign(gtk::Align::Start);
+    current_location_label.set_wrap(true);
+    current_location_label.add_css_class("dim-label");
+    root.append(&current_location_label);
+
+    let search_entry = gtk::SearchEntry::new();
+    search_entry.set_hexpand(true);
+    let search_button = gtk::Button::with_label(&i18n::t("widgets.weather.settings.search_button"));
+    root.append(&make_row(&[search_entry.upcast_ref(), search_button.upcast_ref()]));
+
+    let status_label = gtk::Label::new(None);
+    status_label.set_halign(gtk::Align::Start);
+    status_label.add_css_class("dim-label");
+    status_label.set_visible(false);
+    root.append(&status_label);
+
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_min_content_height(160);
+    scroller.set_max_content_height(160);
+    scroller.set_vexpand(false);
+    scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    let results_list = gtk::ListBox::new();
+    results_list.add_css_class("boxed-list");
+    results_list.set_selection_mode(gtk::SelectionMode::None);
+    results_list.set_activate_on_single_click(true);
+    scroller.set_child(Some(&results_list));
+    root.append(&scroller);
+
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let unit_label = gtk::Label::new(Some(&i18n::t("widgets.weather.settings.unit")));
+    unit_label.set_hexpand(true);
+    unit_label.set_halign(gtk::Align::Start);
+    let celsius_button = gtk::ToggleButton::with_label(&i18n::t("widgets.weather.settings.unit_celsius"));
+    let fahrenheit_button = gtk::ToggleButton::with_label(&i18n::t("widgets.weather.settings.unit_fahrenheit"));
+    fahrenheit_button.set_group(Some(&celsius_button));
+    celsius_button.set_active(!state.unit_fahrenheit.get());
+    fahrenheit_button.set_active(state.unit_fahrenheit.get());
+    root.append(&make_row(&[unit_label.upcast_ref(), celsius_button.upcast_ref(), fahrenheit_button.upcast_ref()]));
+
+    // --- search wiring ---
+    // Holds the results a response actually produced, indexed the same
+    // way as the rows built from them - `ListBoxRow::index()` in
+    // `row-activated` is how the handler finds its way back to the
+    // matching `Location` without attaching data to the row itself.
+    let results: Rc<RefCell<Vec<Location>>> = Rc::new(RefCell::new(Vec::new()));
+    let search_generation = Rc::new(Cell::new(0u64));
+
+    let clear_results = {
+        let results_list = results_list.clone();
+        move || {
+            while let Some(child) = results_list.first_child() {
+                results_list.remove(&child);
+            }
+        }
+    };
+
+    let set_status = {
+        let status_label = status_label.clone();
+        move |text: Option<String>| match text {
+            Some(text) => {
+                status_label.set_label(&text);
+                status_label.set_visible(true);
+            }
+            None => status_label.set_visible(false),
+        }
+    };
+
+    let run_search = {
+        let search_entry = search_entry.clone();
+        let results = results.clone();
+        let results_list = results_list.clone();
+        let search_generation = search_generation.clone();
+        let clear_results = clear_results.clone();
+        let set_status = set_status.clone();
+        move || {
+            let query = search_entry.text().trim().to_string();
+            if query.is_empty() {
+                return;
+            }
+            clear_results();
+            set_status(Some(i18n::t("widgets.weather.settings.searching")));
+            let generation = search_generation.get() + 1;
+            search_generation.set(generation);
+            let language = i18n::current_language();
+
+            let results = results.clone();
+            let results_list = results_list.clone();
+            let search_generation = search_generation.clone();
+            let set_status = set_status.clone();
+            glib::spawn_future_local(async move {
+                let outcome = gio::spawn_blocking(move || search_locations(&query, &language)).await;
+                if generation != search_generation.get() {
+                    return;
+                }
+                let found = match outcome {
+                    Ok(Ok(found)) if !found.is_empty() => found,
+                    _ => {
+                        set_status(Some(i18n::t("widgets.weather.settings.no_results")));
+                        return;
+                    }
+                };
+                set_status(None);
+                for location in &found {
+                    let row = adw::ActionRow::new();
+                    row.set_title(&gtk::glib::markup_escape_text(&format_location(location)));
+                    row.set_activatable(true);
+                    results_list.append(&row);
+                }
+                *results.borrow_mut() = found;
+            });
+        }
+    };
+
+    search_entry.connect_activate({
+        let run_search = run_search.clone();
+        move |_| run_search()
+    });
+    search_button.connect_clicked({
+        let run_search = run_search.clone();
+        move |_| run_search()
+    });
+    results_list.connect_row_activated({
+        let state = state.clone();
+        let results = results.clone();
+        let current_location_label = current_location_label.clone();
+        let search_entry = search_entry.clone();
+        let clear_results = clear_results.clone();
+        let set_status = set_status.clone();
+        move |_list, row| {
+            let index = row.index();
+            if index < 0 {
+                return;
+            }
+            if let Some(location) = results.borrow().get(index as usize).cloned() {
+                state.set_location(location);
+                trigger_fetch(&state);
+                current_location_label.set_label(&format_location(&state.location.borrow()));
+                clear_results();
+                search_entry.set_text("");
+                set_status(None);
+            }
+        }
+    });
+    fahrenheit_button.connect_toggled({
+        let state = state.clone();
+        move |b| state.set_unit_fahrenheit(b.is_active())
+    });
+
+    // --- retranslation ---
+    i18n::on_change({
+        let location_title = location_title.clone();
+        let search_entry = search_entry.clone();
+        let search_button = search_button.clone();
+        let unit_label = unit_label.clone();
+        let celsius_button = celsius_button.clone();
+        let fahrenheit_button = fahrenheit_button.clone();
+        move || {
+            location_title.set_label(&i18n::t("widgets.weather.settings.location"));
+            search_entry.set_placeholder_text(Some(&i18n::t("widgets.weather.settings.search_placeholder")));
+            search_button.set_label(&i18n::t("widgets.weather.settings.search_button"));
+            unit_label.set_label(&i18n::t("widgets.weather.settings.unit"));
+            celsius_button.set_label(&i18n::t("widgets.weather.settings.unit_celsius"));
+            fahrenheit_button.set_label(&i18n::t("widgets.weather.settings.unit_fahrenheit"));
+        }
+    });
+    search_entry.set_placeholder_text(Some(&i18n::t("widgets.weather.settings.search_placeholder")));
+
+    root.upcast()
+}
+
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
+    let settings = build_settings(state.clone());
     WidgetInstance {
         content,
-        settings: None,
+        settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
         on_reset: None,
     }
@@ -467,9 +717,10 @@ pub fn spawn() -> WidgetInstance {
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content();
     state.apply_dict(data);
+    let settings = build_settings(state.clone());
     WidgetInstance {
         content,
-        settings: None,
+        settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
         on_reset: None,
     }
