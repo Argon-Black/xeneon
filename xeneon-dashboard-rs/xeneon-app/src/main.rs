@@ -7,10 +7,13 @@
 //! file per widget/page, exactly like the Python app's `widget_store.py`/
 //! `page_store.py`) and reloaded on startup. The settings page (language
 //! switcher, page rename, plus a dev-only restart button) is always the
-//! carousel's last page. Ctrl+Shift+A opens a simple list of every
-//! registered widget kind - a reduced stand-in for
-//! `WidgetPicker` in widget_picker.py - and adds the chosen one to the
-//! current page (or the next real page with room, same overflow-forward
+//! carousel's last page. Ctrl+Shift+A opens the widget picker
+//! (widget_picker.rs, a full-screen slide-down overlay ported from
+//! `WidgetPicker` in widget_picker.py, currently still showing a plain
+//! list rather than the Python original's size-grouped live previews - see
+//! that module's own doc comment for the two-step porting plan) and adds
+//! the chosen kind to the current page (or the next real page with room,
+//! same overflow-forward
 //! scan as `XeneonWindow.add_widget`). Unlike the Python original -
 //! which has no page cap - running out of room on every existing page
 //! (the current page is full, or the widget is too big to ever fit an
@@ -95,8 +98,7 @@ struct AppModel {
     // view_output!() below for why this isn't built inside the view!
     // macro like the rest of the window content.
     toast_overlay: adw::ToastOverlay,
-    widget_picker_dialog: adw::Dialog,
-    window: adw::ApplicationWindow,
+    widget_picker: std::rc::Rc<widget_picker::WidgetPicker>,
     // Needed again whenever AddWidget creates a fresh page at runtime -
     // WidgetGrid::new takes them, same as every real page built at
     // startup below.
@@ -337,7 +339,7 @@ impl SimpleComponent for AppModel {
 
         let toast_overlay = adw::ToastOverlay::new();
 
-        let widget_picker_dialog = widget_picker::build({
+        let widget_picker = widget_picker::WidgetPicker::new({
             let sender = sender.clone();
             move |kind| sender.input(AppMsg::AddWidget(kind))
         });
@@ -371,8 +373,7 @@ impl SimpleComponent for AppModel {
             carousel: carousel.clone(),
             settings_root: settings_root.clone(),
             toast_overlay: toast_overlay.clone(),
-            widget_picker_dialog,
-            window: root.clone(),
+            widget_picker: widget_picker.clone(),
             widgets_dir,
             pages_dir,
             real_grids,
@@ -391,6 +392,10 @@ impl SimpleComponent for AppModel {
         widgets.overlay.set_child(Some(&carousel));
         widgets.overlay.add_overlay(model._page_indicator.widget());
         widgets.overlay.add_overlay(&model.header_bar);
+        // Added last so it stacks on top of the header bar too, covering
+        // the whole window while windowed (fullscreen/kiosk already hides
+        // the header bar - see ToggleFullscreen).
+        widgets.overlay.add_overlay(model.widget_picker.widget());
 
         // Splice the toast overlay in between the window and its existing
         // content rather than building it inside the view! macro above -
@@ -431,7 +436,7 @@ impl SimpleComponent for AppModel {
                 self.window_title.set_title(&self.title);
             }
             AppMsg::ShowWidgetPicker => {
-                self.widget_picker_dialog.present(Some(&self.window));
+                self.widget_picker.open();
             }
             AppMsg::GotoSettings => {
                 self.carousel.scroll_to(&self.settings_root, true);
