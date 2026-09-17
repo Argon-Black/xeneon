@@ -70,6 +70,13 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         restore: crate::widgets::audio::restore_sq,
     },
     WidgetDescriptor {
+        kind: "weather",
+        title_key: "widgets.weather.title",
+        size: SIZE_M,
+        spawn: crate::widgets::weather::spawn,
+        restore: crate::widgets::weather::restore,
+    },
+    WidgetDescriptor {
         kind: "cpu_temp",
         title_key: "widgets.cpu_temp.title",
         size: SIZE_SSX,
