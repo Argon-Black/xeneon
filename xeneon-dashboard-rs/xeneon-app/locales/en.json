@@ -183,6 +183,8 @@
   "widgets.shortcuts.picker.title": "Add a shortcut",
   "widgets.shortcuts.picker.search_placeholder": "Search an application…",
   "widgets.shortcuts.picker.apps_group": "Installed applications",
+  "widgets.shortcuts.settings.backdrop_color": "Icons backdrop color",
+  "widgets.shortcuts.settings.backdrop_opacity": "Backdrop transparency",
 
   "widgets.clock.title": "Clock",
   "widgets.clock.settings.time_font": "Font (time)",

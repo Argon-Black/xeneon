@@ -183,6 +183,8 @@
   "widgets.shortcuts.picker.title": "Ajouter un raccourci",
   "widgets.shortcuts.picker.search_placeholder": "Rechercher une application…",
   "widgets.shortcuts.picker.apps_group": "Applications installées",
+  "widgets.shortcuts.settings.backdrop_color": "Couleur de fond des icônes",
+  "widgets.shortcuts.settings.backdrop_opacity": "Transparence du fond",
 
   "widgets.clock.title": "Horloge",
   "widgets.clock.settings.time_font": "Police (heure)",

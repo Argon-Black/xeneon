@@ -1,5 +1,5 @@
 //! Raccourcis: an icon-launcher grid (up to 5x5) for installed apps - a
-//! straight-line port, steps 1-2 of 4, of `widgets/shortcuts.py`. See that
+//! straight-line port, steps 1-3 of 4, of `widgets/shortcuts.py`. See that
 //! file's own module docstring for the full design rationale; the short
 //! version, ported as-is rather than reinvented: reordering an icon can't
 //! just be "drag the tile" (a page sits inside an `Adw.Carousel`, which
@@ -28,15 +28,22 @@
 //! - a per-icon move button (bottom-left) and delete button (top-right),
 //!   both hover-revealed like every other overlay button in this app -
 //!   see `IconTile`/`place_icon`/`move_icon`/`remove_icon`;
-//! - persistence of the icon list (`content: {"icons": [...]}`).
+//! - a backdrop panel behind the placed icons, one rounded rectangle per
+//!   occupied row, sized to exactly that row's own leftmost-to-rightmost
+//!   icon (not the whole grid) and seamed flush with an adjacent occupied
+//!   row instead of showing a pinched-corner notch between them - see
+//!   `update_backdrop` - plus its own color/opacity settings in the
+//!   configure popover (`build_settings`), separate from the generic
+//!   per-widget card background/border every widget already gets;
+//! - persistence of the icon list and backdrop settings
+//!   (`content: {"icons": [...], "backdrop_color": ..., "backdrop_opacity": ...}`).
 //!
-//! Deliberately NOT here yet (later steps, tracked in the
-//! project_xeneon_rust_port memory): the backdrop panel and its own
-//! settings (color/opacity), and custom command/URL shortcuts with their
-//! icon picker/edit dialog. `ShortcutIcon` already carries the full field
-//! shape those need (`kind`/`command`/`icon_name`/`icon_path` alongside
-//! `app_id`), so adding them later is a pure addition to this file, not a
-//! persisted-schema migration.
+//! Deliberately NOT here yet (the last step, tracked in the
+//! project_xeneon_rust_port memory): custom command/URL shortcuts with
+//! their own icon picker/edit dialog. `ShortcutIcon` already carries the
+//! full field shape those need (`kind`/`command`/`icon_name`/`icon_path`
+//! alongside `app_id`), so adding them later is a pure addition to this
+//! file, not a persisted-schema migration.
 //!
 //! One structural wrinkle no other widget ported so far has hit: adding an
 //! icon happens straight on the canvas, with no settings popover involved
@@ -71,6 +78,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::appearance_css;
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::WidgetInstance;
 use xeneon_core::grid::{Size, GAP, SIZE_L};
@@ -88,6 +96,46 @@ const ICON_MOVE_BUTTON_PIXEL_SIZE: i32 = 16;
 // fill reserved layout space.
 const ADD_BUTTON_PIXEL_SIZE: i32 = 20;
 const DEFAULT_APP_ICON: &str = "application-x-executable-symbolic";
+
+const DEFAULT_BACKDROP_HEX: &str = "#7e57c2";
+const DEFAULT_BACKDROP_ALPHA: f64 = 0.55;
+const BACKDROP_RADIUS_PX: i32 = 12;
+
+fn default_backdrop_rgba() -> gtk::gdk::RGBA {
+    gtk::gdk::RGBA::parse(DEFAULT_BACKDROP_HEX).unwrap_or(gtk::gdk::RGBA::BLACK)
+}
+
+// Same duplicated-per-widget rgba<->hex convention as clock.rs/temp_gauge.rs/
+// agenda.rs (each keeps its own private copy rather than importing
+// appearance_popover.rs's `pub(crate)` ones).
+fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (rgba.red() * 255.0).round() as u8,
+        (rgba.green() * 255.0).round() as u8,
+        (rgba.blue() * 255.0).round() as u8
+    )
+}
+
+fn hex_to_rgba(hex: &str) -> gtk::gdk::RGBA {
+    gtk::gdk::RGBA::parse(hex).unwrap_or(gtk::gdk::RGBA::WHITE)
+}
+
+thread_local! {
+    // One shared counter (mirrors `ShortcutsContent._next_id` in
+    // shortcuts.py) so every instance's backdrop gets its own CSS class -
+    // `appearance_css::set_raw_rule` keys rules by class name, so two
+    // instances sharing one would fight over the same rule.
+    static NEXT_INSTANCE_ID: Cell<u64> = const { Cell::new(0) };
+}
+
+fn next_backdrop_css_class() -> String {
+    NEXT_INSTANCE_ID.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        format!("xeneon-shortcuts-backdrop-{id}")
+    })
+}
 
 /// One placed icon. Only `kind == "app"` is reachable yet (step 1's add
 /// dialog only offers installed apps) - `kind` stays a plain string
@@ -243,6 +291,15 @@ struct ShortcutsState {
     /// recreated per drag, since only one tile can be moved at a time.
     /// Mirrors `_drop_highlight` in shortcuts.py.
     drop_highlight: gtk::Box,
+    /// This instance's own CSS class for its backdrop color rule - see
+    /// `next_backdrop_css_class`.
+    backdrop_css_class: String,
+    backdrop_color: RefCell<gtk::gdk::RGBA>,
+    backdrop_opacity: Cell<f64>,
+    /// One `gtk::Box` per occupied row, torn down and rebuilt on every
+    /// `update_backdrop` call - cheap enough at this scale (at most
+    /// `GRID_ROWS` of them) not to bother diffing against the previous set.
+    backdrop_segments: RefCell<Vec<gtk::Box>>,
     /// Set once, right after `WidgetGrid` places this widget - see the
     /// module doc comment on `WidgetInstance::on_change_ready`.
     change_notifier: RefCell<Option<Rc<dyn Fn()>>>,
@@ -296,9 +353,137 @@ impl ShortcutsState {
         (col.clamp(0, GRID_COLS - 1), row.clamp(0, GRID_ROWS - 1))
     }
 
+    /// (Re)generates this instance's backdrop color CSS rule and reloads
+    /// the shared provider - call after every color/opacity change.
+    /// Mirrors `_apply_backdrop_css` (just the color; corner rounding is
+    /// per-row-segment, see `update_backdrop`, since adjacent rows can be
+    /// seamed together).
+    fn apply_backdrop_css(&self) {
+        let rgba = self.backdrop_color.borrow();
+        let color = format!(
+            "rgba({}, {}, {}, {:.2})",
+            (rgba.red() * 255.0).round() as u8,
+            (rgba.green() * 255.0).round() as u8,
+            (rgba.blue() * 255.0).round() as u8,
+            self.backdrop_opacity.get()
+        );
+        appearance_css::set_raw_rule(
+            &self.backdrop_css_class,
+            Some(format!(".{} {{ background-color: {}; }}", self.backdrop_css_class, color)),
+        );
+    }
+
+    /// Not wired through `notify_change`/persistence directly - this
+    /// setting lives in the popover (see `build_settings`), saved on its
+    /// "closed" signal like every other widget's settings. The color's own
+    /// alpha is ignored - `backdrop_opacity` is the single source of
+    /// transparency, same split as the generic `WidgetAppearance`'s own
+    /// bg_color/opacity.
+    fn set_backdrop_color(&self, rgba: gtk::gdk::RGBA) {
+        *self.backdrop_color.borrow_mut() = rgba;
+        self.apply_backdrop_css();
+    }
+
+    fn set_backdrop_opacity(&self, opacity: f64) {
+        self.backdrop_opacity.set(opacity);
+        self.apply_backdrop_css();
+    }
+
+    fn reset_backdrop(&self) {
+        *self.backdrop_color.borrow_mut() = default_backdrop_rgba();
+        self.backdrop_opacity.set(DEFAULT_BACKDROP_ALPHA);
+        self.apply_backdrop_css();
+    }
+
+    /// One backdrop rectangle per row that has an icon, each spanning only
+    /// from that row's own leftmost icon to its own rightmost one - not the
+    /// whole bounding box, and not always from column 0 either: dragging an
+    /// icon away from the left edge must not leave a panel covering empty
+    /// columns to its left.
+    ///
+    /// Two such rectangles sit flush against each other (no gap) when their
+    /// rows are adjacent, so each one only rounds the corners on a side
+    /// that isn't touching another row's segment with overlapping columns -
+    /// otherwise the touching edge would show as a pinched notch instead of
+    /// one smooth panel spanning both rows. Also toggles `empty_hint`'s
+    /// visibility, folding in what step 1/2 handled at each call site
+    /// individually - mirrors `_update_backdrop` (which does the same) in
+    /// shortcuts.py. Called after every icon add/move/remove.
+    fn update_backdrop(&self) {
+        for segment in self.backdrop_segments.borrow_mut().drain(..) {
+            self.fixed.remove(&segment);
+        }
+
+        let icons = self.icons.borrow();
+        if icons.is_empty() {
+            self.empty_hint.set_visible(true);
+            return;
+        }
+        self.empty_hint.set_visible(false);
+
+        let mut ranges: HashMap<i32, (i32, i32)> = HashMap::new();
+        for &(col, row) in icons.keys() {
+            ranges
+                .entry(row)
+                .and_modify(|(min_col, max_col)| {
+                    *min_col = (*min_col).min(col);
+                    *max_col = (*max_col).max(col);
+                })
+                .or_insert((col, col));
+        }
+        drop(icons);
+
+        let adjoins = |row: i32, neighbor_row: i32| -> bool {
+            let Some(&(n_min, n_max)) = ranges.get(&neighbor_row) else { return false };
+            let (min_col, max_col) = ranges[&row];
+            min_col <= n_max && n_min <= max_col
+        };
+
+        let pad = GAP as f64 / 2.0;
+        let mut rows: Vec<i32> = ranges.keys().copied().collect();
+        rows.sort_unstable();
+        let mut new_segments = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (min_col, max_col) = ranges[&row];
+            let round_top = !adjoins(row, row - 1);
+            let round_bottom = !adjoins(row, row + 1);
+            let corner_class = format!("{}-r{}", self.backdrop_css_class, row);
+            let top_radius = if round_top { BACKDROP_RADIUS_PX } else { 0 };
+            let bottom_radius = if round_bottom { BACKDROP_RADIUS_PX } else { 0 };
+            appearance_css::set_raw_rule(
+                &corner_class,
+                Some(format!(
+                    ".{corner_class} {{ border-top-left-radius: {top_radius}px; \
+                     border-top-right-radius: {top_radius}px; \
+                     border-bottom-left-radius: {bottom_radius}px; \
+                     border-bottom-right-radius: {bottom_radius}px; }}"
+                )),
+            );
+
+            let segment = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            segment.add_css_class(&self.backdrop_css_class);
+            segment.add_css_class(&corner_class);
+            let x0 = self.cell_x(min_col) - pad;
+            let y0 = self.cell_y(row) - pad;
+            let x1 = self.cell_x(max_col) + self.cell_w + pad;
+            let y1 = self.cell_y(row) + self.cell_h + pad;
+            segment.set_size_request((x1 - x0).round() as i32, (y1 - y0).round() as i32);
+            self.fixed.put(&segment, x0, y0);
+            // New children land on top by default (last = painted last) -
+            // move each segment to the very back so it never covers a tile.
+            segment.insert_after(&self.fixed, None::<&gtk::Widget>);
+            new_segments.push(segment);
+        }
+        *self.backdrop_segments.borrow_mut() = new_segments;
+    }
+
     fn to_dict(&self) -> serde_json::Value {
         let icons: Vec<serde_json::Value> = self.icons.borrow().values().map(ShortcutIcon::to_dict).collect();
-        serde_json::json!({ "icons": icons })
+        serde_json::json!({
+            "icons": icons,
+            "backdrop_color": rgba_to_hex(&self.backdrop_color.borrow()),
+            "backdrop_opacity": self.backdrop_opacity.get(),
+        })
     }
 }
 
@@ -480,6 +665,7 @@ fn move_icon(state: &Rc<ShortcutsState>, tile: &Rc<IconTile>, col: i32, row: i32
 
     let (x, y) = state.tile_position(col, row);
     state.fixed.move_(&tile.root, x, y);
+    state.update_backdrop();
     state.notify_change();
 }
 
@@ -489,7 +675,7 @@ fn remove_icon(state: &Rc<ShortcutsState>, tile: &Rc<IconTile>) {
     state.icons.borrow_mut().remove(&key);
     state.tiles.borrow_mut().remove(&key);
     state.fixed.remove(&tile.root);
-    state.empty_hint.set_visible(state.icons.borrow().is_empty());
+    state.update_backdrop();
     state.update_add_button_state();
     state.notify_change();
 }
@@ -595,18 +781,25 @@ fn place_icon(state: &Rc<ShortcutsState>, icon: ShortcutIcon) {
 
     state.icons.borrow_mut().insert(key, icon);
     state.tiles.borrow_mut().insert(key, tile);
-    state.empty_hint.set_visible(false);
+    state.update_backdrop();
     state.update_add_button_state();
 }
 
 fn apply_dict(state: &Rc<ShortcutsState>, data: &serde_json::Value) {
-    let Some(icons) = data.get("icons").and_then(|v| v.as_array()) else { return };
-    for entry in icons {
-        let Some(icon) = ShortcutIcon::from_dict(entry) else { continue };
-        if !(0..GRID_COLS).contains(&icon.col) || !(0..GRID_ROWS).contains(&icon.row) {
-            continue;
+    if let Some(icons) = data.get("icons").and_then(|v| v.as_array()) {
+        for entry in icons {
+            let Some(icon) = ShortcutIcon::from_dict(entry) else { continue };
+            if !(0..GRID_COLS).contains(&icon.col) || !(0..GRID_ROWS).contains(&icon.row) {
+                continue;
+            }
+            place_icon(state, icon);
         }
-        place_icon(state, icon);
+    }
+    if let Some(hex) = data.get("backdrop_color").and_then(|v| v.as_str()) {
+        state.set_backdrop_color(hex_to_rgba(hex));
+    }
+    if let Some(opacity) = data.get("backdrop_opacity").and_then(|v| v.as_f64()) {
+        state.set_backdrop_opacity(opacity);
     }
 }
 
@@ -767,8 +960,13 @@ fn build_content(size: Size) -> (Rc<ShortcutsState>, gtk::Widget) {
         empty_hint: empty_hint.clone(),
         add_button: add_button.clone(),
         drop_highlight,
+        backdrop_css_class: next_backdrop_css_class(),
+        backdrop_color: RefCell::new(default_backdrop_rgba()),
+        backdrop_opacity: Cell::new(DEFAULT_BACKDROP_ALPHA),
+        backdrop_segments: RefCell::new(Vec::new()),
         change_notifier: RefCell::new(None),
     });
+    state.apply_backdrop_css();
     state.update_add_button_state();
 
     add_button.connect_clicked({
@@ -822,14 +1020,84 @@ fn wire_change_notifier(state: &Rc<ShortcutsState>) -> Box<dyn FnOnce(Rc<dyn Fn(
     })
 }
 
+/// The grid's own setting, shown next to the generic appearance controls
+/// in the configure popover: the backdrop color that grows with the icons
+/// (see `update_backdrop`), separate from the generic per-widget card
+/// background/border. Mirrors `ShortcutsSettings` in shortcuts.py. Returns
+/// the widget plus a `resync` closure that re-reads the controls from
+/// `state` - needed after `state.reset_backdrop()` changes it directly
+/// (see `spawn`/`restore`'s `on_reset`), mirroring
+/// `ShortcutsSettings.sync_from_content()` in the Python original.
+fn build_settings(state: Rc<ShortcutsState>) -> (gtk::Widget, impl Fn() + Clone + 'static) {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    root.set_size_request(220, -1);
+
+    let color_label = gtk::Label::new(Some(&i18n::t("widgets.shortcuts.settings.backdrop_color")));
+    color_label.set_halign(gtk::Align::Start);
+    root.append(&color_label);
+
+    let color_button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+    color_button.set_rgba(&state.backdrop_color.borrow());
+    root.append(&color_button);
+
+    let opacity_label = gtk::Label::new(Some(&i18n::t("widgets.shortcuts.settings.backdrop_opacity")));
+    opacity_label.set_halign(gtk::Align::Start);
+    root.append(&opacity_label);
+
+    let opacity_scale = gtk::Scale::new(gtk::Orientation::Horizontal, gtk::Adjustment::NONE);
+    opacity_scale.set_range(0.0, 100.0);
+    opacity_scale.set_value(state.backdrop_opacity.get() * 100.0);
+    opacity_scale.set_draw_value(true);
+    opacity_scale.set_value_pos(gtk::PositionType::Right);
+    root.append(&opacity_scale);
+
+    color_button.connect_rgba_notify({
+        let state = state.clone();
+        move |button| state.set_backdrop_color(button.rgba())
+    });
+    opacity_scale.connect_value_changed({
+        let state = state.clone();
+        move |scale| state.set_backdrop_opacity(scale.value() / 100.0)
+    });
+
+    let resync = {
+        let state = state.clone();
+        let color_button = color_button.clone();
+        let opacity_scale = opacity_scale.clone();
+        move || {
+            color_button.set_rgba(&state.backdrop_color.borrow());
+            opacity_scale.set_value(state.backdrop_opacity.get() * 100.0);
+        }
+    };
+
+    i18n::on_change({
+        let color_label = color_label.clone();
+        let opacity_label = opacity_label.clone();
+        move || {
+            color_label.set_label(&i18n::t("widgets.shortcuts.settings.backdrop_color"));
+            opacity_label.set_label(&i18n::t("widgets.shortcuts.settings.backdrop_opacity"));
+        }
+    });
+
+    (root.upcast(), resync)
+}
+
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content(SIZE_L);
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset_backdrop();
+            resync();
+        }
+    };
     let to_dict_state = state.clone();
     WidgetInstance {
         content,
-        settings: None,
+        settings: Some(settings),
         to_dict: Box::new(move || to_dict_state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: Some(wire_change_notifier(&state)),
     }
 }
@@ -837,12 +1105,20 @@ pub fn spawn() -> WidgetInstance {
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content(SIZE_L);
     apply_dict(&state, data);
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset_backdrop();
+            resync();
+        }
+    };
     let to_dict_state = state.clone();
     WidgetInstance {
         content,
-        settings: None,
+        settings: Some(settings),
         to_dict: Box::new(move || to_dict_state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: Some(wire_change_notifier(&state)),
     }
 }
