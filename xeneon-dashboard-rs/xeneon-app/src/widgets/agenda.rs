@@ -1,27 +1,41 @@
-//! Agenda widget, step 1 of the port from `widgets/agenda.py`: a month
+//! Agenda widget, steps 1-2 of the port from `widgets/agenda.py`: a month
 //! calendar (today's date big on the left, the current month's grid on
 //! the right) with a small colored bar under any day that has at least
-//! one event. Visual layout/sizing is carried over as-is from the Python
-//! original's already-finalized design (colors, spacing, the
-//! today-square/weekend-color/bar CSS) rather than re-derived here - see
-//! CLAUDE.md's `xeneon_dashboard/widgets/agenda.py` for the fixes this
-//! encodes (GtkBox not centering a non-expanding child in extra space,
-//! the hexpand-propagation firewall on the grid column, etc.).
+//! one event, recurring events included. Visual layout/sizing is carried
+//! over as-is from the Python original's already-finalized design
+//! (colors, spacing, the today-square/weekend-color/bar CSS) rather than
+//! re-derived here - see CLAUDE.md's `xeneon_dashboard/widgets/agenda.py`
+//! for the fixes this encodes (GtkBox not centering a non-expanding child
+//! in extra space, the hexpand-propagation firewall on the grid column,
+//! etc.).
 //!
-//! **What step 1 does NOT do yet** (later steps, same breakdown style as
+//! **What's not ported yet** (later steps, same breakdown style as
 //! `weather.rs`/`audio.rs`):
-//! - Recurring events (RRULE) aren't expanded - a recurring event only
-//!   shows up if its own DTSTART happens to fall inside the displayed
-//!   month. Step 2 adds real RRULE expansion via the `rrule` crate (the
-//!   Python original gets this for free from libecal; raw D-Bus
-//!   `GetObjectList` returns the recurrence master as-is, not per
-//!   occurrence - confirmed empirically against a real weekly-recurring
-//!   event before writing this).
 //! - No `AgendaSettings` yet (calendar picker, weekend color, content
 //!   size slider) - every enabled calendar is used, weekend color is
 //!   fixed, content size is fixed at the Python original's own default
 //!   (170%).
 //! - No hover tooltip / click popover with the day's event details.
+//!
+//! ## Recurring events (step 2)
+//!
+//! Raw D-Bus `GetObjectList` (see below) returns a recurring event's
+//! *master* component as-is - `RRULE:FREQ=WEEKLY;BYDAY=WE` and a single
+//! `DTSTART`, not one component per occurrence - confirmed empirically
+//! against a real weekly-recurring event before writing any of this. The
+//! Python original gets occurrence expansion for free from libecal
+//! (`ECal.Client.generate_instances_sync`); there's no equivalent
+//! shortcut over raw D-Bus, so `expand_recurring` does it explicitly via
+//! the `rrule` crate (RFC5545 recurrence is real algorithmic complexity -
+//! BYDAY/INTERVAL/UNTIL/EXDATE/RECURRENCE-ID - not something worth
+//! re-deriving by hand, hence the one new dependency). Rather than
+//! translating the parsed iCal properties into `rrule`'s own builder API,
+//! `expand_recurring` just re-joins the event's own `DTSTART`/`RRULE`/
+//! `RDATE`/`EXDATE`/`EXRULE` lines and hands that block to
+//! `RRuleSet::from_str`, which already speaks this exact iCalendar
+//! subset. A rule shape `rrule` can't parse falls back to treating the
+//! event as non-recurring (its own master date, if in range) rather than
+//! disappearing entirely.
 //!
 //! ## Talking to Evolution Data Server without EDataServer/ECal bindings
 //!
@@ -47,7 +61,7 @@
 //!   `occur-in-time-range?` query, same query language libecal itself
 //!   uses. Only the handful of properties this widget needs (`SUMMARY`,
 //!   `DTSTART` and its `VALUE=DATE`/`TZID` params) are picked out by hand
-//!   (`parse_dtstart_and_summary`) - not a full iCalendar parser.
+//!   (`parse_summary_and_dtstart`) - not a full iCalendar parser.
 //!
 //! All of the above happens inside one `gio::spawn_blocking` closure per
 //! refresh (discovery is cheap, but opening a calendar backed by a real
@@ -86,6 +100,11 @@ const WEEKEND_HEX: &str = "#ffa726";
 const WEEKEND_COLS: [usize; 2] = [5, 6]; // Saturday, Sunday - Monday-first columns
 const WEEKS_SHOWN: i64 = 6; // fixed row count so the grid's height never shifts month to month
 const GRID_RIGHT_MARGIN_PX: i32 = 24; // matches the breathing room vertical centering gives top/bottom
+// Generous upper bound for how many occurrences of one recurring event
+// `expand_recurring` will ever materialize for a single ~6-week grid -
+// well beyond even a daily-recurring event's ~42 occurrences, just a
+// backstop against a pathological rule (e.g. no COUNT/UNTIL at all).
+const MAX_OCCURRENCES_PER_EVENT: u16 = 500;
 
 // Left panel font sizes already include the Python original's own default
 // content_scale (170%) baked in directly - there's no slider yet to make
@@ -349,11 +368,11 @@ fn parse_dtstart(prefix: &str, value: &str) -> Option<(NaiveDate, Option<(u32, u
 }
 
 /// Picks `SUMMARY` and `DTSTART` (with its `VALUE=DATE`/`TZID` params) out
-/// of one raw `VEVENT` block - not a full iCalendar parser, just these two
-/// properties (see the module doc comment for why DTEND/RRULE/etc. aren't
-/// needed here yet).
-fn parse_event_fields(ics: &str) -> Option<(String, NaiveDate, Option<(u32, u32)>)> {
-    let unfolded = unfold_ical_lines(ics);
+/// of one already-unfolded `VEVENT` block - not a full iCalendar parser,
+/// just these two properties. For a recurring event this is only its
+/// *master* date - `expand_recurring` below is what turns that into every
+/// actual occurrence.
+fn parse_summary_and_dtstart(unfolded: &str) -> Option<(String, NaiveDate, Option<(u32, u32)>)> {
     let mut summary = String::new();
     let mut dtstart = None;
     for line in unfolded.lines() {
@@ -368,6 +387,56 @@ fn parse_event_fields(ics: &str) -> Option<(String, NaiveDate, Option<(u32, u32)
     }
     let (date, time) = dtstart?;
     Some((summary, date, time))
+}
+
+/// Whether an already-unfolded `VEVENT` block has an `RRULE` property -
+/// the only signal used to decide whether an event needs `expand_recurring`
+/// at all (most calendar entries don't).
+fn has_rrule(unfolded: &str) -> bool {
+    unfolded.lines().any(|line| {
+        line.split_once(':').map(|(prefix, _)| prefix.split(';').next().unwrap_or(prefix)) == Some("RRULE")
+    })
+}
+
+/// Every date (and, for a non-all-day event, local time) this recurring
+/// event actually falls on between `start_utc` and `end_utc` - the piece
+/// raw D-Bus `GetObjectList` doesn't do for us (see the module doc
+/// comment). Built by handing the event's own `DTSTART`/`RRULE`/`RDATE`/
+/// `EXDATE`/`EXRULE` lines, verbatim, to `rrule::RRuleSet`'s own iCalendar
+/// parser (`RRuleSet: FromStr`) - it accepts exactly this kind of
+/// newline-joined property block, so there's no need to hand-translate
+/// them into `rrule`'s builder API first. `None` if the block doesn't
+/// parse (a rule shape `rrule` doesn't support, or malformed data) -
+/// the caller falls back to just the master's own date in that case,
+/// same as a non-recurring event.
+fn expand_recurring(
+    unfolded: &str,
+    start_utc: chrono::DateTime<chrono::Utc>,
+    end_utc: chrono::DateTime<chrono::Utc>,
+) -> Option<Vec<(NaiveDate, Option<(u32, u32)>)>> {
+    let recurrence_block: String = unfolded
+        .lines()
+        .filter(|line| {
+            let name = line.split_once(':').map(|(prefix, _)| prefix.split(';').next().unwrap_or(prefix));
+            matches!(name, Some("DTSTART" | "RRULE" | "EXRULE" | "RDATE" | "EXDATE"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let rrule_set: rrule::RRuleSet = recurrence_block.parse().ok()?;
+    let after = start_utc.with_timezone(&rrule::Tz::UTC);
+    let before = end_utc.with_timezone(&rrule::Tz::UTC);
+    let result = rrule_set.after(after).before(before).all(MAX_OCCURRENCES_PER_EVENT);
+    Some(
+        result
+            .dates
+            .into_iter()
+            .map(|dt| {
+                let local = dt.with_timezone(&Local);
+                (local.date_naive(), Some((local.time().hour(), local.time().minute())))
+            })
+            .collect(),
+    )
 }
 
 /// Every date shown on the grid for `year`/`month`, Monday-first, in
@@ -464,20 +533,38 @@ fn fetch_month_events(start_date: NaiveDate, end_date: NaiveDate) -> HashMap<Nai
         let Some((ics_objects,)) = list_reply.get::<(Vec<String>,)>() else { continue };
 
         for ics in ics_objects {
-            let Some((summary, date, time)) = parse_event_fields(&ics) else { continue };
-            if date < start_date || date > end_date {
-                // The master's own DTSTART falls outside the displayed
-                // range - a recurring event whose actual occurrence here
-                // comes from a *different* date via its RRULE, which step
-                // 1 doesn't expand yet (see module doc comment).
+            let unfolded = unfold_ical_lines(&ics);
+            let Some((summary, master_date, master_time)) = parse_summary_and_dtstart(&unfolded) else {
                 continue;
+            };
+            let all_day = master_time.is_none();
+
+            let occurrences: Vec<(NaiveDate, Option<(u32, u32)>)> = if has_rrule(&unfolded) {
+                expand_recurring(&unfolded, start_utc, end_utc).unwrap_or_else(|| {
+                    // The rule didn't parse (a shape `rrule` doesn't
+                    // support, or malformed data) - fall back to treating
+                    // it like a non-recurring event rather than dropping
+                    // it entirely.
+                    if (start_date..=end_date).contains(&master_date) {
+                        vec![(master_date, master_time)]
+                    } else {
+                        Vec::new()
+                    }
+                })
+            } else if (start_date..=end_date).contains(&master_date) {
+                vec![(master_date, master_time)]
+            } else {
+                Vec::new()
+            };
+
+            for (date, time) in occurrences {
+                events_by_date.entry(date).or_default().push(EventInfo {
+                    all_day,
+                    time: if all_day { None } else { time },
+                    summary: summary.clone(),
+                    color: source.color.clone(),
+                });
             }
-            events_by_date.entry(date).or_default().push(EventInfo {
-                all_day: time.is_none(),
-                time,
-                summary,
-                color: source.color.clone(),
-            });
         }
     }
 
@@ -752,4 +839,53 @@ pub fn restore(_data: &serde_json::Value) -> WidgetInstance {
     // No persisted state yet (see module doc comment) - a saved "agenda"
     // widget just rebuilds fresh, same as a newly spawned one.
     spawn()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    /// A real weekly-recurring event pulled from a live calendar while
+    /// building this (see the module doc comment) - EDS's raw
+    /// `GetObjectList` returns exactly this master component, unexpanded,
+    /// for any query whose range overlaps its series.
+    const ONGLE_ICS: &str = "BEGIN:VEVENT\r\n\
+        CREATED:20260721T054157Z\r\n\
+        LAST-MODIFIED:20260915T151527Z\r\n\
+        DTSTAMP:20260915T151527Z\r\n\
+        SUMMARY:Ongle\r\n\
+        RRULE:FREQ=WEEKLY;BYDAY=WE\r\n\
+        DTSTART;VALUE=DATE:20260722\r\n\
+        DTEND;VALUE=DATE:20260723\r\n\
+        UID:620e6840-24e0-4ba0-82f1-36ae53d35a8a\r\n\
+        END:VEVENT\r\n";
+
+    #[test]
+    fn expands_a_weekly_recurring_all_day_event() {
+        let unfolded = unfold_ical_lines(ONGLE_ICS);
+        assert!(has_rrule(&unfolded));
+        let (summary, master_date, master_time) = parse_summary_and_dtstart(&unfolded).unwrap();
+        assert_eq!(summary, "Ongle");
+        assert_eq!(master_date, NaiveDate::from_ymd_opt(2026, 7, 22).unwrap());
+        assert!(master_time.is_none());
+
+        let start_utc = chrono::Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap();
+        let end_utc = chrono::Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+        let occurrences = expand_recurring(&unfolded, start_utc, end_utc).unwrap();
+        let dates: Vec<NaiveDate> = occurrences.into_iter().map(|(date, _)| date).collect();
+
+        // Every Wednesday in September 2026 - matches what the Python
+        // original (via libecal) returns for the same real event/range.
+        assert_eq!(
+            dates,
+            vec![
+                NaiveDate::from_ymd_opt(2026, 9, 2).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 9, 9).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 9, 16).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 9, 23).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 9, 30).unwrap(),
+            ]
+        );
+    }
 }
