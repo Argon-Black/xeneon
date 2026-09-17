@@ -3,3 +3,4 @@ pub mod clock;
 pub mod cpu_temp;
 pub mod dummy;
 pub mod registry;
+pub mod temp_gauge;

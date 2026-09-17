@@ -63,6 +63,13 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         restore: crate::widgets::cpu_temp::restore,
     },
     WidgetDescriptor {
+        kind: "temp_gauge",
+        title_key: "widgets.temp_gauge.title",
+        size: SIZE_SQ,
+        spawn: crate::widgets::temp_gauge::spawn,
+        restore: crate::widgets::temp_gauge::restore,
+    },
+    WidgetDescriptor {
         kind: "dummy_s",
         title_key: "widgets.dummy.title_s",
         size: SIZE_S,
