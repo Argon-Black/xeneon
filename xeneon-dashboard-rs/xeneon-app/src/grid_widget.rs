@@ -569,8 +569,36 @@ impl WidgetGrid {
             let appearance = handles.appearance.clone();
             drag.connect_drag_end(move |_, _, _| {
                 let Some(state) = preview.borrow_mut().take() else { return };
-                fixed.remove(&state.ghost);
-                if state.valid {
+                // Deferred to the next main-loop idle iteration rather than
+                // done synchronously right here: this handler runs while
+                // GTK is still finishing its own dispatch of the drag
+                // gesture attached to a button that lives *inside*
+                // `root_widget` - removing the ghost and (on a valid drop)
+                // relocating `root_widget` itself, synchronously, out from
+                // under that still-in-flight event processing crashed
+                // inside GTK4's own crossing-event synthesis
+                // (`gtk_synthesize_crossing_events`, confirmed via
+                // `coredumpctl` after a real move on the Xeneon hardware).
+                // Letting the gesture's own dispatch finish first before
+                // mutating the widget tree avoids that - see
+                // feedback_rust_gtk_dev_loop_gotchas for the write-up.
+                let fixed = fixed.clone();
+                let root_widget = root_widget.clone();
+                let placed = placed.clone();
+                let id = id.clone();
+                let widgets_dir = widgets_dir.clone();
+                let page_index = page_index.clone();
+                let kind = kind.clone();
+                let appearance = appearance.clone();
+                let to_dict = to_dict.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    fixed.remove(&state.ghost);
+                    if !state.valid {
+                        // Invalid drop: the real widget never moved, so
+                        // simply discarding the preview leaves it exactly
+                        // where it was.
+                        return;
+                    }
                     fixed.move_(&root_widget, (state.candidate.x + grid::GAP) as f64, (state.candidate.y + grid::GAP) as f64);
                     if let Some(p) = placed.borrow_mut().iter_mut().find(|p| p.id == id) {
                         p.rect = state.candidate;
@@ -592,9 +620,7 @@ impl WidgetGrid {
                     if let Err(err) = widget_state::save(&widgets_dir, &saved) {
                         eprintln!("xeneon-dashboard: failed to save widget {id}: {err}");
                     }
-                }
-                // Invalid drop: the real widget never moved, so simply
-                // discarding the preview leaves it exactly where it was.
+                });
             });
         }
         handles.move_button.add_controller(drag);
