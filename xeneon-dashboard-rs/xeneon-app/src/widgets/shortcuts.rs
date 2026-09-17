@@ -1,9 +1,22 @@
 //! Raccourcis: an icon-launcher grid (up to 5x5) for installed apps - a
-//! straight-line port, step 1 of 4, of `widgets/shortcuts.py`. See that
-//! file's own module docstring for the full design rationale (dedicated
-//! move/delete buttons instead of a draggable tile, no trajectory
-//! tracking, a per-instance backdrop panel...); this first step only
-//! covers what's needed to place and launch an installed app:
+//! straight-line port, steps 1-2 of 4, of `widgets/shortcuts.py`. See that
+//! file's own module docstring for the full design rationale; the short
+//! version, ported as-is rather than reinvented: reordering an icon can't
+//! just be "drag the tile" (a page sits inside an `Adw.Carousel`, which
+//! recognizes a horizontal drag anywhere - including on top of an icon -
+//! as "swipe to the next page"), so moving is a *dedicated* button
+//! instead, which has no such ambiguity to resolve: any press on it
+//! unambiguously means "move this icon", so its `GestureDrag` claims the
+//! pointer sequence immediately, denying it to the carousel's own swipe
+//! recognizer. And while a move is in progress, the icon itself never
+//! visually follows the pointer - only the currently-hovered cell gets a
+//! highlight (`show_drop_highlight`), and the icon jumps straight there on
+//! release. There is deliberately no trajectory to track: the real
+//! pointer can't be confined to this widget, so any approach that has to
+//! follow a continuous path is at the mercy of a pointer that wanders past
+//! the grid's edges with no way to tell it to stop.
+//!
+//! So far this covers:
 //!
 //! - a fixed 5x5 grid of cells sized to fill the widget's SIZE_L footprint
 //!   (see `compute_cell_size`);
@@ -12,15 +25,18 @@
 //!   `registry::WidgetDescriptor::card_title_key`) - opening a small
 //!   dialog to pick an installed app;
 //! - launching an icon on a plain click;
+//! - a per-icon move button (bottom-left) and delete button (top-right),
+//!   both hover-revealed like every other overlay button in this app -
+//!   see `IconTile`/`place_icon`/`move_icon`/`remove_icon`;
 //! - persistence of the icon list (`content: {"icons": [...]}`).
 //!
 //! Deliberately NOT here yet (later steps, tracked in the
-//! project_xeneon_rust_port memory): per-icon move/delete corner buttons,
-//! the backdrop panel and its own settings (color/opacity), and custom
-//! command/URL shortcuts with their icon picker/edit dialog. `ShortcutIcon`
-//! already carries the full field shape those need (`kind`/`command`/
-//! `icon_name`/`icon_path` alongside `app_id`), so adding them later is a
-//! pure addition to this file, not a persisted-schema migration.
+//! project_xeneon_rust_port memory): the backdrop panel and its own
+//! settings (color/opacity), and custom command/URL shortcuts with their
+//! icon picker/edit dialog. `ShortcutIcon` already carries the full field
+//! shape those need (`kind`/`command`/`icon_name`/`icon_path` alongside
+//! `app_id`), so adding them later is a pure addition to this file, not a
+//! persisted-schema migration.
 //!
 //! One structural wrinkle no other widget ported so far has hit: adding an
 //! icon happens straight on the canvas, with no settings popover involved
@@ -51,7 +67,7 @@
 
 use adw::prelude::*;
 use gtk::gio;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -62,10 +78,14 @@ use xeneon_core::grid::{Size, GAP, SIZE_L};
 const GRID_COLS: i32 = 5;
 const GRID_ROWS: i32 = 5;
 const ICON_PIXEL_SIZE: i32 = 64;
-// Bigger than a tile's own future corner buttons (step 2) - it's the main
-// way to add anything to an otherwise-empty grid, so it needs to read
-// clearly even though it's only a small hover overlay near the corner, not
-// sized to fill reserved layout space.
+// Smaller than a tile's own corner buttons would need to be on a whole
+// widget (see grid.py's own corner buttons) - a shortcut tile is tiny by
+// comparison, so its move/delete buttons stay proportionate.
+const ICON_MOVE_BUTTON_PIXEL_SIZE: i32 = 16;
+// Bigger than a tile's own corner buttons - it's the main way to add
+// anything to an otherwise-empty grid, so it needs to read clearly even
+// though it's only a small hover overlay near the corner, not sized to
+// fill reserved layout space.
 const ADD_BUTTON_PIXEL_SIZE: i32 = 20;
 const DEFAULT_APP_ICON: &str = "application-x-executable-symbolic";
 
@@ -178,7 +198,19 @@ fn ensure_css_installed() {
         css.load_from_string(
             ".xeneon-shortcut-tile { border-radius: 10px; padding: 4px; }
              .xeneon-shortcut-tile:hover { background-color: rgba(255, 255, 255, 0.12); }
-             button.xeneon-shortcuts-add { min-width: 36px; min-height: 36px; padding: 4px; margin: 2px; }",
+             .xeneon-shortcut-tile-moving { background-color: rgba(255, 255, 255, 0.22); }
+             button.xeneon-shortcut-corner {
+                 min-width: 24px; min-height: 24px; padding: 2px; margin: 2px;
+             }
+             button.xeneon-shortcuts-add { min-width: 36px; min-height: 36px; padding: 4px; margin: 2px; }
+             .xeneon-shortcuts-drop-valid {
+                 border: 2px solid rgba(255, 255, 255, 0.85); border-radius: 10px;
+                 background-color: rgba(255, 255, 255, 0.08);
+             }
+             .xeneon-shortcuts-drop-invalid {
+                 border: 2px solid rgba(231, 76, 60, 0.9); border-radius: 10px;
+                 background-color: rgba(231, 76, 60, 0.15);
+             }",
         );
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     });
@@ -199,8 +231,18 @@ struct ShortcutsState {
     cell_w: f64,
     cell_h: f64,
     icons: RefCell<HashMap<(i32, i32), ShortcutIcon>>,
+    /// The on-canvas view for each icon in `icons`, kept in sync with it
+    /// (same keys, always) - separate from `icons` because a tile is a
+    /// live GTK widget plus in-flight drag state (`IconTile`'s own
+    /// `Cell`s), not persisted data.
+    tiles: RefCell<HashMap<(i32, i32), Rc<IconTile>>>,
     empty_hint: gtk::Label,
     add_button: gtk::Button,
+    /// The currently-hovered target cell while an icon is being moved -
+    /// one reusable widget, repositioned and hidden/shown rather than
+    /// recreated per drag, since only one tile can be moved at a time.
+    /// Mirrors `_drop_highlight` in shortcuts.py.
+    drop_highlight: gtk::Box,
     /// Set once, right after `WidgetGrid` places this widget - see the
     /// module doc comment on `WidgetInstance::on_change_ready`.
     change_notifier: RefCell<Option<Rc<dyn Fn()>>>,
@@ -244,43 +286,14 @@ impl ShortcutsState {
         }
     }
 
-    /// Builds `icon`'s tile, places it on the canvas and records it -
-    /// returns the tile's root widget (an `Overlay` already, even though
-    /// step 1 gives it no overlay children yet, so step 2 can add the
-    /// move/delete corner buttons without restructuring this) so the
-    /// caller can wire its click gesture - see `place_icon` below for why
-    /// that step needs its own `Rc<ShortcutsState>`, which only the caller
-    /// has. `None` if the cell is already occupied.
-    fn register_icon(&self, icon: ShortcutIcon) -> Option<gtk::Overlay> {
-        let key = (icon.col, icon.row);
-        if self.icons.borrow().contains_key(&key) {
-            return None;
-        }
-
-        let root = gtk::Overlay::new();
-        root.add_css_class("xeneon-shortcut-tile");
-        root.set_cursor_from_name(Some("pointer"));
-        root.set_size_request(self.cell_w.round() as i32, self.cell_h.round() as i32);
-
-        let image = gtk::Image::new();
-        image.set_pixel_size(ICON_PIXEL_SIZE);
-        image.set_halign(gtk::Align::Center);
-        image.set_valign(gtk::Align::Center);
-        image.set_hexpand(true);
-        image.set_vexpand(true);
-        match icon.gicon() {
-            Some(gicon) => image.set_from_gicon(&gicon),
-            None => image.set_icon_name(Some(DEFAULT_APP_ICON)),
-        }
-        root.set_child(Some(&image));
-        root.set_tooltip_text(Some(&icon.display_name()));
-
-        let (x, y) = self.tile_position(icon.col, icon.row);
-        self.fixed.put(&root, x, y);
-        self.icons.borrow_mut().insert(key, icon);
-        self.empty_hint.set_visible(false);
-        self.update_add_button_state();
-        Some(root)
+    /// Which cell a content-local point falls in, clamped to the grid -
+    /// used while a move is in progress to turn the pointer's current
+    /// absolute position into a hovered cell (see `place_icon`'s drag
+    /// handlers). Mirrors `_cell_at`.
+    fn cell_at(&self, x: f64, y: f64) -> (i32, i32) {
+        let col = ((x - GAP as f64) / (self.cell_w + GAP as f64)).floor() as i32;
+        let row = ((y - GAP as f64) / (self.cell_h + GAP as f64)).floor() as i32;
+        (col.clamp(0, GRID_COLS - 1), row.clamp(0, GRID_ROWS - 1))
     }
 
     fn to_dict(&self) -> serde_json::Value {
@@ -289,31 +302,292 @@ impl ShortcutsState {
     }
 }
 
-/// Places `icon` on `state`'s grid and wires its tile's plain-click launch
-/// gesture. A free function rather than a `ShortcutsState` method: the
-/// gesture's callback needs its own `Rc<ShortcutsState>` clone to look the
-/// icon back up by cell at click time (GTK signal closures are `'static`,
-/// so they can't just borrow `state`), and only a caller already holding
-/// that `Rc` can hand it one - `register_icon` alone (a plain `&self`
-/// method) has no way to manufacture it.
+/// One grid tile: the icon image, centered in the cell (its name is a
+/// tooltip, not on-tile text), plus a move button (bottom-left) and a
+/// delete button (top-right), both overlaid and hover-revealed - the same
+/// corner-button pattern `DashboardWidget` uses for a whole widget, just
+/// scaled down to fit a tiny tile. Mirrors `_IconTile` in shortcuts.py.
+///
+/// `col`/`row` are the tile's *current* cell, mutated in place by a
+/// successful move (`move_icon`) rather than re-derived from whatever key
+/// it happens to be stored under in `ShortcutsState::tiles` at the time -
+/// gesture closures captured once, at tile-creation time, read these
+/// `Cell`s fresh on every drag rather than a cell snapshotted when the
+/// closure was built, which a later move would otherwise leave stale.
+/// `press_x`/`press_y`/`hover_col`/`hover_row` are scratch state, live only
+/// for the duration of one move gesture - see the drag handlers in
+/// `place_icon`.
+struct IconTile {
+    root: gtk::Overlay,
+    move_button: gtk::Button,
+    delete_button: gtk::Button,
+    col: Cell<i32>,
+    row: Cell<i32>,
+    /// Absolute content-local point where the move button's press started
+    /// (its own position at press time, plus where inside it was clicked)
+    /// - added to the drag's offset on each update to get the pointer's
+    /// current absolute position, which is all `cell_at` needs.
+    press_x: Cell<f64>,
+    press_y: Cell<f64>,
+    hover_col: Cell<i32>,
+    hover_row: Cell<i32>,
+}
+
+fn build_tile(icon: &ShortcutIcon, cell_w: f64, cell_h: f64) -> IconTile {
+    let root = gtk::Overlay::new();
+    root.add_css_class("xeneon-shortcut-tile");
+    root.set_cursor_from_name(Some("pointer"));
+    root.set_size_request(cell_w.round() as i32, cell_h.round() as i32);
+
+    let image = gtk::Image::new();
+    image.set_pixel_size(ICON_PIXEL_SIZE);
+    image.set_halign(gtk::Align::Center);
+    image.set_valign(gtk::Align::Center);
+    image.set_hexpand(true);
+    image.set_vexpand(true);
+    match icon.gicon() {
+        Some(gicon) => image.set_from_gicon(&gicon),
+        None => image.set_icon_name(Some(DEFAULT_APP_ICON)),
+    }
+    root.set_child(Some(&image));
+    root.set_tooltip_text(Some(&icon.display_name()));
+
+    let move_button = gtk::Button::new();
+    move_button.add_css_class("flat");
+    move_button.add_css_class("circular");
+    move_button.add_css_class("xeneon-shortcut-corner");
+    let move_icon = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+    move_icon.set_pixel_size(ICON_MOVE_BUTTON_PIXEL_SIZE);
+    move_button.set_child(Some(&move_icon));
+    move_button.set_halign(gtk::Align::Start);
+    move_button.set_valign(gtk::Align::End);
+    move_button.set_cursor_from_name(Some("move"));
+    move_button.set_tooltip_text(Some(&i18n::t("widgets.move_tooltip")));
+    move_button.set_visible(false);
+    root.add_overlay(&move_button);
+
+    let delete_button = gtk::Button::new();
+    delete_button.add_css_class("flat");
+    delete_button.add_css_class("circular");
+    delete_button.add_css_class("xeneon-shortcut-corner");
+    let delete_icon = gtk::Image::from_icon_name("user-trash-symbolic");
+    delete_icon.set_pixel_size(ICON_MOVE_BUTTON_PIXEL_SIZE);
+    delete_button.set_child(Some(&delete_icon));
+    delete_button.set_halign(gtk::Align::End);
+    delete_button.set_valign(gtk::Align::Start);
+    delete_button.set_tooltip_text(Some(&i18n::t("widgets.delete_tooltip")));
+    delete_button.set_visible(false);
+    root.add_overlay(&delete_button);
+
+    let hover = gtk::EventControllerMotion::new();
+    hover.connect_enter({
+        let move_button = move_button.clone();
+        let delete_button = delete_button.clone();
+        move |_, _, _| {
+            move_button.set_visible(true);
+            delete_button.set_visible(true);
+        }
+    });
+    hover.connect_leave({
+        let move_button = move_button.clone();
+        let delete_button = delete_button.clone();
+        move |_| {
+            move_button.set_visible(false);
+            delete_button.set_visible(false);
+        }
+    });
+    root.add_controller(hover);
+
+    i18n::on_change({
+        let move_button = move_button.clone();
+        let delete_button = delete_button.clone();
+        move || {
+            move_button.set_tooltip_text(Some(&i18n::t("widgets.move_tooltip")));
+            delete_button.set_tooltip_text(Some(&i18n::t("widgets.delete_tooltip")));
+        }
+    });
+
+    IconTile {
+        root,
+        move_button,
+        delete_button,
+        col: Cell::new(icon.col),
+        row: Cell::new(icon.row),
+        press_x: Cell::new(0.0),
+        press_y: Cell::new(0.0),
+        hover_col: Cell::new(icon.col),
+        hover_row: Cell::new(icon.row),
+    }
+}
+
+/// Repositions and shows `state.drop_highlight` over `tile`'s currently
+/// hovered cell (green-ish/valid, or red/invalid if that cell is already
+/// occupied by a *different* icon) - called on every drag-begin/-update.
+/// Mirrors `_show_drop_highlight`.
+fn show_drop_highlight(state: &Rc<ShortcutsState>, tile: &IconTile) {
+    let (col, row) = (tile.hover_col.get(), tile.hover_row.get());
+    let valid = (col, row) == (tile.col.get(), tile.row.get()) || !state.icons.borrow().contains_key(&(col, row));
+    let (x, y) = state.tile_position(col, row);
+
+    state.drop_highlight.set_visible(true);
+    if state.drop_highlight.parent().is_some() {
+        state.fixed.move_(&state.drop_highlight, x, y);
+    } else {
+        state.fixed.put(&state.drop_highlight, x, y);
+    }
+    // Always on top - a highlight sitting behind a tile would be invisible
+    // over an occupied cell, which is exactly the case that most needs to
+    // read clearly (in red) as "can't drop here".
+    state.drop_highlight.insert_before(&state.fixed, None::<&gtk::Widget>);
+
+    if valid {
+        state.drop_highlight.remove_css_class("xeneon-shortcuts-drop-invalid");
+        state.drop_highlight.add_css_class("xeneon-shortcuts-drop-valid");
+    } else {
+        state.drop_highlight.remove_css_class("xeneon-shortcuts-drop-valid");
+        state.drop_highlight.add_css_class("xeneon-shortcuts-drop-invalid");
+    }
+}
+
+/// Re-keys `tile` (and its `ShortcutIcon`) from its current cell to
+/// `(col, row)`, moves its widget there and persists - the caller
+/// (`place_icon`'s drag-end handler) has already checked the landing cell
+/// is different from the tile's own and not already occupied. Mirrors
+/// `_move_icon`.
+fn move_icon(state: &Rc<ShortcutsState>, tile: &Rc<IconTile>, col: i32, row: i32) {
+    let old_key = (tile.col.get(), tile.row.get());
+    let new_key = (col, row);
+
+    let Some(mut icon) = state.icons.borrow_mut().remove(&old_key) else { return };
+    icon.col = col;
+    icon.row = row;
+    state.icons.borrow_mut().insert(new_key, icon);
+
+    if let Some(tile_rc) = state.tiles.borrow_mut().remove(&old_key) {
+        state.tiles.borrow_mut().insert(new_key, tile_rc);
+    }
+    tile.col.set(col);
+    tile.row.set(row);
+
+    let (x, y) = state.tile_position(col, row);
+    state.fixed.move_(&tile.root, x, y);
+    state.notify_change();
+}
+
+/// Removes `tile`'s icon (data and widget alike) - mirrors `_remove_icon`.
+fn remove_icon(state: &Rc<ShortcutsState>, tile: &Rc<IconTile>) {
+    let key = (tile.col.get(), tile.row.get());
+    state.icons.borrow_mut().remove(&key);
+    state.tiles.borrow_mut().remove(&key);
+    state.fixed.remove(&tile.root);
+    state.empty_hint.set_visible(state.icons.borrow().is_empty());
+    state.update_add_button_state();
+    state.notify_change();
+}
+
+/// Places `icon` on `state`'s grid and wires its tile's gestures (plain
+/// click to launch, the move button's drag, the delete button's click). A
+/// free function rather than a `ShortcutsState`/`IconTile` method: every
+/// gesture's callback needs its own `Rc` clones to look the icon/tile back
+/// up at event time (GTK signal closures are `'static`, so they can't just
+/// borrow `state`/`tile`), and only a caller already holding those `Rc`s
+/// can hand them out.
 fn place_icon(state: &Rc<ShortcutsState>, icon: ShortcutIcon) {
     let key = (icon.col, icon.row);
-    let Some(root) = state.register_icon(icon) else { return };
+    if state.icons.borrow().contains_key(&key) {
+        return;
+    }
+    let tile = Rc::new(build_tile(&icon, state.cell_w, state.cell_h));
+    let (x, y) = state.tile_position(icon.col, icon.row);
+    state.fixed.put(&tile.root, x, y);
 
-    // Simple GestureClick, no drag distance to watch - moving an icon is a
-    // dedicated move button's job (step 2), not this tile's own drag, so a
-    // plain click is unambiguous. GTK only fires "released" for a press
-    // that both starts and ends inside the tile.
+    // Simple GestureClick, no drag distance to watch - moving is the
+    // dedicated move button's job, not this tile's own drag, so a plain
+    // click is unambiguous. GTK only fires "released" for a press that
+    // both starts and ends inside the tile, so a swipe that starts on an
+    // icon and moves away before releasing never triggers this.
     let launch = gtk::GestureClick::new();
     launch.connect_released({
         let state = state.clone();
+        let tile = tile.clone();
         move |_, _, _, _| {
+            let key = (tile.col.get(), tile.row.get());
             if let Some(icon) = state.icons.borrow().get(&key) {
                 icon.launch();
             }
         }
     });
-    root.add_controller(launch);
+    tile.root.add_controller(launch);
+
+    tile.delete_button.connect_clicked({
+        let state = state.clone();
+        let tile = tile.clone();
+        move |_| remove_icon(&state, &tile)
+    });
+
+    let drag = gtk::GestureDrag::new();
+    drag.connect_drag_begin({
+        let state = state.clone();
+        let tile = tile.clone();
+        move |gesture, x, y| {
+            // Claims immediately - a dedicated button has no ambiguity to
+            // resolve (unlike the tile itself, which can also be a plain
+            // click, or, on the same surface, a page swipe), so there's
+            // nothing to wait on.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            tile.root.add_css_class("xeneon-shortcut-tile-moving");
+            // `translate_coordinates` is deprecated since GTK 4.12 in favor
+            // of this graphene-point-based equivalent.
+            let point = gtk::graphene::Point::new(x as f32, y as f32);
+            if let Some(in_fixed) = tile.move_button.compute_point(&state.fixed, &point) {
+                tile.press_x.set(in_fixed.x() as f64);
+                tile.press_y.set(in_fixed.y() as f64);
+            }
+            tile.hover_col.set(tile.col.get());
+            tile.hover_row.set(tile.row.get());
+            show_drop_highlight(&state, &tile);
+        }
+    });
+    drag.connect_drag_update({
+        let state = state.clone();
+        let tile = tile.clone();
+        move |_, offset_x, offset_y| {
+            // No trajectory to track: each update just asks "which cell is
+            // the pointer over right now" from its current absolute
+            // position - see the module doc comment for why.
+            let x = tile.press_x.get() + offset_x;
+            let y = tile.press_y.get() + offset_y;
+            let (col, row) = state.cell_at(x, y);
+            tile.hover_col.set(col);
+            tile.hover_row.set(row);
+            show_drop_highlight(&state, &tile);
+        }
+    });
+    drag.connect_drag_end({
+        let state = state.clone();
+        let tile = tile.clone();
+        move |_, _, _| {
+            tile.root.remove_css_class("xeneon-shortcut-tile-moving");
+            state.drop_highlight.set_visible(false);
+            // The tile never moved from its own cell while being dragged
+            // (only the highlight did) - landing on the same cell or an
+            // occupied one just means there's nothing to do.
+            let (col, row) = (tile.hover_col.get(), tile.hover_row.get());
+            if (col, row) == (tile.col.get(), tile.row.get()) {
+                return;
+            }
+            if state.icons.borrow().contains_key(&(col, row)) {
+                return;
+            }
+            move_icon(&state, &tile, col, row);
+        }
+    });
+    tile.move_button.add_controller(drag);
+
+    state.icons.borrow_mut().insert(key, icon);
+    state.tiles.borrow_mut().insert(key, tile);
+    state.empty_hint.set_visible(false);
+    state.update_add_button_state();
 }
 
 fn apply_dict(state: &Rc<ShortcutsState>, data: &serde_json::Value) {
@@ -467,13 +741,23 @@ fn build_content(size: Size) -> (Rc<ShortcutsState>, gtk::Widget) {
     add_button.set_visible(false);
     fixed.put(&add_button, (GAP / 2) as f64, (GAP / 2) as f64);
 
+    // Not parented yet - `show_drop_highlight` puts it on first use (see
+    // that function). `set_can_target(false)` so it never itself steals a
+    // click meant for whatever's underneath.
+    let drop_highlight = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    drop_highlight.set_can_target(false);
+    drop_highlight.set_visible(false);
+    drop_highlight.set_size_request(cell_w.round() as i32, cell_h.round() as i32);
+
     let state = Rc::new(ShortcutsState {
         fixed: fixed.clone(),
         cell_w,
         cell_h,
         icons: RefCell::new(HashMap::new()),
+        tiles: RefCell::new(HashMap::new()),
         empty_hint: empty_hint.clone(),
         add_button: add_button.clone(),
+        drop_highlight,
         change_notifier: RefCell::new(None),
     });
     state.update_add_button_state();
@@ -494,7 +778,14 @@ fn build_content(size: Size) -> (Rc<ShortcutsState>, gtk::Widget) {
     let hover = gtk::EventControllerMotion::new();
     hover.connect_enter({
         let add_button = add_button.clone();
-        move |_, _, _| add_button.set_visible(true)
+        let fixed = fixed.clone();
+        move |_, _, _| {
+            add_button.set_visible(true);
+            // It floats over row 0's own corner (see the comment above),
+            // so it has to be raised above whatever tile is already
+            // sitting there to stay clickable and visible.
+            add_button.insert_before(&fixed, None::<&gtk::Widget>);
+        }
     });
     hover.connect_leave({
         let add_button = add_button.clone();
