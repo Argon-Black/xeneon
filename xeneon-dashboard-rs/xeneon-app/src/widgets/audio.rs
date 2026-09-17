@@ -588,6 +588,27 @@ impl AudioState {
         // same-track refresh, hence `false`.
         self.refresh_active_display(false);
     }
+
+    /// Only the pinned-player choice persists - not playback state or
+    /// position, which are meaningless snapshotted (the player itself,
+    /// or whatever's playing, will have moved on by the next launch).
+    fn to_dict(&self) -> serde_json::Value {
+        serde_json::json!({ "preferred_player": self.preferred_bus_name.borrow().clone() })
+    }
+
+    /// Only touches the key when present, so a partial/older saved dict
+    /// still applies cleanly - mirrors every other plugin's apply_dict
+    /// (e.g. ClockState's). The referenced player may well not exist yet
+    /// at this point (MPRIS discovery in build_content hasn't run when
+    /// this is called - see restore()) - harmless, since
+    /// pick_active_player already tolerates a preferred_bus_name absent
+    /// from `players` by falling back to auto-follow, and will pick it
+    /// up correctly once discovery adds it, same as if it started later.
+    fn apply_dict(&self, data: &serde_json::Value) {
+        if let Some(bus_name) = data.get("preferred_player").and_then(|v| v.as_str()) {
+            *self.preferred_bus_name.borrow_mut() = Some(bus_name.to_string());
+        }
+    }
 }
 
 fn build_content() -> (Rc<AudioState>, gtk::Widget) {
@@ -899,12 +920,19 @@ fn build_settings(state: Rc<AudioState>) -> (gtk::Widget, Box<dyn Fn()>) {
 
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
-    let (settings, _resync) = build_settings(state);
-    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(|| serde_json::Value::Null), on_reset: None }
+    let (settings, _resync) = build_settings(state.clone());
+    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None }
 }
 
-pub fn restore(_data: &serde_json::Value) -> WidgetInstance {
-    // No persisted content yet (see the module doc comment) - restoring
-    // is identical to spawning fresh.
-    spawn()
+pub fn restore(data: &serde_json::Value) -> WidgetInstance {
+    let (state, content) = build_content();
+    state.apply_dict(data);
+    // build_content()'s own MPRIS discovery has already run by this
+    // point, so re-picking now (rather than waiting for the next
+    // property-changed event) makes a restored pin take effect
+    // immediately instead of showing whatever auto-follow happened to
+    // land on first.
+    state.pick_active_player();
+    let (settings, _resync) = build_settings(state.clone());
+    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None }
 }
