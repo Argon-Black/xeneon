@@ -54,6 +54,9 @@
 
   "widgets.add_menu.title": "Ajouter un widget",
   "widgets.add_menu.max_pages_toast": "Nombre maximum de pages atteint ({max})",
+  "widgets.add_menu.family_compact": "Compact",
+  "widgets.add_menu.family_medium": "Moyen",
+  "widgets.add_menu.family_large": "Grand",
 
   "widgets.dummy.title_s": "Factice S",
   "widgets.dummy.title_m": "Factice M",
