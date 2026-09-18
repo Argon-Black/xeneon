@@ -9,16 +9,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container: fedora:latest
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev
+        run: dnf install -y git rust cargo gtk4-devel libadwaita-devel webkitgtk6.0-devel
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
