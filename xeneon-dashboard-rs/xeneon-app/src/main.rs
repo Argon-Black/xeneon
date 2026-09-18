@@ -290,7 +290,21 @@ impl SimpleComponent for AppModel {
         // later, not a side effect of this refactor).
         let max_page_index =
             widget_states.iter().map(|s| s.page_index).chain(page_states.iter().map(|s| s.page_index)).max();
-        let page_count = max_page_index.map_or(1, |m| m + 1);
+        // Audit finding 2026-09-18: previously `m + 1` with no cap - a
+        // corrupted/hand-edited widgets/<id>.json or pages/<id>.json with
+        // a large page_index would make startup try to build that many
+        // WidgetGrid/gtk::Fixed pages (a hang/OOM), and page_index ==
+        // usize::MAX would overflow this addition (panic in debug,
+        // silent wraparound to 0 pages in release). Saturate the
+        // addition and clamp to the same MAX_PAGES the interactive
+        // "add page" path already enforces - anything saved past that
+        // cap still surfaces via the existing out-of-range warning below
+        // when a widget/page is skipped, rather than growing the
+        // carousel without bound.
+        let page_count = max_page_index.map_or(1, |m| m.saturating_add(1)).min(MAX_PAGES);
+        if max_page_index.is_some_and(|m| m.saturating_add(1) > MAX_PAGES) {
+            warn!("saved state references page_index up to {}, clamping startup page count to MAX_PAGES ({MAX_PAGES})", max_page_index.unwrap());
+        }
 
         let mut real_grids: Vec<Rc<WidgetGrid>> = Vec::with_capacity(page_count);
         for index in 0..page_count {
