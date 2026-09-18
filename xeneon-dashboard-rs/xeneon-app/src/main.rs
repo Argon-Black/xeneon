@@ -697,24 +697,6 @@ fn register_app_icon(display: &gtk::gdk::Display) {
 }
 
 fn main() {
-    // Works around a WebKitGTK/Mesa bug that otherwise kills the youtube
-    // widget's WebKitWebProcess repeatedly during normal use (confirmed via
-    // `coredumpctl`: `util_queue_kill_threads`/`_gbm_device_destroy` racing
-    // glibc's heap during that process's own exit cleanup - a corrupted-heap
-    // SIGABRT/SIGSEGV in Mesa's GBM/DRI teardown, not this app's code - see
-    // youtube.rs's `connect_web_process_terminated` doc comment for the
-    // existing auto-reload mitigation). The DMA-BUF renderer is what
-    // exercises that GBM/DRI path in the first place; disabling it is the
-    // community-known workaround and must be set before WebKit's process
-    // launcher reads the environment, i.e. before any WebView/NetworkSession
-    // is ever created (youtube.rs's own `NETWORK_SESSION` included).
-    // SAFETY: this is the very first statement in `main`, before GTK,
-    // relm4, tokio or any other thread-spawning machinery exists - nothing
-    // else can be reading the environment concurrently yet.
-    unsafe {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
-
     // Must be the very first thing - every `log::` call before this
     // point is silently dropped (see `logging::init`'s own doc comment).
     logging::init(dev_mode_enabled());
