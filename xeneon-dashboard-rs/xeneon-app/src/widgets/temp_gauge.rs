@@ -25,7 +25,6 @@
 
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -69,48 +68,14 @@ const DEFAULT_CONTENT_SCALE: f64 = 1.0;
 const DEFAULT_TEXT_HEX: &str = "#ffffff";
 const DEFAULT_BAR_HEX: &str = "#e0218a";
 
-/// Per-instance scaled font rules, keyed by each instance's own unique CSS
-/// class, exactly like `WeatherContent`'s `_rules`/`_reload_css` on the
-/// Python side - one gauge widget's font sizing never bleeds into
-/// another's. A `thread_local!` (not a cross-thread-safe global) is
-/// enough since GTK's main loop is single-threaded here, same reasoning
-/// as `i18n_runtime`'s own `STATE`.
-struct GaugeCss {
-    provider: gtk::CssProvider,
-    installed: bool,
-    rules: HashMap<String, String>,
-}
-
+// Per-instance scaled font rules, keyed by each instance's own unique CSS
+// class - one gauge widget's font sizing never bleeds into another's.
+// Audit finding 2026-09-18: deduped onto `appearance_css::CssRuleRegistry`,
+// the same registry pattern this and 3 other call sites used to hand-roll
+// separately (this one previously as its own `GaugeCss` struct).
 thread_local! {
-    static GAUGE_CSS: RefCell<GaugeCss> = RefCell::new(GaugeCss {
-        provider: gtk::CssProvider::new(),
-        installed: false,
-        rules: HashMap::new(),
-    });
-}
-
-fn ensure_gauge_css_installed() {
-    GAUGE_CSS.with(|state| {
-        let mut state = state.borrow_mut();
-        if state.installed {
-            return;
-        }
-        let Some(display) = gtk::gdk::Display::default() else { return };
-        gtk::style_context_add_provider_for_display(&display, &state.provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-        state.installed = true;
-    });
-}
-
-/// Replaces this instance's own CSS rule and reloads the whole shared
-/// stylesheet from every instance's current rule - mirrors
-/// `_reload_gauge_css()` in cpu_temp.py.
-fn set_gauge_rule(css_class: &str, rule: String) {
-    GAUGE_CSS.with(|state| {
-        let mut state = state.borrow_mut();
-        state.rules.insert(css_class.to_string(), rule);
-        let css: String = state.rules.values().cloned().collect::<Vec<_>>().join("\n");
-        state.provider.load_from_string(&css);
-    });
+    static GAUGE_CSS: crate::appearance_css::CssRuleRegistry =
+        crate::appearance_css::CssRuleRegistry::new(gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 }
 
 fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
@@ -234,7 +199,7 @@ impl TempGaugeState {
             v = (BASE_VALUE_FONT_PX * scale).round() as i32,
             c = (BASE_CAPTION_FONT_PX * scale).round() as i32,
         );
-        set_gauge_rule(&self.css_class, rule);
+        GAUGE_CSS.with(|registry| registry.set_rule(&self.css_class, rule));
         self.column.set_spacing((BASE_COLUMN_SPACING_PX * scale).round() as i32);
         self.gauge_area.queue_draw();
     }
@@ -347,8 +312,10 @@ fn draw_gauge(state: &TempGaugeState, cr: &gtk::cairo::Context, width: i32, heig
 /// the whole card) with the unit/value/caption column overlaid and
 /// centered on top of it - mirrors `TempGaugeContent.__init__`.
 fn build_content() -> (Rc<TempGaugeState>, gtk::Widget) {
-    ensure_gauge_css_installed();
-
+    // No separate "ensure installed" call needed here - CssRuleRegistry
+    // installs its provider lazily on the first set_rule() call, and
+    // apply_content_scale() below (called synchronously a few lines
+    // down) makes exactly that call before this widget is shown.
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     let css_class = format!("xeneon-tempgauge-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
 

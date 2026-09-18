@@ -188,31 +188,12 @@ thread_local! {
     // Per-instance scaled rules (badge padding/dot size, time font size),
     // keyed by each AudioContent's own unique class so a SIZE_L instance
     // and a SIZE_SQ instance on the same page never fight over the same
-    // selector - same pattern as `appearance_css.rs`'s `RULES`.
-    static SCALE_RULES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
-    static SCALE_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
+    // selector. Audit finding 2026-09-18: deduped onto
+    // `appearance_css::CssRuleRegistry`, the same registry pattern this
+    // and 3 other call sites used to hand-roll separately.
+    static SCALE_CSS: crate::appearance_css::CssRuleRegistry =
+        crate::appearance_css::CssRuleRegistry::new(gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     static NEXT_INSTANCE_ID: Cell<u64> = const { Cell::new(0) };
-}
-
-fn ensure_scale_provider() -> gtk::CssProvider {
-    SCALE_PROVIDER.with(|cell| {
-        let mut cell = cell.borrow_mut();
-        if cell.is_none() {
-            let provider = gtk::CssProvider::new();
-            if let Some(display) = gtk::gdk::Display::default() {
-                gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-            }
-            *cell = Some(provider);
-        }
-        cell.as_ref().unwrap().clone()
-    })
-}
-
-fn reload_scale_css() {
-    SCALE_RULES.with(|rules| {
-        let css: String = rules.borrow().values().cloned().collect::<Vec<_>>().join("\n");
-        ensure_scale_provider().load_from_string(&css);
-    });
 }
 
 fn next_instance_css_class() -> String {
@@ -755,9 +736,9 @@ fn build_content(size: Size) -> (Rc<AudioState>, gtk::Widget) {
     // relative to SIZE_L; text/controls don't.
     let scale = (size.w as f64 / SIZE_L.w as f64).min(size.h as f64 / SIZE_L.h as f64);
     let css_class = next_instance_css_class();
-    SCALE_RULES.with(|rules| {
-        rules.borrow_mut().insert(
-            css_class.clone(),
+    SCALE_CSS.with(|registry| {
+        registry.set_rule(
+            &css_class,
             format!(
                 ".{class} .xeneon-audio-badge {{ padding: {pad_v}px {pad_r}px {pad_v}px {pad_l}px; }}\n\
                  .{class} .xeneon-audio-badge-dot {{ min-width: {dot}px; min-height: {dot}px; }}\n\
@@ -771,7 +752,6 @@ fn build_content(size: Size) -> (Rc<AudioState>, gtk::Widget) {
             ),
         );
     });
-    reload_scale_css();
 
     let overlay = gtk::Overlay::new();
     overlay.add_css_class(&css_class);

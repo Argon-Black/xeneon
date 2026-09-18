@@ -168,39 +168,22 @@ thread_local! {
     // A bar's color is a calendar's own color (a handful of distinct
     // values reused across many bars, not one-per-widget) - one rule per
     // distinct color, keyed by a sanitized class name, in a single
-    // display-wide provider that grows as new colors are seen. Avoids
-    // giving every bar its own `CssProvider` via the now-deprecated
-    // `StyleContext::add_provider` - same reasoning as `audio.rs`'s
-    // `SCALE_RULES`/`ensure_scale_provider`/`reload_scale_css`, just keyed
-    // by color instead of by widget instance.
-    static COLOR_RULES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
-    static COLOR_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
+    // display-wide provider that grows as new colors are seen. Audit
+    // finding 2026-09-18: deduped onto `appearance_css::CssRuleRegistry`,
+    // the same registry pattern this and 3 other call sites used to
+    // hand-roll separately.
+    static COLOR_CSS: crate::appearance_css::CssRuleRegistry =
+        crate::appearance_css::CssRuleRegistry::new(gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     // Per-instance, content_scale-dependent rules (left panel font sizes
     // only - see the module doc comment) keyed by each AgendaState's own
-    // unique class, same pattern as `audio.rs`'s own `SCALE_RULES`/
-    // `ensure_scale_provider`/`reload_scale_css` (not shared with
-    // `COLOR_RULES` above since these reload far more often - every
-    // scale-slider tick - and there's no reason to re-parse every
-    // instance's color rules each time just because one instance's scale
-    // changed).
-    static SCALE_RULES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
-    static SCALE_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
+    // unique class - kept as its own separate registry from `COLOR_CSS`
+    // above since these reload far more often (every scale-slider tick)
+    // and there's no reason to re-parse every instance's color rules
+    // each time just because one instance's scale changed.
+    static SCALE_CSS: crate::appearance_css::CssRuleRegistry =
+        crate::appearance_css::CssRuleRegistry::new(gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     static NEXT_INSTANCE_ID: Cell<u64> = const { Cell::new(0) };
-}
-
-fn ensure_color_provider() -> gtk::CssProvider {
-    COLOR_PROVIDER.with(|cell| {
-        let mut cell = cell.borrow_mut();
-        if cell.is_none() {
-            let provider = gtk::CssProvider::new();
-            if let Some(display) = gtk::gdk::Display::default() {
-                gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-            }
-            *cell = Some(provider);
-        }
-        cell.as_ref().unwrap().clone()
-    })
 }
 
 /// Registers (if new) and returns the CSS class that renders a bar (or
@@ -209,37 +192,13 @@ fn ensure_color_provider() -> gtk::CssProvider {
 fn bar_color_class(color: &str) -> String {
     let sanitized: String = color.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     let class = format!("xeneon-agenda-bar-{sanitized}");
-    COLOR_RULES.with(|rules| {
-        let mut rules = rules.borrow_mut();
-        if rules.contains_key(&class) {
+    COLOR_CSS.with(|registry| {
+        if registry.contains(&class) {
             return;
         }
-        rules.insert(class.clone(), format!(".{class} {{ background-color: {color}; }}"));
-        let css: String = rules.values().cloned().collect::<Vec<_>>().join("\n");
-        ensure_color_provider().load_from_string(&css);
+        registry.set_rule(&class, format!(".{class} {{ background-color: {color}; }}"));
     });
     class
-}
-
-fn ensure_scale_provider() -> gtk::CssProvider {
-    SCALE_PROVIDER.with(|cell| {
-        let mut cell = cell.borrow_mut();
-        if cell.is_none() {
-            let provider = gtk::CssProvider::new();
-            if let Some(display) = gtk::gdk::Display::default() {
-                gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-            }
-            *cell = Some(provider);
-        }
-        cell.as_ref().unwrap().clone()
-    })
-}
-
-fn reload_scale_css() {
-    SCALE_RULES.with(|rules| {
-        let css: String = rules.borrow().values().cloned().collect::<Vec<_>>().join("\n");
-        ensure_scale_provider().load_from_string(&css);
-    });
 }
 
 fn next_instance_css_class() -> String {
@@ -849,9 +808,9 @@ impl AgendaState {
 
     fn apply_content_scale(&self) {
         let scale = self.content_scale.get();
-        SCALE_RULES.with(|rules| {
-            rules.borrow_mut().insert(
-                self.css_class.clone(),
+        SCALE_CSS.with(|registry| {
+            registry.set_rule(
+                &self.css_class,
                 format!(
                     ".{class} .xeneon-agenda-weekday {{ font-size: {weekday}px; }}\n\
                      .{class} .xeneon-agenda-daynum {{ font-size: {daynum}px; }}\n\
@@ -863,7 +822,6 @@ impl AgendaState {
                 ),
             );
         });
-        reload_scale_css();
     }
 
     /// Opens that cell's popover if (and only if) its day has at least
