@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Per-widget persistence: one JSON file per widget instance under
 //! `widgets/<id>.json`. Ported from `widget_store.py` (the file format) and
 //! `window.py::_save_widget` (who builds it). `content` is left as an

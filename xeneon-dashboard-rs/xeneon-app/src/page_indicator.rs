@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Clickable, numbered page buttons floating over the carousel's bottom
 //! edge - shown only while actually navigating between pages (a swipe, or
 //! tapping a dot), auto-hidden after a delay, except on the settings page

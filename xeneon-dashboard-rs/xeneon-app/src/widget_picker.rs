@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Full-screen widget picker: a `gtk::Revealer` overlay child of the app's
 //! root `gtk::Overlay` (see main.rs) that slides down from the top to cover
 //! the whole window, ported from `WidgetPicker` in widget_picker.py.

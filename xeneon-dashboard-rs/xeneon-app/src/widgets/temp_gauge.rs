@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! System temperature widget (SQ footprint): the same hwmon sensor reading
 //! as `cpu_temp.rs`'s SSX widget, drawn instead as a round dial (a Cairo
 //! arc on a `gtk::DrawingArea`) with the value/unit/caption stacked as a

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! System temperature widget (SSX footprint): a one-line "CPU 52°C"
 //! readout of one hwmon sensor's current temperature. Ported from
 //! `CpuTempContent`/`CpuTempSettings` in `xeneon_dashboard/widgets/

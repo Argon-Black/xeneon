@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Unifies what the Python original keeps as two separately-maintained
 //! tables - `CATALOG` (picker) and the if/elif chain in
 //! `build_from_state` (restore) in widget_picker.py - into one: each kind

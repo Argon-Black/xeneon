@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Xeneon Dashboard - Rust/Relm4 port. Phase 1: a window sized to the
 //! Xeneon Edge panel, F11 fullscreen, and a carousel of pages backed by
 //! real `WidgetGrid`s (drag/snap wired to xeneon-core's grid math), with a

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Per-page persistence: one JSON file per carousel page under
 //! `pages/<id>.json`, mirroring `page_store.py`/`window.py::_save_page`. A
 //! page can exist (with a custom name or background) even with zero

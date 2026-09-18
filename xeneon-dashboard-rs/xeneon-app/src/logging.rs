@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Minimal custom `log` backend - stderr only, two verbosity levels tied
 //! to `dev_mode_enabled()` (see `main::dev_mode_enabled` and the
 //! `settings.dev_toggle` switch in settings_page.rs). Deliberately not

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Pure data/lookup side of the translation system: loading a locale's
 //! flat `{key: text}` JSON file, discovering which languages are
 //! available, and the fallback/substitution lookup itself. Ported from

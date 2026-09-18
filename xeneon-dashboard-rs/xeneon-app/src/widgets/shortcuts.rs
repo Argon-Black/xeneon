@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Raccourcis: an icon-launcher grid (up to 5x5) for installed apps - a
 //! straight-line port, steps 1-3 of 4, of `widgets/shortcuts.py`. See that
 //! file's own module docstring for the full design rationale; the short

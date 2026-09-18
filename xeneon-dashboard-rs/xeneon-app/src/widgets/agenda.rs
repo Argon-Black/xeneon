@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Agenda widget, full port of `widgets/agenda.py` (done in 4 steps, same
 //! breakdown style as `weather.rs`/`audio.rs`): a month calendar (today's
 //! date big on the left, the current month's grid on the right) with a

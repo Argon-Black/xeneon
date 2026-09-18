@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Grid size presets and the pure positioning math (snap-to-grid, free-space
 //! search) that both the drag/drop UI and the "add a new widget" flow rely
 //! on. Ported from `xeneon_dashboard/grid.py` in the Python app - see that

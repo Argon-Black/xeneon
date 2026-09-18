@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! App-wide accent color - independent of each widget's own appearance
 //! (see appearance_css.rs) or the page indicator's own style. Ported from
 //! `theme.py`: a single GTK named color (`@define-color accent_color

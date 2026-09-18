@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! One carousel page: a `gtk::Fixed` driven by hand rather than a Relm4
 //! factory. Relm4's usual `FactoryVecDeque` pattern assumes a linear
 //! container (append/remove in order) - it doesn't fit a container placed

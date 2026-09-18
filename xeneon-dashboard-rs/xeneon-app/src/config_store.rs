@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Thin shared-state wrapper around `xeneon_core::config::Config`, the
 //! same role `XeneonApp.config` (a plain dict) plays in the Python
 //! original: load once at startup, mutate + save immediately on every

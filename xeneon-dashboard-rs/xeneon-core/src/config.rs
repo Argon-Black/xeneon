@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! App-level settings (`config.json`): language, fullscreen shortcut,
 //! indicator look, accent color, the global default widget appearance.
 //! Ported from `config.py`. Deliberately has no GTK/gi dependency of its

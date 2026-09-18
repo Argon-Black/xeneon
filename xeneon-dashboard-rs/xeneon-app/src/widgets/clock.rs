@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The clock widget: city name, a flip-clock-style HH:MM:SS, and the date
 //! below in short or long form - full port of `ClockContent`/
 //! `ClockSettings` from widgets/clock.py, the Python app's own

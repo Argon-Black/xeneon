@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! System tray icon (StatusNotifierItem, via the `ksni` crate) - a
 //! right-click menu mirroring some of the app's own shortcuts: open the
 //! widget picker, jump to Settings, show help (see help_overlay.rs - a

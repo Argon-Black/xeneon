@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Live-retranslation glue on top of `xeneon_core::i18n`'s pure lookup:
 //! one global active language + a list of no-arg callbacks fired whenever
 //! it changes, mirroring `i18n.py`'s module-level `_listeners`/`on_change`.

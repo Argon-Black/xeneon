@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Pure application logic for Xeneon Dashboard, shared by the GTK/Relm4 UI
 //! (`xeneon-app`) but with no GTK dependency of its own - everything here
 //! is plain data and arithmetic, so it can be built and tested without a

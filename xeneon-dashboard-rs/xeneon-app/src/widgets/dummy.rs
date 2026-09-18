@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Bare-bones content for previewing a grid size preset: just the size
 //! code, large and centered. Ported from `DummyContent` in
 //! widgets/dummy.py. No settings, no persisted content of its own -

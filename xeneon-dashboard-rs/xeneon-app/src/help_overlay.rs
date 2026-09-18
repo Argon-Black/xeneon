@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Full-screen "Aide" overlay - the tray menu's "Aide" entry (see
 //! tray.rs), a static list of the app's keyboard shortcuts. Deliberately
 //! mirrors `widget_picker.rs`'s overlay mechanics rather than inventing a

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Per-widget visual customization: opacity, background color/image,
 //! border, rounded corners. Ported from `WidgetAppearance` in
 //! `widget_appearance.py`. Only the data model and the touched-state

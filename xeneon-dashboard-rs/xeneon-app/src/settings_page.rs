@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Settings page: an Interface group (page-indicator hide delay/opacity/
 //! color), a language switcher and Theme group (accent color) in column 1;
 //! a "Pages" group to rename each widget page in column 2; keyboard

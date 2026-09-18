@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Renders a `WidgetAppearance` as CSS scoped to a widget's own unique
 //! class, exactly like `widget_appearance.py`'s `_apply()`: a shared,
 //! module-level `{css_class: rule}` map, the whole thing reloaded into one

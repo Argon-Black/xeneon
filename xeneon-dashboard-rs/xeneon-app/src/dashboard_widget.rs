@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Generic chrome wrapped around every widget's own content: a title
 //! label, a delete button, a move handle that drags the widget around its
 //! `WidgetGrid`, and a configure button opening the appearance popover -

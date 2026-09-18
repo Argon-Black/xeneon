@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Small shared helper for writing JSON state to disk. Kept separate from
 //! `config`/`widget_state`/`page_state` since all three need exactly this
 //! one operation and shouldn't each reimplement it slightly differently.

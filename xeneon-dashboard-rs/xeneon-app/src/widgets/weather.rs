@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Weather widget, full port of `widgets/weather.py`: current conditions
 //! (icon, temperature, humidity/pressure/wind/UV index), `WeatherSettings`
 //! (free-text city search via Open-Meteo's geocoding endpoint, a °C/°F

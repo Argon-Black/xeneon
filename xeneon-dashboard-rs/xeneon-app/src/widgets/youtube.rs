@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! YouTube widget: a `SIZE_L` card embedding a real WebKitGTK view pointed
 //! at youtube.com - a genuine mini-browser, not a fixed embed URL.
 //! Deliberately not "one channel/video per widget" like a typical

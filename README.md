@@ -150,4 +150,6 @@ $XDG_CONFIG_HOME/xeneon-dashboard-rs/
 
 ## Licence
 
+Copyright © 2026 Argon
+
 Distribué sous licence [GPL-3.0](LICENSE).

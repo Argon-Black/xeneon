@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The configure button's popup: the appearance controls every widget
 //! gets for free (background transparency/color/image, border, corners)
 //! on the left, plus - when a plugin passes one - that plugin's own

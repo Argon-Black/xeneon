@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Audio widget: a Plexamp-inspired "now playing" card, ported from
 //! `widgets/audio.py`. Unlike Clock, it owns no data of its own - it's a
 //! generic controller for whatever media player is currently running, via
