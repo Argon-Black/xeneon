@@ -24,6 +24,10 @@ Le projet a démarré en Python/GTK (voir l'historique Git), puis a été **enti
 
 ![Vue d'ensemble du dashboard](docs/screenshots/overview.png)
 
+**Widget YouTube** — mini-navigateur WebKitGTK intégré, navigation libre :
+
+![Widget YouTube](docs/screenshots/youtube.png)
+
 **Réglages** — interface, pages, apparence par défaut des widgets, raccourcis clavier :
 
 ![Page de réglages](docs/screenshots/settings.png)
