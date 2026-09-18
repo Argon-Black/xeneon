@@ -3,6 +3,7 @@
 # 🖥️ Xeneon Dashboard
 
 [![Licence: GPL-3.0](https://img.shields.io/badge/Licence-GPL--3.0-blue.svg)](LICENSE)
+[![CI](https://github.com/Argon-Black/xeneon/actions/workflows/ci.yml/badge.svg)](https://github.com/Argon-Black/xeneon/actions/workflows/ci.yml)
 
 **Un tableau de bord tactile natif pour l'écran secondaire Corsair iCUE Xeneon Edge, écrit en Rust/GTK4.**
 
