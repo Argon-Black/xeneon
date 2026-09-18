@@ -47,6 +47,7 @@
 use adw::prelude::*;
 use gtk::gio;
 use gtk::glib;
+use log::{debug, warn};
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -338,6 +339,7 @@ fn fmt_stat(value: Option<f64>, suffix: &str, placeholder: &str) -> String {
 
 impl WeatherState {
     fn set_location(&self, location: Location) {
+        debug!("location set to {}", format_location(&location));
         *self.location.borrow_mut() = location;
         self.refresh_city_label();
         self.status.set(FetchStatus::Loading);
@@ -465,14 +467,21 @@ fn trigger_fetch(state: &Rc<WeatherState>) {
     state.render();
 
     let location = state.location.borrow().clone();
+    let location_name = location.name.clone();
     let state = state.clone();
+    debug!("fetching weather for {location_name}");
     glib::spawn_future_local(async move {
         let result = gio::spawn_blocking(move || fetch_current_weather(&location)).await;
         if generation != state.fetch_generation.get() {
+            debug!("weather fetch for {location_name} superseded, discarding");
             return;
         }
         match result {
             Ok(Ok(weather)) => {
+                debug!(
+                    "weather fetch for {location_name} ok: {:.1}°C code={} humidity={:?} pressure={:?} wind={:?} uv={:?}",
+                    weather.temperature_c, weather.weather_code, weather.humidity, weather.pressure, weather.wind_speed, weather.uv_index
+                );
                 state.current_celsius.set(Some(weather.temperature_c));
                 state.weather_code.set(Some(weather.weather_code));
                 state.is_day.set(weather.is_day);
@@ -482,7 +491,17 @@ fn trigger_fetch(state: &Rc<WeatherState>) {
                 state.uv_index.set(weather.uv_index);
                 state.status.set(FetchStatus::Ok);
             }
-            _ => state.status.set(FetchStatus::Error),
+            // The underlying error (network failure, bad JSON, missing
+            // field...) used to be discarded entirely here - nothing
+            // told you *why* the widget was stuck showing "--°".
+            Ok(Err(err)) => {
+                warn!("weather fetch for {location_name} failed: {err}");
+                state.status.set(FetchStatus::Error);
+            }
+            Err(_) => {
+                warn!("weather fetch for {location_name} task panicked");
+                state.status.set(FetchStatus::Error);
+            }
         }
         state.render();
     });
@@ -718,7 +737,9 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
             let generation = search_generation.get() + 1;
             search_generation.set(generation);
             let language = i18n::current_language();
+            debug!("geocoding search for {query:?}");
 
+            let query_log = query.clone();
             let results = results.clone();
             let results_list = results_list.clone();
             let search_generation = search_generation.clone();
@@ -726,11 +747,27 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
             glib::spawn_future_local(async move {
                 let outcome = gio::spawn_blocking(move || search_locations(&query, &language)).await;
                 if generation != search_generation.get() {
+                    debug!("geocoding search for {query_log:?} superseded, discarding");
                     return;
                 }
+                // The underlying error used to be indistinguishable from
+                // a genuine "no results" - both just showed the same
+                // "no results" status text, with nothing in the logs to
+                // tell a real failure (network, bad JSON...) apart.
                 let found = match outcome {
                     Ok(Ok(found)) if !found.is_empty() => found,
-                    _ => {
+                    Ok(Ok(_empty)) => {
+                        debug!("geocoding search for {query_log:?}: no results");
+                        set_status(Some(i18n::t("widgets.weather.settings.no_results")));
+                        return;
+                    }
+                    Ok(Err(err)) => {
+                        warn!("geocoding search for {query_log:?} failed: {err}");
+                        set_status(Some(i18n::t("widgets.weather.settings.no_results")));
+                        return;
+                    }
+                    Err(_) => {
+                        warn!("geocoding search for {query_log:?} task panicked");
                         set_status(Some(i18n::t("widgets.weather.settings.no_results")));
                         return;
                     }
