@@ -35,6 +35,7 @@
 //! same three functions between `CpuTempContent` and `TempGaugeContent`.
 
 use gtk::prelude::*;
+use log::{debug, warn};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
@@ -106,8 +107,14 @@ fn read_stripped(path: &Path) -> Option<String> {
 /// isn't there at all - mirrors `_all_sensors()` in cpu_temp.py exactly,
 /// same three files per entry (`name`, `tempN_input`, `tempN_label`).
 pub fn all_sensors() -> Vec<SensorReading> {
+    // Logged once (not every 2s tick, see `REFRESH_INTERVAL_SECONDS`) -
+    // a missing hwmon tree isn't going to reappear without a reboot, so
+    // repeating the warning would just be noise.
+    static HWMON_MISSING_WARNED: Once = Once::new();
+
     let mut sensors = Vec::new();
     let Ok(hwmon_entries) = std::fs::read_dir(HWMON_ROOT) else {
+        HWMON_MISSING_WARNED.call_once(|| warn!("{HWMON_ROOT} not readable - no temperature sensors will be shown"));
         return sensors;
     };
     for hwmon_entry in hwmon_entries.flatten() {
@@ -207,6 +214,13 @@ struct CpuTempState {
     /// list what's currently on the machine without re-scanning hwmon
     /// itself.
     available_sensors: RefCell<Vec<SensorReading>>,
+    /// Whether the last `refresh()` already logged "no reading" for the
+    /// current sensor - `refresh()` runs every `REFRESH_INTERVAL_SECONDS`
+    /// (2s), so without this the same warning would repeat forever while
+    /// unavailable. Flipped back on the tick a reading reappears, so a
+    /// later disappearance (sensor unplugged, board-specific hiccup) still
+    /// gets logged again rather than staying silenced from the first hit.
+    logged_unavailable: Cell<bool>,
 }
 
 impl CpuTempState {
@@ -252,6 +266,10 @@ impl CpuTempState {
     }
 
     fn set_sensor(&self, chip: Option<String>, label: Option<String>) {
+        match &chip {
+            Some(chip) => debug!("sensor pinned to {chip} ({})", label.as_deref().unwrap_or("")),
+            None => debug!("sensor set back to auto-pick"),
+        }
         *self.sensor_chip.borrow_mut() = chip;
         *self.sensor_label.borrow_mut() = label;
         self.refresh();
@@ -278,10 +296,28 @@ impl CpuTempState {
         self.caption_label.set_label(&self.display_label());
         match self.current_value() {
             None => {
+                // Logged once per disappearance, not every tick (see
+                // `logged_unavailable`'s own doc comment) - the pinned/
+                // auto-picked sensor vanishing from the hwmon snapshot is
+                // exactly the "guess was wrong on this board" case the
+                // module doc comment describes, worth a trace when it
+                // first happens.
+                if !self.logged_unavailable.replace(true) {
+                    let (chip, label) = self.effective_sensor();
+                    warn!(
+                        "no reading for sensor {}/{} ({} sensors seen on this machine)",
+                        chip.as_deref().unwrap_or("<none>"),
+                        label.as_deref().unwrap_or(""),
+                        self.available_sensors.borrow().len()
+                    );
+                }
                 self.value_label.set_text("--°");
                 self.value_label.set_tooltip_text(Some(&i18n::t("widgets.cpu_temp.unavailable")));
             }
             Some(celsius) => {
+                if self.logged_unavailable.replace(false) {
+                    debug!("sensor reading recovered: {celsius}°C");
+                }
                 let fahrenheit = self.unit_fahrenheit.get();
                 let display = if fahrenheit { celsius * 9.0 / 5.0 + 32.0 } else { celsius };
                 let unit_symbol = if fahrenheit { "°F" } else { "°C" };
@@ -354,12 +390,15 @@ fn build_content() -> (Rc<CpuTempState>, gtk::Widget) {
         custom_label: RefCell::new(None),
         unit_fahrenheit: Cell::new(false),
         available_sensors: RefCell::new(Vec::new()),
+        logged_unavailable: Cell::new(false),
     });
     // First read happens synchronously here so `available_sensors` (and
     // therefore the settings panel's dropdown, built right after this
     // function returns) already has real data instead of starting empty
     // and waiting for the first timer tick.
     state.refresh();
+    let (chip, label) = state.effective_sensor();
+    debug!("auto-picked sensor: {}/{}", chip.as_deref().unwrap_or("<none>"), label.as_deref().unwrap_or(""));
 
     let timeout_id = gtk::glib::timeout_add_seconds_local(REFRESH_INTERVAL_SECONDS, {
         let state = state.clone();
