@@ -15,6 +15,7 @@
 //! unlike every other widget here which is cheap D-Bus/local-file work),
 //! the "resume last page" setting, and URL persistence.
 
+use gtk::glib;
 use gtk::prelude::*;
 use std::cell::RefCell;
 use webkit6::prelude::*;
@@ -35,6 +36,47 @@ const LOADING_ICON_RASTER_PX: i32 = 768;
 
 thread_local! {
     static LOADING_TEXTURE: RefCell<Option<Option<gtk::gdk::Texture>>> = RefCell::new(None);
+    // `webkit6::WebView::new()` with no explicit session attaches to
+    // WebKit's own process-wide default `NetworkSession`, which is
+    // ephemeral (in-memory cookies/local-storage, wiped on exit) - the
+    // cause of youtube.com re-asking for cookie consent, and presumably
+    // losing any future sign-in, on every app restart. Building our own
+    // session pointed at fixed directories under this app's own XDG data/
+    // cache dirs (mirrors `xeneon_core::config::config_dir`'s reasoning,
+    // just data/cache rather than config - cookies and IndexedDB belong
+    // in XDG_DATA_HOME, the HTTP cache in XDG_CACHE_HOME, not mixed into
+    // the small JSON config/widget-layout files under XDG_CONFIG_HOME)
+    // makes it persistent instead. Cached once and reused by every
+    // WebView this module creates, so a second instance (once allowed)
+    // shares the same cookie jar rather than each getting its own.
+    static NETWORK_SESSION: webkit6::NetworkSession = {
+        let data_dir = glib::user_data_dir().join("xeneon-dashboard-rs").join("webkit");
+        let cache_dir = glib::user_cache_dir().join("xeneon-dashboard-rs").join("webkit");
+        // Created up front rather than left to WebKit to create on demand -
+        // `set_persistent_storage` below writes straight into `data_dir`
+        // and there's no guarantee it tolerates a directory that doesn't
+        // exist yet.
+        let _ = std::fs::create_dir_all(&data_dir);
+        let session = webkit6::NetworkSession::new(
+            Some(data_dir.to_string_lossy().as_ref()),
+            Some(cache_dir.to_string_lossy().as_ref()),
+        );
+        // The data/cache directories above only cover IndexedDB/local
+        // storage/HTTP cache - cookies are governed separately by the
+        // session's own `CookieManager`, which defaults to in-memory-only
+        // regardless, and needs `set_persistent_storage` called explicitly
+        // to actually write a cookie jar to disk (confirmed missing: the
+        // directory-only setup above still re-asked for cookie consent on
+        // every restart).
+        if let Some(cookie_manager) = session.cookie_manager() {
+            let cookie_jar = data_dir.join("cookies.sqlite");
+            cookie_manager.set_persistent_storage(
+                &cookie_jar.to_string_lossy(),
+                webkit6::CookiePersistentStorage::Sqlite,
+            );
+        }
+        session
+    };
 }
 
 fn loading_texture() -> Option<gtk::gdk::Texture> {
@@ -53,7 +95,7 @@ fn loading_texture() -> Option<gtk::gdk::Texture> {
 }
 
 fn build_content() -> gtk::Widget {
-    let webview = webkit6::WebView::new();
+    let webview = NETWORK_SESSION.with(|session| webkit6::WebView::builder().network_session(session).build());
     webview.set_hexpand(true);
     webview.set_vexpand(true);
     webview.load_uri(HOME_URL);
@@ -71,6 +113,20 @@ fn build_content() -> gtk::Widget {
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&webview));
     overlay.add_overlay(&loading);
+
+    // Without this, a mouse-wheel scroll over the page (e.g. youtube.com's
+    // own vertically-scrolling home feed or video description) bubbles
+    // straight past the WebView and reaches the ancestor `Adw.Carousel`,
+    // which by default treats any unclaimed scroll as a page-swipe request
+    // - same underlying issue as the move-button drag in grid_widget.rs
+    // (Adw.Carousel's own recognizer stealing an event a descendant should
+    // have handled), same fix: claim it before it can bubble that far.
+    // `Bubble` phase (the default) still lets the WebView's own native
+    // scroll handling run first, at Target phase, since this controller
+    // sits on an *ancestor* (the overlay), not the WebView itself.
+    let block_swipe = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+    block_swipe.connect_scroll(|_controller, _dx, _dy| glib::Propagation::Stop);
+    overlay.add_controller(block_swipe);
 
     webview.connect_load_changed(move |_webview, event| {
         if event == webkit6::LoadEvent::Finished {
