@@ -687,6 +687,20 @@ impl AudioState {
             self.background.set_paintable(gtk::gdk::Paintable::NONE);
             return;
         };
+        // Audit finding 2026-09-18: `artUrl` comes straight from whichever
+        // process currently owns the active MPRIS player name - the
+        // session bus has no peer authentication, so any local process
+        // (including a browser bridging its Media Session API to MPRIS
+        // for whatever tab is playing) can set this to an arbitrary URL.
+        // Restrict to the schemes a real player actually uses (a local
+        // cached thumbnail, or a legitimate https cover-art host) instead
+        // of trusting it implicitly - `gio::File::for_uri` would otherwise
+        // fetch/attempt to decode whatever it's given.
+        if !(url.starts_with("file://") || url.starts_with("https://")) {
+            debug!("ignoring album art with unexpected scheme: {url}");
+            self.background.set_paintable(gtk::gdk::Paintable::NONE);
+            return;
+        }
         let file = gio::File::for_uri(&url);
         match gtk::gdk::Texture::from_file(&file) {
             Ok(texture) => self.background.set_paintable(Some(&texture)),
