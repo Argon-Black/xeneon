@@ -490,7 +490,15 @@ fn build_settings(state: Rc<ClockState>) -> (gtk::Widget, Box<dyn Fn()>) {
         let state = state.clone();
         move |b| state.set_label_color(b.rgba())
     });
-    city_dropdown.connect_selected_notify({
+    // Held so retranslation below can block this handler for the
+    // duration of its own model swap - mirrors audio.rs's
+    // `selected_handler` pattern and the same reasoning: swapping the
+    // model can make GTK transiently report a different `selected`
+    // index before the corrective `set_selected` call, which would
+    // otherwise fire this handler with the wrong city (audit finding
+    // 2026-09-18).
+    let city_selected_handler = Rc::new(RefCell::new(None));
+    let handler = city_dropdown.connect_selected_notify({
         let state = state.clone();
         move |dropdown| {
             let index = dropdown.selected() as usize;
@@ -499,6 +507,7 @@ fn build_settings(state: Rc<ClockState>) -> (gtk::Widget, Box<dyn Fn()>) {
             }
         }
     });
+    *city_selected_handler.borrow_mut() = Some(handler);
     city_visible_switch.connect_active_notify({
         let state = state.clone();
         move |s| state.set_city_visible(s.is_active())
@@ -521,6 +530,7 @@ fn build_settings(state: Rc<ClockState>) -> (gtk::Widget, Box<dyn Fn()>) {
     // city names really are ordinary translated strings) ---
     i18n::on_change({
         let city_dropdown = city_dropdown.clone();
+        let city_selected_handler = city_selected_handler.clone();
         let time_font_label = time_font_label.clone();
         let label_font_label = label_font_label.clone();
         let city_label = city_label.clone();
@@ -544,8 +554,12 @@ fn build_settings(state: Rc<ClockState>) -> (gtk::Widget, Box<dyn Fn()>) {
             h12_button.set_label(&i18n::t("widgets.clock.settings.hour_format_12h"));
             let selected = city_dropdown.selected();
             let names: Vec<String> = CITIES.iter().map(|(key, _)| i18n::t(key)).collect();
+            let handler_ref = city_selected_handler.borrow();
+            let handler = handler_ref.as_ref().expect("connected above, before this closure can run");
+            city_dropdown.block_signal(handler);
             city_dropdown.set_model(Some(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>())));
             city_dropdown.set_selected(selected);
+            city_dropdown.unblock_signal(handler);
         }
     });
 
