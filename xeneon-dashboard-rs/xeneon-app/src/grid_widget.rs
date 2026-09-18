@@ -334,7 +334,17 @@ impl WidgetGrid {
     /// overflow isn't wired up yet in this phase).
     pub fn add_widget(&self, title_key: &str, kind: &str, size: Size, instance: WidgetInstance) -> Option<String> {
         let occupied: Vec<Rect> = self.placed.borrow().iter().map(|p| p.rect).collect();
-        let (x, y) = grid::find_free_position(&occupied, size, self.page_w, self.page_h)?;
+        // Audit finding 2026-09-18: both call sites of `add_widget` discard
+        // this `None` case silently under current invariants (they only
+        // call it after checking `has_room_for`/creating a fresh page), so
+        // a `None` here means that invariant was violated somewhere - warn
+        // rather than let the already-spawned `instance` (which may own a
+        // live timer/D-Bus subscription, depending on `kind`) vanish with
+        // no trace.
+        let Some((x, y)) = grid::find_free_position(&occupied, size, self.page_w, self.page_h) else {
+            warn!("add_widget: no free position for kind={kind} size={size:?} - dropping the already-spawned instance");
+            return None;
+        };
         let id = uuid::Uuid::new_v4().to_string();
         let rect = Rect::new(x, y, size.w, size.h);
         let to_dict = instance.to_dict.as_ref()();
