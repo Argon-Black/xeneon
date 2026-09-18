@@ -1298,6 +1298,18 @@ pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None, on_change_ready: None }
 }
 
+/// Widget picker tile for this kind - `WidgetDescriptor::preview`, not
+/// `spawn`. A live `spawn()` here fires a real EDS D-Bus calendar fetch
+/// (`build_content`'s initial `list_calendar_sources`/event query) just
+/// to show a throwaway preview tile, every single time the picker opens
+/// - audit finding 2026-09-18. Static icon instead, same idea as
+/// youtube.rs's own `preview()`.
+pub fn preview() -> gtk::Widget {
+    let icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
+    icon.set_pixel_size(48);
+    icon.upcast()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

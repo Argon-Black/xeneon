@@ -1098,3 +1098,15 @@ pub fn restore(data: &serde_json::Value) -> WidgetInstance {
         on_change_ready: None,
     }
 }
+
+/// Widget picker tile for this kind - `WidgetDescriptor::preview`, not
+/// `spawn`. A live `spawn()` here fires a real Open-Meteo network
+/// request (`build_content`'s initial fetch) just to show a throwaway
+/// preview tile, every single time the picker opens - audit finding
+/// 2026-09-18. Static icon instead, same idea as youtube.rs's own
+/// `preview()`.
+pub fn preview() -> gtk::Widget {
+    let icon = gtk::Image::from_icon_name("weather-clear-symbolic");
+    icon.set_pixel_size(48);
+    icon.upcast()
+}

@@ -135,7 +135,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_M,
         spawn: crate::widgets::agenda::spawn,
         restore: crate::widgets::agenda::restore,
-        preview: None,
+        preview: Some(crate::widgets::agenda::preview),
         singleton: false,
     },
     WidgetDescriptor {
@@ -145,7 +145,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_M,
         spawn: crate::widgets::weather::spawn,
         restore: crate::widgets::weather::restore,
-        preview: None,
+        preview: Some(crate::widgets::weather::preview),
         singleton: false,
     },
     WidgetDescriptor {
