@@ -26,6 +26,7 @@
 //!   the thread that owns the main context, so it happens in
 //!   `AppModel::update()` instead, triggered by the message.
 
+use log::warn;
 use relm4::Sender;
 
 use crate::AppMsg;
@@ -190,7 +191,7 @@ pub(crate) fn spawn(sender: Sender<AppMsg>) -> Option<ksni::blocking::Handle<Xen
     match tray.spawn() {
         Ok(handle) => Some(handle),
         Err(err) => {
-            eprintln!("xeneon-dashboard: system tray unavailable, skipping: {err}");
+            warn!("system tray unavailable, skipping: {err}");
             None
         }
     }

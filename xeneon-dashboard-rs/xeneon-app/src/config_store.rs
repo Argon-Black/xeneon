@@ -7,6 +7,7 @@
 //! - fine since GTK's main loop (and everything touching these settings)
 //! runs on a single thread, same rationale as `i18n_runtime`.
 
+use log::warn;
 use std::cell::RefCell;
 use xeneon_core::config::Config;
 
@@ -30,7 +31,7 @@ pub fn update(f: impl FnOnce(&mut Config)) {
         let mut cfg = c.borrow_mut();
         f(&mut cfg);
         if let Err(err) = cfg.save() {
-            eprintln!("xeneon-dashboard: failed to save config: {err}");
+            warn!("failed to save config: {err}");
         }
     });
 }

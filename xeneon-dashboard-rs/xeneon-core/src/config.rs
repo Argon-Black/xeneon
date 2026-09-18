@@ -7,6 +7,7 @@
 //! own.
 
 use crate::persistence;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -129,10 +130,7 @@ impl Config {
         {
             Some(config) => config,
             None => {
-                eprintln!(
-                    "xeneon-dashboard: {} is corrupt or unreadable, falling back to defaults",
-                    path.display()
-                );
+                warn!("{} is corrupt or unreadable, falling back to defaults", path.display());
                 Self::default()
             }
         }

@@ -11,6 +11,7 @@
 //! placeholder pass-through until that widget-background feature is built.
 
 use crate::persistence;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -50,7 +51,7 @@ pub fn load_all(pages_dir: &Path) -> Vec<PageState> {
                 state.id = id;
                 states.push(state);
             }
-            None => eprintln!("xeneon-dashboard: skipping corrupt page file {}", path.display()),
+            None => warn!("skipping corrupt page file {}", path.display()),
         }
     }
     states.sort_by_key(|s| s.page_index);

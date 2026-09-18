@@ -8,6 +8,7 @@
 
 use crate::appearance::WidgetAppearance;
 use crate::persistence;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -68,7 +69,7 @@ pub fn load_all(widgets_dir: &Path) -> Vec<WidgetState> {
                 state.id = id;
                 states.push(state);
             }
-            None => eprintln!("xeneon-dashboard: skipping corrupt widget file {}", path.display()),
+            None => warn!("skipping corrupt widget file {}", path.display()),
         }
     }
     states.sort_by_key(|s| (s.page_index, s.y, s.x));

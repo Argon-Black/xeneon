@@ -50,6 +50,7 @@ mod widget_picker;
 mod widgets;
 
 use adw::prelude::*;
+use log::warn;
 use page_indicator::PageIndicator;
 use relm4::prelude::*;
 use std::path::PathBuf;
@@ -312,12 +313,12 @@ impl SimpleComponent for AppModel {
         }
         for state in &widget_states {
             let Some(grid) = real_grids.get(state.page_index) else {
-                eprintln!("xeneon-dashboard: widget {} ignored, page_index {} out of range", state.id, state.page_index);
+                warn!("widget {} ignored, page_index {} out of range", state.id, state.page_index);
                 continue;
             };
             match widgets::registry::find(&state.kind) {
                 Some(descriptor) => grid.restore_widget(state, descriptor.card_title_key, (descriptor.restore)(&state.content)),
-                None => eprintln!("xeneon-dashboard: widget {} has unknown kind {:?}, skipped", state.id, state.kind),
+                None => warn!("widget {} has unknown kind {:?}, skipped", state.id, state.kind),
             }
         }
 
@@ -538,7 +539,7 @@ impl SimpleComponent for AppModel {
                 self._page_indicator.unregister_page(grid.widget());
                 self.pages_handle.remove_page(&grid);
                 if let Err(err) = page_state::delete(&self.pages_dir, grid.page_id()) {
-                    eprintln!("xeneon-dashboard: failed to delete saved page {}: {err}", grid.page_id());
+                    warn!("failed to delete saved page {}: {err}", grid.page_id());
                 }
                 // Every page after the deleted one shifts down by one
                 // index - and resaves its own widgets under that

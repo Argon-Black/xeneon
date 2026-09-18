@@ -11,6 +11,7 @@
 //! drag, and the page's own `pages/<id>.json` is (re)saved when renamed.
 
 use gtk::prelude::*;
+use log::warn;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -239,7 +240,7 @@ impl WidgetGrid {
         }
         for p in self.placed.borrow().iter() {
             if let Err(err) = widget_state::update_page_index(&self.widgets_dir, &p.id, new_index) {
-                eprintln!("xeneon-dashboard: failed to reindex widget {}: {err}", p.id);
+                warn!("failed to reindex widget {}: {err}", p.id);
             }
         }
     }
@@ -299,7 +300,7 @@ impl WidgetGrid {
             background: serde_json::Value::Null,
         };
         if let Err(err) = page_state::save(&self.pages_dir, &state) {
-            eprintln!("xeneon-dashboard: failed to save page {}: {err}", self.page_id);
+            warn!("failed to save page {}: {err}", self.page_id);
         }
     }
 
@@ -379,7 +380,7 @@ impl WidgetGrid {
             content,
         };
         if let Err(err) = widget_state::save(&self.widgets_dir, &state) {
-            eprintln!("xeneon-dashboard: failed to save widget {id}: {err}");
+            warn!("failed to save widget {id}: {err}");
         }
     }
 
@@ -414,7 +415,7 @@ impl WidgetGrid {
                 content: (placed.to_dict)(),
             };
             if let Err(err) = widget_state::save(&self.widgets_dir, &state) {
-                eprintln!("xeneon-dashboard: failed to save widget {}: {err}", placed.id);
+                warn!("failed to save widget {}: {err}", placed.id);
             }
         }
     }
@@ -477,7 +478,7 @@ impl WidgetGrid {
                     content: to_dict(),
                 };
                 if let Err(err) = widget_state::save(&widgets_dir, &state) {
-                    eprintln!("xeneon-dashboard: failed to save widget {id}: {err}");
+                    warn!("failed to save widget {id}: {err}");
                 }
             }
         });
@@ -509,7 +510,7 @@ impl WidgetGrid {
                 placed.borrow_mut().retain(|p| p.id != id);
                 if persist {
                     if let Err(err) = widget_state::delete(&widgets_dir, &id) {
-                        eprintln!("xeneon-dashboard: failed to delete saved widget {id}: {err}");
+                        warn!("failed to delete saved widget {id}: {err}");
                     }
                 }
                 if placed.borrow().is_empty() {
@@ -648,7 +649,7 @@ impl WidgetGrid {
                         content: to_dict(),
                     };
                     if let Err(err) = widget_state::save(&widgets_dir, &saved) {
-                        eprintln!("xeneon-dashboard: failed to save widget {id}: {err}");
+                        warn!("failed to save widget {id}: {err}");
                     }
                 });
             });
