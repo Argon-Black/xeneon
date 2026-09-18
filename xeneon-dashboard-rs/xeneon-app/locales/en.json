@@ -172,7 +172,7 @@
   "widgets.weather.settings.unit_celsius": "°C",
   "widgets.weather.settings.unit_fahrenheit": "°F",
   "widgets.weather.settings.content_scale": "Content size",
-  "widgets.weather.settings.app": "Application",
+  "widgets.weather.settings.app": "Weather app to launch",
   "widgets.weather.settings.app_choose": "Choose…",
   "widgets.weather.settings.app_clear": "Remove",
   "widgets.weather.settings.app_none": "None",
