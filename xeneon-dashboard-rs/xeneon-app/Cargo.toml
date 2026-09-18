@@ -1,6 +1,6 @@
 [package]
 name = "xeneon-app"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
@@ -17,4 +17,4 @@ serde_json = "1.0.151"
 ureq = "3.4.2"
 uuid = { version = "1.26.1", features = ["v4", "serde"] }
 webkit6 = { version = "0.6.1", features = ["v2_52"] }
-xeneon-core = { version = "0.1.0", path = "../xeneon-core" }
+xeneon-core = { version = "0.1.1", path = "../xeneon-core" }
