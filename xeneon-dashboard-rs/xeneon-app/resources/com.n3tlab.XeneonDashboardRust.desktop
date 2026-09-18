@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=Xeneon Dashboard
+Name[fr]=Xeneon Dashboard
+Comment=Touch dashboard for the Corsair iCUE Xeneon Edge display
+Comment[fr]=Tableau de bord tactile pour l'écran Corsair iCUE Xeneon Edge
+# Portable form (found via $PATH) for once this is actually installed -
+# see xeneon-app/src/main.rs's register_app_icon() doc comment for the
+# current no-packaging-step-yet state. Anyone installing this locally
+# today (no system install step exists - see CLAUDE.md's Flatpak notes)
+# needs to either put the binary on PATH under this exact name or rewrite
+# this line to an absolute path.
+Exec=xeneon-app
+Icon=com.n3tlab.XeneonDashboardRust
+Terminal=false
+Categories=Utility;
+# Matches APP_ID in main.rs - lets the desktop shell match this launcher
+# entry to the actually-running window (taskbar icon/grouping, "already
+# running" detection) instead of falling back to a generic icon.
+StartupWMClass=com.n3tlab.XeneonDashboardRust

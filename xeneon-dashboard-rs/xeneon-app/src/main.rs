@@ -661,9 +661,12 @@ fn xeneon_monitor(display: &gtk::gdk::Display) -> Option<gtk::gdk::Monitor> {
 
 /// Points the icon theme at `resources/icons/hicolor/...` (freedesktop
 /// hicolor layout - `scalable/apps/<name>.svg`, `symbolic/apps/<name>-symbolic.svg`)
-/// and sets the app icon name from that lookup, so both the window and
-/// (once one exists) a future tray icon resolve "com.n3tlab.XeneonDashboardRust"
-/// the same way an installed .desktop file's `Icon=` key would.
+/// and sets the app icon name from that lookup, so the window resolves
+/// "com.n3tlab.XeneonDashboardRust" the same way `resources/com.n3tlab.XeneonDashboardRust.desktop`'s
+/// `Icon=` key does once that's actually installed (see that file's own
+/// comment on the current no-install-step-yet state). The tray icon
+/// (tray.rs) doesn't use this lookup at all - it rasterizes the SVG
+/// directly, for the same reason.
 ///
 /// Resolved from `CARGO_MANIFEST_DIR` at compile time rather than an
 /// installed system path - there's no packaging/install step yet (see
