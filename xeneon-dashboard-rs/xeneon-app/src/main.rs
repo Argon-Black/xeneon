@@ -42,6 +42,7 @@ mod i18n_runtime;
 mod page_indicator;
 mod settings_page;
 mod theme;
+mod tray;
 mod widget_picker;
 mod widgets;
 
@@ -114,6 +115,10 @@ struct AppModel {
     // moment it creates one, instead of the list only catching up on the
     // next language switch - see `settings_page::PagesHandle`.
     pages_handle: settings_page::PagesHandle,
+    // Kept alive for the app's lifetime - dropping it tears the tray icon
+    // down. `None` when no StatusNotifierWatcher is running (see
+    // `tray::spawn`); the app stays fully usable either way.
+    _tray: Option<ksni::blocking::Handle<tray::XeneonTray>>,
 }
 
 #[derive(Debug)]
@@ -134,6 +139,10 @@ enum AppMsg {
     /// doc comment) - creates a brand new empty page and navigates to it.
     /// Not in the Python original; added directly in this Rust port.
     AddPage,
+    /// Tray menu "Relancer l'application" - see `settings_page::relaunch`.
+    Relaunch,
+    /// Tray menu "Quitter".
+    Quit,
 }
 
 #[relm4::component]
@@ -379,6 +388,13 @@ impl SimpleComponent for AppModel {
         let fullscreened = xeneon.is_some();
         header_bar.set_visible(!fullscreened);
 
+        let tray = tray::spawn(sender.input_sender().clone());
+        if let Some(handle) = tray.clone() {
+            i18n_runtime::on_change(move || {
+                handle.update(|tray| tray.retranslate());
+            });
+        }
+
         let model = AppModel {
             fullscreened,
             title: i18n_runtime::t("window.title"),
@@ -394,6 +410,7 @@ impl SimpleComponent for AppModel {
             _dev_grid: dev_grid,
             _page_indicator: page_indicator,
             pages_handle,
+            _tray: tray,
         };
 
         i18n_runtime::on_change({
@@ -481,6 +498,8 @@ impl SimpleComponent for AppModel {
                     self.scroll_to_once_sized(index);
                 }
             }
+            AppMsg::Relaunch => settings_page::relaunch(dev_mode_enabled()),
+            AppMsg::Quit => relm4::main_application().quit(),
             AppMsg::PageEmptied(page_id) => {
                 let Some(pos) = self.real_grids.iter().position(|g| g.page_id() == page_id) else { return };
                 // The first page always stays, even empty - there must

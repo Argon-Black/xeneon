@@ -5,6 +5,12 @@
 
   "carousel.add_page_tooltip": "Add a page",
 
+  "tray.add_widget": "Add a widget",
+  "tray.settings": "Settings",
+  "tray.help": "Help",
+  "tray.relaunch": "Relaunch the app",
+  "tray.quit": "Quit",
+
   "settings.title": "Settings",
   "settings.interface_group": "Interface",
   "settings.hide_delay_row.title": "Page bar hide delay",

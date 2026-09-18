@@ -719,12 +719,13 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
 
 /// Spawns a fresh instance with dev mode set to `dev_mode` and quits this
 /// one - used by both the always-visible dev-mode toggle and the dev-only
-/// restart button. Explicit rather than relying on env inheritance from
-/// this process to the spawned one - the single-instance GApplication
-/// D-Bus registration means the new process can race this one's shutdown
-/// in ways that make "obviously inherited" state look like it vanished,
-/// so don't leave it to chance.
-fn relaunch(dev_mode: bool) {
+/// restart button, and (via `AppMsg::Relaunch`) the tray menu's "relaunch"
+/// entry. Explicit rather than relying on env inheritance from this
+/// process to the spawned one - the single-instance GApplication D-Bus
+/// registration means the new process can race this one's shutdown in
+/// ways that make "obviously inherited" state look like it vanished, so
+/// don't leave it to chance.
+pub(crate) fn relaunch(dev_mode: bool) {
     if let Ok(exe) = std::env::current_exe() {
         let mut cmd = std::process::Command::new(exe);
         if dev_mode {
