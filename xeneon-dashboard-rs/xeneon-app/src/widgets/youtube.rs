@@ -79,6 +79,17 @@ thread_local! {
         // would otherwise surface it.
         if let Err(err) = std::fs::create_dir_all(&data_dir) {
             warn!("failed to create webkit data dir {}: {err} (cookies/session will not persist)", data_dir.display());
+        } else {
+            // `data_dir` ends up holding cookies.sqlite (real YouTube
+            // session/auth cookies below). Restrict it to owner-only so a
+            // less-restrictive `$HOME` (a permissive restore, an NFS/Samba
+            // share, ...) can't let another local user read them off disk
+            // - relying solely on the inherited umask isn't defense in
+            // depth. Security-review finding, audit 2026-09-18.
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(err) = std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700)) {
+                warn!("failed to restrict permissions on webkit data dir {}: {err}", data_dir.display());
+            }
         }
         let session = webkit6::NetworkSession::new(
             Some(data_dir.to_string_lossy().as_ref()),
