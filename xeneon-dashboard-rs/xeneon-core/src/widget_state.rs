@@ -32,6 +32,19 @@ pub struct WidgetState {
     pub content: serde_json::Value,
 }
 
+impl WidgetState {
+    /// Builds a state record from its natural parts - `rect` supplies
+    /// x/y/w/h together so a caller can't transpose two of the four
+    /// fields by hand. Audit finding 2026-09-18: `xeneon-app`'s
+    /// `grid_widget.rs` used to repeat this exact struct literal by hand
+    /// at 4 call sites (save on drop, apply-appearance-to-all, the
+    /// deferred `save_now` closure, and the drag-end handler); any future
+    /// field added here needed all 4 updated in lockstep.
+    pub fn new(id: String, kind: String, page_index: usize, rect: crate::grid::Rect, appearance: WidgetAppearance, content: serde_json::Value) -> Self {
+        Self { id, kind, page_index, x: rect.x, y: rect.y, w: rect.w, h: rect.h, appearance, content }
+    }
+}
+
 impl Default for WidgetState {
     fn default() -> Self {
         Self {

@@ -378,17 +378,7 @@ impl WidgetGrid {
     }
 
     fn save_widget_state(&self, id: &str, kind: &str, rect: Rect, appearance: WidgetAppearance, content: serde_json::Value) {
-        let state = WidgetState {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            page_index: self.page_index(),
-            x: rect.x,
-            y: rect.y,
-            w: rect.w,
-            h: rect.h,
-            appearance,
-            content,
-        };
+        let state = WidgetState::new(id.to_string(), kind.to_string(), self.page_index(), rect, appearance, content);
         if let Err(err) = widget_state::save(&self.widgets_dir, &state) {
             warn!("failed to save widget {id}: {err}");
         }
@@ -413,17 +403,14 @@ impl WidgetGrid {
             if !self.persist {
                 continue;
             }
-            let state = WidgetState {
-                id: placed.id.clone(),
-                kind: placed.kind.clone(),
-                page_index: self.page_index(),
-                x: placed.rect.x,
-                y: placed.rect.y,
-                w: placed.rect.w,
-                h: placed.rect.h,
-                appearance: appearance.clone(),
-                content: (placed.to_dict)(),
-            };
+            let state = WidgetState::new(
+                placed.id.clone(),
+                placed.kind.clone(),
+                self.page_index(),
+                placed.rect,
+                appearance.clone(),
+                (placed.to_dict)(),
+            );
             if let Err(err) = widget_state::save(&self.widgets_dir, &state) {
                 warn!("failed to save widget {}: {err}", placed.id);
             }
@@ -476,17 +463,7 @@ impl WidgetGrid {
                     return;
                 }
                 let Some(rect) = placed.borrow().iter().find(|p| p.id == id).map(|p| p.rect) else { return };
-                let state = WidgetState {
-                    id: id.clone(),
-                    kind: kind.clone(),
-                    page_index: page_index.get(),
-                    x: rect.x,
-                    y: rect.y,
-                    w: rect.w,
-                    h: rect.h,
-                    appearance: appearance.borrow().clone(),
-                    content: to_dict(),
-                };
+                let state = WidgetState::new(id.clone(), kind.clone(), page_index.get(), rect, appearance.borrow().clone(), to_dict());
                 if let Err(err) = widget_state::save(&widgets_dir, &state) {
                     warn!("failed to save widget {id}: {err}");
                 }
@@ -647,17 +624,7 @@ impl WidgetGrid {
                     if !persist {
                         return;
                     }
-                    let saved = WidgetState {
-                        id: id.clone(),
-                        kind: kind.clone(),
-                        page_index: page_index.get(),
-                        x: state.candidate.x,
-                        y: state.candidate.y,
-                        w: state.candidate.w,
-                        h: state.candidate.h,
-                        appearance: appearance.borrow().clone(),
-                        content: to_dict(),
-                    };
+                    let saved = WidgetState::new(id.clone(), kind.clone(), page_index.get(), state.candidate, appearance.borrow().clone(), to_dict());
                     if let Err(err) = widget_state::save(&widgets_dir, &saved) {
                         warn!("failed to save widget {id}: {err}");
                     }
