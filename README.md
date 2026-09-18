@@ -20,13 +20,13 @@ Le projet a démarré en Python/GTK (voir l'historique Git), puis a été **enti
 
 ## Captures d'écran
 
-> _À venir — le dashboard tourne actuellement sur écran de développement 2560×720 ; des captures du panneau réel seront ajoutées ici._
+**Vue d'ensemble** — horloge, agenda, météo, lecteur audio (MPRIS), jauge de température et grille de raccourcis :
 
-<!--
-Ajoutez vos captures dans docs/screenshots/ puis référencez-les ici, par ex. :
-![Vue d'ensemble](docs/screenshots/overview.png)
-![Widget météo](docs/screenshots/weather.png)
--->
+![Vue d'ensemble du dashboard](docs/screenshots/overview.png)
+
+**Réglages** — interface, pages, apparence par défaut des widgets, raccourcis clavier :
+
+![Page de réglages](docs/screenshots/settings.png)
 
 ## Fonctionnalités
 
