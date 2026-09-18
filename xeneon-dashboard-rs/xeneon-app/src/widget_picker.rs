@@ -426,8 +426,26 @@ impl WidgetPicker {
 
                 let picker = self.clone();
                 let tile = build_tile(descriptor, move |kind| {
-                    (picker.on_pick)(kind);
-                    picker.close();
+                    // Deferred to the next main-loop idle iteration rather
+                    // than done synchronously here: this runs while GTK is
+                    // still finishing its own dispatch of the tile's click
+                    // (build_tile's GestureClick::connect_released), and
+                    // picker.close() -> clear_body() removes that very
+                    // tile from the canvas. Removing it synchronously out
+                    // from under its own still-in-flight dispatch crashes
+                    // inside GTK4's own crossing-event synthesis
+                    // (confirmed via coredumpctl on real hardware for the
+                    // same pattern elsewhere - see
+                    // feedback_rust_gtk_dev_loop_gotchas item 5,
+                    // grid_widget.rs's connect_drag_end, and
+                    // shortcuts.rs's delete_button - audit finding
+                    // 2026-09-18: this call site had the same shape but
+                    // was missing the fix).
+                    let picker = picker.clone();
+                    gtk::glib::idle_add_local_once(move || {
+                        (picker.on_pick)(kind);
+                        picker.close();
+                    });
                 });
                 row.append(&tile);
                 row_width = if row_has_tile { row_width + GAP + tile_width } else { tile_width };
