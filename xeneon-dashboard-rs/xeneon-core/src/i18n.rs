@@ -6,6 +6,7 @@
 //! notification bus is GTK/Relm4-shaped glue, not pure logic, so it lives
 //! in `xeneon-app` instead (see `i18n_runtime.rs` there).
 
+use log::warn;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -19,7 +20,17 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn from_json_str(json: &str) -> Self {
-        let strings = serde_json::from_str(json).unwrap_or_default();
+        // A parse failure used to silently yield an empty catalog - every
+        // key then falling back to the raw key everywhere it's used
+        // (see `translate`), with nothing to say the locale file itself
+        // was the problem rather than a genuinely missing translation.
+        let strings = match serde_json::from_str(json) {
+            Ok(strings) => strings,
+            Err(err) => {
+                warn!("failed to parse locale JSON: {err}");
+                HashMap::new()
+            }
+        };
         Self { strings }
     }
 
@@ -53,7 +64,11 @@ pub fn translate(active: &Catalog, fallback: &Catalog, key: &str, args: &[(&str,
 /// parse is skipped rather than aborting discovery of the others (same
 /// resilience principle used for widget/page state loading).
 pub fn discover_languages(locales_dir: &Path) -> Vec<(String, String)> {
+    // Missing entirely means *zero* languages show up in the settings
+    // picker - previously indistinguishable from a locales dir that's
+    // just empty, which shouldn't happen but would look identical.
     let Ok(entries) = std::fs::read_dir(locales_dir) else {
+        warn!("failed to read locales directory {}", locales_dir.display());
         return Vec::new();
     };
     let mut paths: Vec<_> = entries
@@ -67,7 +82,13 @@ pub fn discover_languages(locales_dir: &Path) -> Vec<(String, String)> {
         .into_iter()
         .filter_map(|path| {
             let code = path.file_stem()?.to_str()?.to_string();
-            let text = std::fs::read_to_string(&path).ok()?;
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(err) => {
+                    warn!("failed to read locale file {}: {err}, skipping", path.display());
+                    return None;
+                }
+            };
             let catalog = Catalog::from_json_str(&text);
             let name = catalog.language_name().unwrap_or(&code).to_string();
             Some((code, name))
@@ -77,7 +98,18 @@ pub fn discover_languages(locales_dir: &Path) -> Vec<(String, String)> {
 
 pub fn load_catalog(locales_dir: &Path, code: &str) -> Catalog {
     let path = locales_dir.join(format!("{code}.json"));
-    std::fs::read_to_string(path).map(|text| Catalog::from_json_str(&text)).unwrap_or_default()
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Catalog::from_json_str(&text),
+        Err(err) => {
+            // The UI keeps running (every key just falls back to itself,
+            // see `translate`) but this is *why* - worth more than
+            // silence, especially for the fallback language, whose
+            // catalog missing entirely would surface as literally every
+            // untranslated string in the app.
+            warn!("failed to read locale file {}: {err} - its strings will show as raw keys", path.display());
+            Catalog::default()
+        }
+    }
 }
 
 #[cfg(test)]
