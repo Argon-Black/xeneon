@@ -319,6 +319,7 @@ struct WeatherState {
     location: RefCell<Location>,
     unit_fahrenheit: Cell<bool>,
     content_scale: Cell<f64>,
+    app_id: RefCell<Option<String>>,
     status: Cell<FetchStatus>,
     current_celsius: Cell<Option<f64>>,
     weather_code: Cell<Option<i64>>,
@@ -337,6 +338,19 @@ fn fmt_stat(value: Option<f64>, suffix: &str, placeholder: &str) -> String {
     }
 }
 
+/// Looks a saved `app_id` back up in the live installed-apps list - same
+/// approach as `ShortcutIcon::app_info()` in shortcuts.rs (see that
+/// module's doc comment: this project's `gio` binding has no
+/// `DesktopAppInfo::new(id)` shortcut, so a saved id is resolved by
+/// scanning `gio::AppInfo::all()` instead). `None` once the app has been
+/// uninstalled since it was picked.
+fn app_display_name(app_id: &str) -> Option<String> {
+    gio::AppInfo::all()
+        .into_iter()
+        .find(|a| a.id().as_deref() == Some(app_id))
+        .map(|a| a.display_name().to_string())
+}
+
 impl WeatherState {
     fn set_location(&self, location: Location) {
         debug!("location set to {}", format_location(&location));
@@ -349,6 +363,36 @@ impl WeatherState {
     fn set_unit_fahrenheit(&self, enabled: bool) {
         self.unit_fahrenheit.set(enabled);
         self.render();
+    }
+
+    fn set_app_id(&self, app_id: Option<String>) {
+        *self.app_id.borrow_mut() = app_id;
+        self.refresh_temp_interactivity();
+    }
+
+    /// The temperature is only clickable/hinted when an app is actually
+    /// configured to launch - an unclickable label showing a "click for
+    /// more info" tooltip would be a lie. Re-applied on every language
+    /// change too, since the tooltip text is translated.
+    fn refresh_temp_interactivity(&self) {
+        if self.app_id.borrow().is_some() {
+            self.temp_label.set_cursor_from_name(Some("pointer"));
+            self.temp_label.set_tooltip_text(Some(&i18n::t("widgets.weather.more_info")));
+        } else {
+            self.temp_label.set_cursor_from_name(None);
+            self.temp_label.set_tooltip_text(None);
+        }
+    }
+
+    fn launch_app(&self) {
+        let Some(app_id) = self.app_id.borrow().clone() else { return };
+        let Some(info) = gio::AppInfo::all().into_iter().find(|a| a.id().as_deref() == Some(app_id.as_str())) else {
+            warn!("weather app {app_id} is no longer installed");
+            return;
+        };
+        if let Err(err) = info.launch(&[], None::<&gio::AppLaunchContext>) {
+            warn!("failed to launch weather app {app_id}: {err}");
+        }
     }
 
     fn refresh_city_label(&self) {
@@ -435,6 +479,7 @@ impl WeatherState {
             "location": self.location.borrow().to_json(),
             "unit_fahrenheit": self.unit_fahrenheit.get(),
             "content_scale": self.content_scale.get(),
+            "app_id": self.app_id.borrow().clone(),
         })
     }
 
@@ -450,6 +495,9 @@ impl WeatherState {
         }
         if let Some(v) = data.get("content_scale").and_then(|v| v.as_f64()) {
             self.set_content_scale(v);
+        }
+        if let Some(v) = data.get("app_id").and_then(|v| v.as_str()) {
+            self.set_app_id(Some(v.to_string()));
         }
     }
 }
@@ -574,6 +622,7 @@ fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
         location: RefCell::new(default_location),
         unit_fahrenheit: Cell::new(false),
         content_scale: Cell::new(DEFAULT_CONTENT_SCALE),
+        app_id: RefCell::new(None),
         status: Cell::new(FetchStatus::Loading),
         current_celsius: Cell::new(None),
         weather_code: Cell::new(None),
@@ -585,7 +634,19 @@ fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
         fetch_generation: Cell::new(0),
     });
     state.apply_content_scale();
+    state.refresh_temp_interactivity();
     trigger_fetch(&state);
+
+    // Simple GestureClick, no drag distance to watch - same reasoning as
+    // shortcuts.rs's own icon-launch gesture: the whole widget's own move
+    // button is a separate control, so a plain click here is unambiguous.
+    // launch_app() itself is a no-op when no app is configured.
+    let temp_click = gtk::GestureClick::new();
+    temp_click.connect_released({
+        let state = state.clone();
+        move |_, _, _, _| state.launch_app()
+    });
+    state.temp_label.add_controller(temp_click);
 
     let timeout_id = glib::timeout_add_seconds_local(REFRESH_INTERVAL_SECONDS, {
         let state = state.clone();
@@ -609,7 +670,10 @@ fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
     });
     i18n::on_change({
         let state = state.clone();
-        move || state.render()
+        move || {
+            state.render();
+            state.refresh_temp_interactivity();
+        }
     });
 
     (state, root.upcast())
@@ -621,6 +685,119 @@ fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
         row.append(*w);
     }
     row
+}
+
+/// Modal "pick an installed app" dialog - a trimmed copy of
+/// `shortcuts.rs::open_add_dialog`'s own app-browsing half (search entry +
+/// icon list), not shared with it: this project's widgets each keep their
+/// own compact picker UI rather than factor out one shared dialog for two
+/// call sites - same call `temp_gauge.rs`'s doc comment makes for its own
+/// duplicated sensor picker ("not worth the extra indirection"). Weather
+/// only ever needs "pick one app to launch", none of `open_add_dialog`'s
+/// custom command/URL tab or col/row placement.
+fn open_app_picker(parent: &gtk::Window, on_pick: impl Fn(String) + 'static) {
+    let dialog = adw::Window::new();
+    dialog.set_transient_for(Some(parent));
+    dialog.set_modal(true);
+    dialog.set_default_size(380, 480);
+    dialog.set_title(Some(&i18n::t("widgets.weather.settings.app_picker_title")));
+
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&adw::HeaderBar::new());
+
+    let root_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    root_box.set_margin_start(12);
+    root_box.set_margin_end(12);
+    root_box.set_margin_top(6);
+    root_box.set_margin_bottom(12);
+
+    let search_entry = gtk::SearchEntry::new();
+    search_entry.set_placeholder_text(Some(&i18n::t("widgets.weather.settings.app_search_placeholder")));
+    root_box.append(&search_entry);
+
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_vexpand(true);
+    scroller.set_min_content_height(280);
+    let apps_list = gtk::ListBox::new();
+    apps_list.add_css_class("boxed-list");
+    apps_list.set_selection_mode(gtk::SelectionMode::None);
+    apps_list.set_activate_on_single_click(true);
+    scroller.set_child(Some(&apps_list));
+    root_box.append(&scroller);
+
+    toolbar_view.set_content(Some(&root_box));
+    dialog.set_content(Some(&toolbar_view));
+
+    let mut all_apps: Vec<gio::AppInfo> = gio::AppInfo::all().into_iter().filter(|a| a.should_show()).collect();
+    all_apps.sort_by_key(|a| a.display_name().to_string().to_lowercase());
+    let all_apps = Rc::new(all_apps);
+    // Rebuilt by `populate` on every keystroke, in the same order as the
+    // rows currently shown - `row.index()` in `row-activated` looks back
+    // into this to find which app was picked (see
+    // `shortcuts.rs::open_add_dialog` for the same reasoning).
+    let visible_apps: Rc<RefCell<Vec<gio::AppInfo>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let populate = {
+        let apps_list = apps_list.clone();
+        let all_apps = all_apps.clone();
+        let visible_apps = visible_apps.clone();
+        move |query: &str| {
+            while let Some(child) = apps_list.first_child() {
+                apps_list.remove(&child);
+            }
+            let query = query.trim().to_lowercase();
+            let mut visible = Vec::new();
+            for app in all_apps.iter() {
+                let name = app.display_name();
+                if !query.is_empty() && !name.to_lowercase().contains(&query) {
+                    continue;
+                }
+                let row = adw::ActionRow::new();
+                row.set_title(&gtk::glib::markup_escape_text(&name));
+                row.set_activatable(true);
+                if let Some(icon) = app.icon() {
+                    let image = gtk::Image::from_gicon(&icon);
+                    image.set_pixel_size(28);
+                    row.add_prefix(&image);
+                }
+                apps_list.append(&row);
+                visible.push(app.clone());
+            }
+            *visible_apps.borrow_mut() = visible;
+        }
+    };
+    populate("");
+
+    search_entry.connect_search_changed({
+        let populate = populate.clone();
+        move |entry| populate(&entry.text())
+    });
+
+    apps_list.connect_row_activated({
+        let visible_apps = visible_apps.clone();
+        let dialog = dialog.clone();
+        move |_, row| {
+            let index = row.index();
+            if index < 0 {
+                return;
+            }
+            if let Some(app) = visible_apps.borrow().get(index as usize) {
+                if let Some(id) = app.id() {
+                    on_pick(id.to_string());
+                }
+            }
+            dialog.close();
+        }
+    });
+
+    dialog.present();
+}
+
+fn current_app_display(state: &WeatherState) -> String {
+    match state.app_id.borrow().as_deref() {
+        Some(id) => app_display_name(id).unwrap_or_else(|| id.to_string()),
+        None => i18n::t("widgets.weather.settings.app_none"),
+    }
 }
 
 /// The weather widget's own settings, shown next to the generic
@@ -691,6 +868,22 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
     scale_slider.set_draw_value(true);
     scale_slider.set_value_pos(gtk::PositionType::Right);
     root.append(&scale_slider);
+
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let app_title = gtk::Label::new(Some(&i18n::t("widgets.weather.settings.app")));
+    app_title.set_halign(gtk::Align::Start);
+    root.append(&app_title);
+
+    let app_name_label = gtk::Label::new(Some(&current_app_display(&state)));
+    app_name_label.set_halign(gtk::Align::Start);
+    app_name_label.set_wrap(true);
+    app_name_label.add_css_class("dim-label");
+    root.append(&app_name_label);
+
+    let app_choose_button = gtk::Button::with_label(&i18n::t("widgets.weather.settings.app_choose"));
+    let app_clear_button = gtk::Button::with_label(&i18n::t("widgets.weather.settings.app_clear"));
+    root.append(&make_row(&[app_choose_button.upcast_ref(), app_clear_button.upcast_ref()]));
 
     // --- search wiring ---
     // Holds the results a response actually produced, indexed the same
@@ -822,6 +1015,27 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
         let state = state.clone();
         move |s| state.set_content_scale(s.value() / 100.0)
     });
+    app_choose_button.connect_clicked({
+        let state = state.clone();
+        let app_name_label = app_name_label.clone();
+        move |button| {
+            let Some(parent) = button.root().and_downcast::<gtk::Window>() else { return };
+            let state = state.clone();
+            let app_name_label = app_name_label.clone();
+            open_app_picker(&parent, move |app_id| {
+                state.set_app_id(Some(app_id));
+                app_name_label.set_label(&current_app_display(&state));
+            });
+        }
+    });
+    app_clear_button.connect_clicked({
+        let state = state.clone();
+        let app_name_label = app_name_label.clone();
+        move |_| {
+            state.set_app_id(None);
+            app_name_label.set_label(&current_app_display(&state));
+        }
+    });
 
     // --- retranslation ---
     i18n::on_change({
@@ -832,6 +1046,11 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
         let celsius_button = celsius_button.clone();
         let fahrenheit_button = fahrenheit_button.clone();
         let scale_label = scale_label.clone();
+        let app_title = app_title.clone();
+        let app_name_label = app_name_label.clone();
+        let app_choose_button = app_choose_button.clone();
+        let app_clear_button = app_clear_button.clone();
+        let state = state.clone();
         move || {
             location_title.set_label(&i18n::t("widgets.weather.settings.location"));
             search_entry.set_placeholder_text(Some(&i18n::t("widgets.weather.settings.search_placeholder")));
@@ -840,6 +1059,14 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
             celsius_button.set_label(&i18n::t("widgets.weather.settings.unit_celsius"));
             fahrenheit_button.set_label(&i18n::t("widgets.weather.settings.unit_fahrenheit"));
             scale_label.set_label(&i18n::t("widgets.weather.settings.content_scale"));
+            app_title.set_label(&i18n::t("widgets.weather.settings.app"));
+            // Only the "no app chosen" placeholder text is actually
+            // translated - a real app's display name isn't - but
+            // recomputing via current_app_display() either way is simpler
+            // than special-casing which branch needs the refresh.
+            app_name_label.set_label(&current_app_display(&state));
+            app_choose_button.set_label(&i18n::t("widgets.weather.settings.app_choose"));
+            app_clear_button.set_label(&i18n::t("widgets.weather.settings.app_clear"));
         }
     });
     search_entry.set_placeholder_text(Some(&i18n::t("widgets.weather.settings.search_placeholder")));
