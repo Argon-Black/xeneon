@@ -1098,7 +1098,17 @@ fn build_settings(state: Rc<ShortcutsState>) -> (gtk::Widget, impl Fn() + Clone 
         let color_button = color_button.clone();
         let opacity_scale = opacity_scale.clone();
         move || {
-            color_button.set_rgba(&state.backdrop_color.borrow());
+            // Read into an owned value *before* touching the control:
+            // `set_rgba` fires `color_button`'s own `notify::rgba`
+            // synchronously, which calls back into `state.set_backdrop_
+            // color()` - a `borrow_mut()` on the very same RefCell a
+            // `.borrow()` passed directly here would still be holding as
+            // a live temporary, which panics (and, since this runs inside
+            // a GTK signal callback, aborts the whole process rather than
+            // just unwinding - see clock.rs's `resync`/appearance_popover.rs's
+            // reset handler for the same hazard, already avoided there).
+            let backdrop_color = state.backdrop_color.borrow().clone();
+            color_button.set_rgba(&backdrop_color);
             opacity_scale.set_value(state.backdrop_opacity.get() * 100.0);
         }
     };
