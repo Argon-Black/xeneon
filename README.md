@@ -1,5 +1,7 @@
 <div align="center">
 
+🇫🇷 Français · [🇬🇧 English](README.en.md)
+
 # 🖥️ Xeneon Dashboard
 
 [![Licence: GPL-3.0](https://img.shields.io/badge/Licence-GPL--3.0-blue.svg)](LICENSE)
