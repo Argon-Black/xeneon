@@ -32,6 +32,7 @@
 
 use gtk::glib;
 use gtk::prelude::*;
+use log::{debug, warn};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit6::prelude::*;
@@ -72,8 +73,12 @@ thread_local! {
         // Created up front rather than left to WebKit to create on demand -
         // `set_persistent_storage` below writes straight into `data_dir`
         // and there's no guarantee it tolerates a directory that doesn't
-        // exist yet.
-        let _ = std::fs::create_dir_all(&data_dir);
+        // exist yet. A failure here means cookies/sign-in silently stop
+        // surviving app restarts - worth a warning, since nothing else
+        // would otherwise surface it.
+        if let Err(err) = std::fs::create_dir_all(&data_dir) {
+            warn!("failed to create webkit data dir {}: {err} (cookies/session will not persist)", data_dir.display());
+        }
         let session = webkit6::NetworkSession::new(
             Some(data_dir.to_string_lossy().as_ref()),
             Some(cache_dir.to_string_lossy().as_ref()),
@@ -103,7 +108,7 @@ fn loading_texture() -> Option<gtk::gdk::Texture> {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(LOADING_ICON_PATH);
             let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&path, LOADING_ICON_RASTER_PX, LOADING_ICON_RASTER_PX)
                 .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
-                .inspect_err(|err| eprintln!("xeneon-dashboard: failed to load {}: {err}", path.display()))
+                .inspect_err(|err| warn!("failed to load {}: {err}", path.display()))
                 .ok();
             *cell = Some(texture);
         }
@@ -148,6 +153,7 @@ fn start_state_from_dict(data: &serde_json::Value) -> (String, bool) {
 }
 
 fn build_content(start_url: &str, resume_last_page: bool) -> (Rc<YoutubeState>, gtk::Widget) {
+    debug!("building widget instance: start_url={start_url} resume_last_page={resume_last_page}");
     let webview = NETWORK_SESSION.with(|session| webkit6::WebView::builder().network_session(session).build());
     webview.set_hexpand(true);
     webview.set_vexpand(true);
@@ -183,11 +189,22 @@ fn build_content(start_url: &str, resume_last_page: bool) -> (Rc<YoutubeState>, 
 
     webview.connect_load_changed({
         let loading = loading.clone();
-        move |_webview, event| {
+        move |webview, event| {
             if event == webkit6::LoadEvent::Finished {
+                debug!("load finished: {}", webview.uri().map(|u| u.to_string()).unwrap_or_default());
                 loading.set_visible(false);
             }
         }
+    });
+
+    // Doesn't change any behaviour (returning `false` keeps WebKit's own
+    // default error page, same as if this handler didn't exist at all) -
+    // added purely so a failed navigation (offline, DNS, etc.) leaves a
+    // trace instead of just a silent blank/error page with nothing in the
+    // logs to explain why.
+    webview.connect_load_failed(|_webview, event, failing_uri, error| {
+        warn!("load failed ({event:?}) for {failing_uri}: {error}");
+        false
     });
 
     // The actual page-rendering work happens in a separate
@@ -208,7 +225,7 @@ fn build_content(start_url: &str, resume_last_page: bool) -> (Rc<YoutubeState>, 
         let loading = loading.clone();
         let webview = webview.clone();
         move |_webview, reason| {
-            eprintln!("xeneon-dashboard: youtube widget's web process terminated ({reason:?}), reloading");
+            warn!("web process terminated ({reason:?}), reloading");
             loading.set_visible(true);
             webview.reload();
         }
@@ -226,7 +243,8 @@ fn build_content(start_url: &str, resume_last_page: bool) -> (Rc<YoutubeState>, 
     // still catches every navigation, not just the very first one.
     webview.connect_uri_notify({
         let state = state.clone();
-        move |_webview| {
+        move |webview| {
+            debug!("uri changed: {}", webview.uri().map(|u| u.to_string()).unwrap_or_default());
             if let Some(save_now) = state.change_notifier.borrow().as_ref() {
                 save_now();
             }
@@ -283,6 +301,7 @@ fn wire_change_notifier(state: &Rc<YoutubeState>) -> Box<dyn FnOnce(Rc<dyn Fn()>
 }
 
 pub fn spawn() -> WidgetInstance {
+    debug!("spawning new instance");
     let (state, content) = build_content(HOME_URL, true);
     let (settings, resync) = build_settings(state.clone());
     let on_reset = {
@@ -305,6 +324,7 @@ pub fn spawn() -> WidgetInstance {
 }
 
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
+    debug!("restoring instance from saved state");
     let (start_url, resume_last_page) = start_state_from_dict(data);
     let (state, content) = build_content(&start_url, resume_last_page);
     let (settings, resync) = build_settings(state.clone());

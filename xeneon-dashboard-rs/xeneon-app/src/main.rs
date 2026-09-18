@@ -40,6 +40,7 @@ mod dashboard_widget;
 mod grid_widget;
 mod help_overlay;
 mod i18n_runtime;
+mod logging;
 mod page_indicator;
 mod settings_page;
 mod theme;
@@ -677,6 +678,10 @@ fn register_app_icon(display: &gtk::gdk::Display) {
 }
 
 fn main() {
+    // Must be the very first thing - every `log::` call before this
+    // point is silently dropped (see `logging::init`'s own doc comment).
+    logging::init(dev_mode_enabled());
+
     let app = RelmApp::new(APP_ID);
     app.run::<AppModel>(());
 }
