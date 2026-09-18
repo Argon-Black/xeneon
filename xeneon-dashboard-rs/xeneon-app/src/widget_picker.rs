@@ -41,11 +41,15 @@
 //! while closed.
 
 use adw::prelude::*;
-use gtk::glib;
 
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::{WidgetDescriptor, CATALOG};
-use xeneon_core::grid::{Size, GAP, SIZE_L, SIZE_M, SIZE_S, SIZE_SQ, SIZE_SSX, SIZE_SX};
+use xeneon_core::grid::{Size, GAP, PAGE_W, SIZE_L, SIZE_M, SIZE_S, SIZE_SQ, SIZE_SSX, SIZE_SX};
+
+/// The body's own left/right margin (see `new()`) - shared with
+/// `rebuild_body()`'s row-wrapping math so the two stay in sync rather
+/// than duplicating the same number.
+const BODY_MARGIN: i32 = 24;
 
 /// Static (never reloaded) - only ever references `@accent_color` by name,
 /// which `theme.rs`'s own provider keeps redefining display-wide on every
@@ -263,11 +267,15 @@ impl WidgetPicker {
         title_label.set_halign(gtk::Align::Start);
         title_label.set_hexpand(true);
         header.append(&title_label);
-        let close_button = gtk::Button::new();
+        // Same constructor as every other close/delete button in the app
+        // (dashboard_widget.rs, appearance_popover.rs) rather than
+        // `Button::new()` + `set_icon_name()` separately - matches a
+        // known-working pattern exactly rather than a second path to the
+        // same result.
+        let close_button = gtk::Button::from_icon_name("window-close-symbolic");
         close_button.add_css_class("flat");
         close_button.add_css_class("circular");
         close_button.add_css_class("xeneon-widget-picker-close");
-        close_button.set_icon_name("window-close-symbolic");
         close_button.set_tooltip_text(Some(&i18n::t("widgets.appearance.close_tooltip")));
         header.append(&close_button);
         surface.append(&header);
@@ -279,8 +287,8 @@ impl WidgetPicker {
         body.add_css_class("xeneon-widget-picker-body");
         body.set_margin_top(12);
         body.set_margin_bottom(20);
-        body.set_margin_start(24);
-        body.set_margin_end(24);
+        body.set_margin_start(BODY_MARGIN);
+        body.set_margin_end(BODY_MARGIN);
         scroller.set_child(Some(&body));
         surface.append(&scroller);
 
@@ -299,22 +307,23 @@ impl WidgetPicker {
             move |_| close()
         });
 
-        let key_controller = gtk::EventControllerKey::new();
-        key_controller.connect_key_pressed({
-            let revealer = revealer.clone();
-            let close = close.clone();
-            move |_, key, _, _| {
-                if key == gtk::gdk::Key::Escape && revealer.reveals_child() {
-                    close();
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
-            }
-        });
-        revealer.add_controller(key_controller);
+        // Escape-to-close is handled at the *window* level instead of a
+        // Gtk.EventControllerKey on this revealer (there used to be one
+        // here - see git history) - an EventController's default Bubble
+        // propagation phase only sees a key event after GTK has already
+        // routed it to whatever widget currently holds keyboard focus,
+        // and `open()`'s `revealer.grab_focus()` call has nothing
+        // focusable to actually land on inside this tree (every tile's
+        // own content is `can_target(false)`, and a plain Gtk.Revealer
+        // isn't focusable itself) - so focus silently stays wherever it
+        // already was, outside this revealer's own subtree entirely, and
+        // Escape here never fired in practice. main.rs's own
+        // window-level controller is Capture phase (sees every key press
+        // before GTK dispatches it anywhere), so that's where Escape is
+        // wired instead - see its AppMsg::CloseWidgetPicker handling.
 
-        let picker = std::rc::Rc::new(Self { revealer, title_label, body, on_pick: std::rc::Rc::new(on_pick) });
+        let picker =
+            std::rc::Rc::new(Self { revealer, title_label, body, on_pick: std::rc::Rc::new(on_pick) });
 
         i18n::on_change({
             let picker = picker.clone();
@@ -345,6 +354,32 @@ impl WidgetPicker {
 
     fn rebuild_body(self: &std::rc::Rc<Self>) {
         self.clear_body();
+        // Manually wrapped plain `gtk::Box` rows, not `gtk::FlowBox`:
+        // FlowBox's own row-height negotiation - shared across every
+        // child in a line even with homogeneous(false), which only turns
+        // off shared *column width* - produced a bizarre square
+        // allocation for two SIZE_M tiles sharing a row (830x830
+        // measured, instead of 832x336) neither of their own intrinsic
+        // sizes explains, hence the earlier switch away from it (see git
+        // history). But every entry in one `entries` group shares the
+        // exact same preset width (grouped_catalog groups by exact size),
+        // so a *single* un-wrapped row is only safe as long as that many
+        // same-size tiles still fit across the screen - a section with
+        // enough entries (e.g. every "Moyen"-preset widget) can exceed
+        // that easily. The picker's own ScrolledWindow has its horizontal
+        // policy set to Never (see `new()`), which in GTK means "never
+        // show a horizontal scrollbar" - *not* "clip this axis": with
+        // nothing to negotiate against, an overflowing row's natural
+        // width propagates straight up through the whole widget tree and
+        // forces the *entire application window* wider than the physical
+        // Xeneon panel, pushing everything past its right edge off
+        // screen entirely (this is exactly what pushed the close button
+        // out of view - see the "close button" debugging trail in git
+        // history for how that was tracked down). Wrapping to a new row
+        // by hand, computed from each preset's own known width, avoids
+        // both problems at once: no FlowBox row-height coupling, and no
+        // row ever wider than the page itself.
+        let available_width = PAGE_W - 2 * BODY_MARGIN;
         for (size_key, entries) in grouped_catalog() {
             let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
@@ -353,29 +388,34 @@ impl WidgetPicker {
             label.set_halign(gtk::Align::Start);
             section.append(&label);
 
-            // A plain (non-wrapping) Box, not FlowBox: every entry in
-            // `entries` now shares the exact same preset (grouped_catalog
-            // groups by exact size, not just a broad family - see that
-            // function's own doc comment), so there's no reflow-to-
-            // multiple-lines need FlowBox exists for. Switched to this
-            // after FlowBox's own row-height negotiation - shared across
-            // every child in a line even with homogeneous(false), which
-            // only turns off shared *column width* - produced a bizarre
-            // square allocation for two SIZE_M tiles sharing a row
-            // (830x830 measured, instead of 832x336) neither of their own
-            // intrinsic sizes explains. A Box lays out each child at its
-            // own request with no such cross-child height coupling.
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, GAP);
+            let mut row = gtk::Box::new(gtk::Orientation::Horizontal, GAP);
             row.set_halign(gtk::Align::Start);
+            let mut row_width = 0;
+            let mut row_has_tile = false;
             for descriptor in entries {
+                let tile_width = descriptor.size.w;
+                let width_with_this_tile =
+                    if row_has_tile { row_width + GAP + tile_width } else { tile_width };
+                if row_has_tile && width_with_this_tile > available_width {
+                    section.append(&row);
+                    row = gtk::Box::new(gtk::Orientation::Horizontal, GAP);
+                    row.set_halign(gtk::Align::Start);
+                    row_width = 0;
+                    row_has_tile = false;
+                }
+
                 let picker = self.clone();
                 let tile = build_tile(descriptor, move |kind| {
                     (picker.on_pick)(kind);
                     picker.close();
                 });
                 row.append(&tile);
+                row_width = if row_has_tile { row_width + GAP + tile_width } else { tile_width };
+                row_has_tile = true;
             }
-            section.append(&row);
+            if row_has_tile {
+                section.append(&row);
+            }
 
             self.body.append(&section);
         }

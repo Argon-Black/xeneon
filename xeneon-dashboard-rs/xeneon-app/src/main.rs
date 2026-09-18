@@ -200,9 +200,19 @@ impl SimpleComponent for AppModel {
             // (an app-level accelerator, not a per-widget one).
             add_controller = gtk::EventControllerKey {
                 set_propagation_phase: gtk::PropagationPhase::Capture,
-                connect_key_pressed[sender] => move |_, key, _, modifiers| {
+                connect_key_pressed[sender, widget_picker] => move |_, key, _, modifiers| {
                     if key == gtk::gdk::Key::F11 {
                         sender.input(AppMsg::ToggleFullscreen);
+                        gtk::glib::Propagation::Stop
+                    // Only intercepts Escape (and only stops it here)
+                    // while the picker is actually open - otherwise falls
+                    // through to Propagation::Proceed below so anything
+                    // else that wants Escape for itself (a Gtk.Popover's
+                    // own dismiss handling, say) still gets it normally.
+                    // See widget_picker.rs's own comment on why this
+                    // can't just be a key controller on the picker itself.
+                    } else if key == gtk::gdk::Key::Escape && widget_picker.widget().reveals_child() {
+                        widget_picker.close();
                         gtk::glib::Propagation::Stop
                     } else if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
                         && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
