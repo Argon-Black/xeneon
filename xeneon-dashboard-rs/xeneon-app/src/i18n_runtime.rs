@@ -65,25 +65,39 @@ pub fn available_languages() -> Vec<(String, String)> {
 /// live widgets can re-fetch their translated text - mirrors
 /// `i18n.set_language()`.
 pub fn set_language(code: &str) {
-    let listeners_to_call = STATE.with(|state| {
+    let changed = STATE.with(|state| {
         let mut state = state.borrow_mut();
         if state.current_code == code {
-            return None;
+            return false;
         }
         state.active = i18n::load_catalog(&state.locales_dir, code);
         state.current_code = code.to_string();
-        Some(state.listeners.len())
+        true
     });
-    // Called outside the borrow: a listener may itself call t()/on_change()
-    // while retranslating, which would otherwise re-enter STATE.borrow_mut().
-    if listeners_to_call.is_some() {
-        STATE.with(|state| {
-            let state = state.borrow();
-            for listener in &state.listeners {
-                listener();
-            }
-        });
+    if !changed {
+        return;
     }
+    // Audit finding 2026-09-18: the previous version called listeners
+    // under `state.borrow()` (a *shared* borrow) held for the whole loop,
+    // with a comment claiming this avoided reentrancy - but a listener
+    // calling on_change()/set_language() again from inside its own
+    // retranslation still needs `state.borrow_mut()`, which panics while
+    // that shared borrow is live. Take ownership of the list first (an
+    // empty Vec left in its place) so no borrow is held at all while
+    // listeners run, then merge any listener registered mid-iteration
+    // back in afterwards, ahead of it (so registration order is
+    // preserved: pre-existing listeners still fire before ones added
+    // during this same retranslation pass, next time).
+    let listeners = STATE.with(|state| std::mem::take(&mut state.borrow_mut().listeners));
+    for listener in &listeners {
+        listener();
+    }
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let mut combined = listeners;
+        combined.extend(std::mem::take(&mut state.listeners));
+        state.listeners = combined;
+    });
 }
 
 /// Registers a no-arg callback fired whenever the active language changes
