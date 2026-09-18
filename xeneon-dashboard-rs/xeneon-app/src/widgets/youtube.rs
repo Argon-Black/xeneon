@@ -181,9 +181,36 @@ fn build_content(start_url: &str, resume_last_page: bool) -> (Rc<YoutubeState>, 
     block_swipe.connect_scroll(|_controller, _dx, _dy| glib::Propagation::Stop);
     overlay.add_controller(block_swipe);
 
-    webview.connect_load_changed(move |_webview, event| {
-        if event == webkit6::LoadEvent::Finished {
-            loading.set_visible(false);
+    webview.connect_load_changed({
+        let loading = loading.clone();
+        move |_webview, event| {
+            if event == webkit6::LoadEvent::Finished {
+                loading.set_visible(false);
+            }
+        }
+    });
+
+    // The actual page-rendering work happens in a separate
+    // `WebKitWebProcess` per site, which can die on its own - confirmed,
+    // via `coredumpctl`, to be a Mesa GPU-driver heap-corruption bug in
+    // that process's own exit cleanup (its own thread-pool teardown,
+    // unrelated to anything in this widget's code) that shows up more
+    // often the more you navigate, since navigating is what makes WebKit
+    // swap/recycle these processes. Nothing here can fix that upstream
+    // bug, but leaving the WebView showing whatever it last painted
+    // (frozen, unresponsive) reads as "the app crashed" - reloading
+    // automatically at least turns that into a quick, visible recovery
+    // instead of a dead widget. `reload()` is safe here specifically
+    // because it's *this* process (xeneon-app) handling the signal, not
+    // the process that just died - WebKitGTK spawns a fresh WebProcess
+    // for it.
+    webview.connect_web_process_terminated({
+        let loading = loading.clone();
+        let webview = webview.clone();
+        move |_webview, reason| {
+            eprintln!("xeneon-dashboard: youtube widget's web process terminated ({reason:?}), reloading");
+            loading.set_visible(true);
+            webview.reload();
         }
     });
 
