@@ -279,5 +279,7 @@
   "widgets.appearance.border_color": "Couleur de bordure",
   "widgets.appearance.corner": "Coins",
   "widgets.appearance.corner_round": "Arrondis",
-  "widgets.appearance.corner_square": "Carrés"
+  "widgets.appearance.corner_square": "Carrés",
+
+  "widgets.youtube.title": "YouTube"
 }

@@ -61,6 +61,18 @@ pub struct WidgetDescriptor {
     pub size: Size,
     pub spawn: fn() -> WidgetInstance,
     pub restore: fn(&serde_json::Value) -> WidgetInstance,
+    /// Overrides what the widget picker shows for this kind's preview
+    /// tile, instead of the default (`(spawn)().content`, live and
+    /// discarded once the picker closes - see `build_tile` in
+    /// widget_picker.rs). `None` for every plugin cheap enough to spawn
+    /// just for a throwaway preview (a D-Bus watch, a local file read...).
+    /// `Some` for a plugin whose `spawn` is itself heavy/stateful enough
+    /// that a second live instance just for the picker tile is wasteful
+    /// or actively harmful - the YouTube widget is the first: `spawn`
+    /// starts a whole WebKit web process loading youtube.com, and the
+    /// picker already builds one tile per open/close, on top of whatever
+    /// instance is already placed on a page.
+    pub preview: Option<fn() -> gtk::Widget>,
 }
 
 pub static CATALOG: &[WidgetDescriptor] = &[
@@ -71,6 +83,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_M,
         spawn: crate::widgets::clock::spawn,
         restore: crate::widgets::clock::restore,
+        preview: None,
     },
     // Two entries sharing the same widgets/audio.rs code (a scale factor
     // derived from `size` handles the visual difference - see that
@@ -82,6 +95,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_L,
         spawn: crate::widgets::audio::spawn_l,
         restore: crate::widgets::audio::restore_l,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "audio_m",
@@ -90,6 +104,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_M,
         spawn: crate::widgets::audio::spawn_m,
         restore: crate::widgets::audio::restore_m,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "audio_sq",
@@ -98,6 +113,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_SQ,
         spawn: crate::widgets::audio::spawn_sq,
         restore: crate::widgets::audio::restore_sq,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "agenda",
@@ -106,6 +122,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_M,
         spawn: crate::widgets::agenda::spawn,
         restore: crate::widgets::agenda::restore,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "weather",
@@ -114,6 +131,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_M,
         spawn: crate::widgets::weather::spawn,
         restore: crate::widgets::weather::restore,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "cpu_temp",
@@ -122,6 +140,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_SSX,
         spawn: crate::widgets::cpu_temp::spawn,
         restore: crate::widgets::cpu_temp::restore,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "temp_gauge",
@@ -130,6 +149,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_SQ,
         spawn: crate::widgets::temp_gauge::spawn,
         restore: crate::widgets::temp_gauge::restore,
+        preview: None,
     },
     // Empty card_title_key: the shortcuts grid puts its own hover-revealed
     // "+" button in that same top-left corner instead of a title label -
@@ -141,6 +161,19 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_L,
         spawn: crate::widgets::shortcuts::spawn,
         restore: crate::widgets::shortcuts::restore,
+        preview: None,
+    },
+    // Step 1 of the YouTube widget: no "only one instance" guard yet (see
+    // that module's own doc comment) - the picker will filter/reject
+    // duplicates once that's built.
+    WidgetDescriptor {
+        kind: "youtube",
+        title_key: "widgets.youtube.title",
+        card_title_key: "widgets.youtube.title",
+        size: SIZE_L,
+        spawn: crate::widgets::youtube::spawn,
+        restore: crate::widgets::youtube::restore,
+        preview: Some(crate::widgets::youtube::preview),
     },
     WidgetDescriptor {
         kind: "dummy_s",
@@ -149,6 +182,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_S,
         spawn: crate::widgets::dummy::spawn_s,
         restore: crate::widgets::dummy::restore_s,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "dummy_m",
@@ -157,6 +191,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_M,
         spawn: crate::widgets::dummy::spawn_m,
         restore: crate::widgets::dummy::restore_m,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "dummy_l",
@@ -165,6 +200,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_L,
         spawn: crate::widgets::dummy::spawn_l,
         restore: crate::widgets::dummy::restore_l,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "dummy_sq",
@@ -173,6 +209,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_SQ,
         spawn: crate::widgets::dummy::spawn_sq,
         restore: crate::widgets::dummy::restore_sq,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "dummy_sx",
@@ -181,6 +218,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_SX,
         spawn: crate::widgets::dummy::spawn_sx,
         restore: crate::widgets::dummy::restore_sx,
+        preview: None,
     },
     WidgetDescriptor {
         kind: "dummy_ssx",
@@ -189,6 +227,7 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         size: SIZE_SSX,
         spawn: crate::widgets::dummy::spawn_ssx,
         restore: crate::widgets::dummy::restore_ssx,
+        preview: None,
     },
 ];
 

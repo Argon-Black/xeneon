@@ -170,8 +170,15 @@ fn build_tile(descriptor: &'static WidgetDescriptor, on_activate: impl Fn(&'stat
     // ownership makes this safe with no parenting/floating-ref concerns
     // (unlike DashboardWidget in the Python port, this content was never
     // wrapped in anything that expects to own it).
-    let instance = (descriptor.spawn)();
-    let content = instance.content;
+    //
+    // `descriptor.preview`, when set, replaces this live `spawn()` outright
+    // - see `WidgetDescriptor::preview`'s own doc comment for why (a heavy
+    // or stateful `spawn`, like the YouTube widget's WebKit view, isn't
+    // something the picker should pay for just to show a tile).
+    let content = match descriptor.preview {
+        Some(preview) => preview(),
+        None => (descriptor.spawn)().content,
+    };
     content.set_hexpand(true);
     content.set_vexpand(true);
     content.set_can_target(false);
