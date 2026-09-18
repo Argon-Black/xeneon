@@ -41,6 +41,7 @@ use gtk::gio;
 use gtk::glib;
 use gtk::glib::prelude::*;
 use gtk::prelude::*;
+use log::{debug, warn};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -118,7 +119,7 @@ fn empty_state_texture() -> Option<gtk::gdk::Texture> {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(EMPTY_STATE_ICON_PATH);
             let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&path, EMPTY_STATE_ICON_RASTER_PX, EMPTY_STATE_ICON_RASTER_PX)
                 .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
-                .inspect_err(|err| eprintln!("xeneon-dashboard: failed to load {}: {err}", path.display()))
+                .inspect_err(|err| warn!("failed to load {}: {err}", path.display()))
                 .ok();
             *cell = Some(texture);
         }
@@ -301,14 +302,18 @@ impl MprisPlayer {
     /// rest of the time).
     fn position_seconds(&self) -> f64 {
         let params = (MPRIS_PLAYER_INTERFACE, "Position").to_variant();
-        let Ok(result) = self.proxy.call_sync(
+        let result = match self.proxy.call_sync(
             "org.freedesktop.DBus.Properties.Get",
             Some(&params),
             gio::DBusCallFlags::NONE,
             DBUS_CALL_TIMEOUT_MS,
             None::<&gio::Cancellable>,
-        ) else {
-            return 0.0;
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                warn!("{}: failed to read Position: {err}", self.bus_name);
+                return 0.0;
+            }
         };
         // Properties.Get replies with a single out-parameter of type
         // variant ("(v)") wrapping the property's own value ("x",
@@ -321,7 +326,14 @@ impl MprisPlayer {
     }
 
     fn call(&self, method_name: &str, params: Option<&glib::Variant>) {
-        let _ = self.proxy.call_sync(method_name, params, gio::DBusCallFlags::NONE, DBUS_CALL_TIMEOUT_MS, None::<&gio::Cancellable>);
+        // Errors used to be silently dropped here - the one thing every
+        // transport button (play/pause/seek/skip) goes through, so a
+        // player that stopped responding on D-Bus (closed, hung, doesn't
+        // implement a given method) previously looked identical to a
+        // button that simply did nothing.
+        if let Err(err) = self.proxy.call_sync(method_name, params, gio::DBusCallFlags::NONE, DBUS_CALL_TIMEOUT_MS, None::<&gio::Cancellable>) {
+            warn!("{}: {method_name} failed: {err}", self.bus_name);
+        }
     }
 
     fn play_pause(&self) {
@@ -441,6 +453,7 @@ impl AudioState {
             }
         };
         if changed {
+            debug!("active player -> {}", candidate.as_ref().map(|p| p.bus_name.as_str()).unwrap_or("<none>"));
             *self.active.borrow_mut() = candidate;
             self.refresh_active_display(true);
         }
@@ -466,7 +479,19 @@ impl AudioState {
         if self.players.borrow().contains_key(bus_name) {
             return;
         }
-        let Ok(player) = MprisPlayer::new(bus_name) else { return };
+        // A failure here used to just mean the player silently never
+        // showed up, with nothing to say whether it wasn't MPRIS-
+        // compliant, was already gone by the time this ran (a
+        // NameOwnerChanged for a very short-lived name), or something
+        // else entirely.
+        let player = match MprisPlayer::new(bus_name) {
+            Ok(player) => player,
+            Err(err) => {
+                warn!("failed to connect to {bus_name}: {err}");
+                return;
+            }
+        };
+        debug!("player discovered: {bus_name}");
         let player = Rc::new(player);
 
         // See `MainThreadOnly`'s own doc comment for why this wrapper is
@@ -504,6 +529,7 @@ impl AudioState {
         if self.players.borrow_mut().remove(bus_name).is_none() {
             return;
         }
+        debug!("player gone: {bus_name}");
         let was_active = self.active.borrow().as_ref().is_some_and(|p| p.bus_name == bus_name);
         if was_active {
             *self.active.borrow_mut() = None;
@@ -535,7 +561,10 @@ impl AudioState {
     /// add/remove after this comes from the `NameOwnerChanged`
     /// subscription set up in `build_content`.
     fn discover_players(self: &Rc<Self>) {
-        let Ok(bus_proxy) = gio::DBusProxy::for_bus_sync(
+        // Any failure past this point means the widget can't discover
+        // *any* player at all - previously indistinguishable from "no
+        // media player is running right now", the actually-common case.
+        let bus_proxy = match gio::DBusProxy::for_bus_sync(
             gio::BusType::Session,
             gio::DBusProxyFlags::NONE,
             None,
@@ -543,19 +572,28 @@ impl AudioState {
             "/org/freedesktop/DBus",
             "org.freedesktop.DBus",
             None::<&gio::Cancellable>,
-        ) else {
-            return;
-        };
-        let Ok(result) =
-            bus_proxy.call_sync("ListNames", None, gio::DBusCallFlags::NONE, DBUS_CALL_TIMEOUT_MS, None::<&gio::Cancellable>)
-        else {
-            return;
-        };
-        let Some((names,)) = result.get::<(Vec<String>,)>() else { return };
-        for name in &names {
-            if name.starts_with(MPRIS_PREFIX) {
-                self.add_player(name);
+        ) {
+            Ok(proxy) => proxy,
+            Err(err) => {
+                warn!("failed to connect to the session bus: {err}");
+                return;
             }
+        };
+        let result = match bus_proxy.call_sync("ListNames", None, gio::DBusCallFlags::NONE, DBUS_CALL_TIMEOUT_MS, None::<&gio::Cancellable>) {
+            Ok(result) => result,
+            Err(err) => {
+                warn!("ListNames failed: {err}");
+                return;
+            }
+        };
+        let Some((names,)) = result.get::<(Vec<String>,)>() else {
+            warn!("ListNames reply had an unexpected shape");
+            return;
+        };
+        let mpris_names: Vec<&String> = names.iter().filter(|name| name.starts_with(MPRIS_PREFIX)).collect();
+        debug!("discovered {} MPRIS player(s) on the session bus", mpris_names.len());
+        for name in mpris_names {
+            self.add_player(name);
         }
         self.pick_active_player();
     }
@@ -652,7 +690,13 @@ impl AudioState {
         let file = gio::File::for_uri(&url);
         match gtk::gdk::Texture::from_file(&file) {
             Ok(texture) => self.background.set_paintable(Some(&texture)),
-            Err(_) => self.background.set_paintable(gtk::gdk::Paintable::NONE),
+            Err(err) => {
+                // debug, not warn - a player briefly reporting a
+                // not-yet-cached/dead art URL between tracks is routine,
+                // not a problem worth flagging on its own.
+                debug!("failed to load album art from {url}: {err}");
+                self.background.set_paintable(gtk::gdk::Paintable::NONE);
+            }
         }
     }
 
