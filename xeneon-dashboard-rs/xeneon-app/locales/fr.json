@@ -281,5 +281,6 @@
   "widgets.appearance.corner_round": "Arrondis",
   "widgets.appearance.corner_square": "Carrés",
 
-  "widgets.youtube.title": "YouTube"
+  "widgets.youtube.title": "YouTube",
+  "widgets.youtube.settings.resume_last_page": "Reprendre la dernière page au démarrage"
 }

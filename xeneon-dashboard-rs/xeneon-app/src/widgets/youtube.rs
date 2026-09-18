@@ -1,26 +1,36 @@
-//! YouTube widget, step 1: a `SIZE_L` card embedding a real WebKitGTK
-//! view pointed at youtube.com - a genuine mini-browser, not a fixed
-//! embed URL. Deliberately not "one channel/video per widget" like a
-//! typical dashboard tile: the user picked free navigation instead (see
-//! the design discussion in the memory system) because YouTube's own
-//! player already does the right thing for a dashboard - controls
-//! auto-hide during playback and reappear on hover, so no custom overlay
-//! chrome is needed here.
+//! YouTube widget: a `SIZE_L` card embedding a real WebKitGTK view pointed
+//! at youtube.com - a genuine mini-browser, not a fixed embed URL.
+//! Deliberately not "one channel/video per widget" like a typical
+//! dashboard tile: the user picked free navigation instead (see the design
+//! discussion in the memory system) because YouTube's own player already
+//! does the right thing for a dashboard - controls auto-hide during
+//! playback and reappear on hover, so no custom overlay chrome is needed
+//! here.
 //!
-//! This step only proves the mechanism end-to-end (does WebKitGTK render
-//! correctly inside this Relm4/GTK4 stack, on the real Xeneon hardware):
-//! load youtube.com, show a placeholder while it loads. Deliberately
-//! deferred to later steps: the "only one instance allowed" guard (for
-//! stability/lightness - a `webkit6::WebView` is its own render process,
-//! unlike every other widget here which is cheap D-Bus/local-file work),
-//! the "resume last page" setting, and URL persistence.
+//! Step 1 proved the mechanism end-to-end (WebKitGTK rendering correctly
+//! inside this Relm4/GTK4 stack, on the real Xeneon hardware) and fixed
+//! two bugs found in hands-on testing: the ancestor `Adw.Carousel`
+//! stealing mouse-wheel scroll as a page-swipe, and cookies not
+//! surviving an app restart (needs an explicit persistent `NetworkSession`
+//! - see that `thread_local`'s own doc comment).
+//!
+//! This step (2) adds the "resume last page" persistence discussed with
+//! the user: which URL was open, and whether to restore it at all, saved
+//! like any other widget's content and restored on the next launch.
+//! Deliberately *not* included: resuming to the exact playback position
+//! within a video - a separate, harder feature (would need polling the
+//! page's actual playback time via injected JavaScript) that the user
+//! asked to keep as a later, distinct step. Also still deferred: the
+//! "only one instance allowed" guard.
 
 use gtk::glib;
 use gtk::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use webkit6::prelude::*;
 
-use crate::widgets::registry::{self, WidgetInstance};
+use crate::i18n_runtime as i18n;
+use crate::widgets::registry::WidgetInstance;
 
 const HOME_URL: &str = "https://www.youtube.com/";
 
@@ -94,11 +104,47 @@ fn loading_texture() -> Option<gtk::gdk::Texture> {
     })
 }
 
-fn build_content() -> gtk::Widget {
+struct YoutubeState {
+    webview: webkit6::WebView,
+    resume_last_page: Cell<bool>,
+    // Wired by `WidgetGrid` right after this instance is placed (see
+    // `WidgetInstance::on_change_ready`'s own doc comment) - called
+    // whenever the WebView's own URL changes, since navigating inside the
+    // page (clicking a video, searching...) happens entirely outside the
+    // two save points every other widget already gets for free (the
+    // appearance popover closing, a whole-widget drag ending). Mirrors
+    // `ShortcutsState.change_notifier` in shortcuts.rs.
+    change_notifier: RefCell<Option<Rc<dyn Fn()>>>,
+}
+
+impl YoutubeState {
+    fn to_dict(&self) -> serde_json::Value {
+        serde_json::json!({
+            "resume_last_page": self.resume_last_page.get(),
+            "url": self.webview.uri().map(|uri| uri.to_string()).unwrap_or_default(),
+        })
+    }
+}
+
+/// Reads `restore`'s saved dict into `(start_url, resume_last_page)` -
+/// called *before* `build_content` so the WebView can be pointed at the
+/// right page from its very first `load_uri`, rather than built on
+/// `HOME_URL` and redirected right after (which would flash the home page
+/// first). Falls back to `HOME_URL`/`true` for a missing, partial, or
+/// pre-persistence (step 1) saved dict, same "only touch keys that are
+/// actually there" spirit as `ClockContent::apply_dict`.
+fn start_state_from_dict(data: &serde_json::Value) -> (String, bool) {
+    let resume_last_page = data.get("resume_last_page").and_then(|v| v.as_bool()).unwrap_or(true);
+    let saved_url = data.get("url").and_then(|v| v.as_str()).filter(|url| !url.is_empty());
+    let start_url = if resume_last_page { saved_url.unwrap_or(HOME_URL).to_string() } else { HOME_URL.to_string() };
+    (start_url, resume_last_page)
+}
+
+fn build_content(start_url: &str, resume_last_page: bool) -> (Rc<YoutubeState>, gtk::Widget) {
     let webview = NETWORK_SESSION.with(|session| webkit6::WebView::builder().network_session(session).build());
     webview.set_hexpand(true);
     webview.set_vexpand(true);
-    webview.load_uri(HOME_URL);
+    webview.load_uri(start_url);
 
     // The placeholder sits on top of the WebView (not swapped in a
     // `gtk::Stack`, which would need the WebView to already exist either
@@ -134,16 +180,117 @@ fn build_content() -> gtk::Widget {
         }
     });
 
-    overlay.upcast()
+    let state = Rc::new(YoutubeState {
+        webview: webview.clone(),
+        resume_last_page: Cell::new(resume_last_page),
+        change_notifier: RefCell::new(None),
+    });
+
+    // YouTube is a single-page app - navigating (search, clicking a
+    // video, going back) changes the URL via the History API rather than
+    // a full page load, but `notify::uri` fires for that too, so this
+    // still catches every navigation, not just the very first one.
+    webview.connect_uri_notify({
+        let state = state.clone();
+        move |_webview| {
+            if let Some(save_now) = state.change_notifier.borrow().as_ref() {
+                save_now();
+            }
+        }
+    });
+
+    (state, overlay.upcast())
+}
+
+fn build_settings(state: Rc<YoutubeState>) -> (gtk::Widget, Box<dyn Fn()>) {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    root.set_size_request(240, -1);
+
+    let label = gtk::Label::new(Some(&i18n::t("widgets.youtube.settings.resume_last_page")));
+    label.set_hexpand(true);
+    label.set_halign(gtk::Align::Start);
+    label.set_wrap(true);
+
+    let switch = gtk::Switch::new();
+    switch.set_active(state.resume_last_page.get());
+    switch.set_valign(gtk::Align::Center);
+
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.append(&label);
+    row.append(&switch);
+    root.append(&row);
+
+    switch.connect_active_notify({
+        let state = state.clone();
+        move |s| state.resume_last_page.set(s.is_active())
+    });
+
+    i18n::on_change({
+        let label = label.clone();
+        move || label.set_label(&i18n::t("widgets.youtube.settings.resume_last_page"))
+    });
+
+    // Re-reads the switch from `state` - needed after `state.reset()`-style
+    // changes made outside this control (the appearance popover's reset
+    // button, see `on_reset` below), same "sync_from_content" spirit as
+    // every other plugin's own `resync`.
+    let resync: Box<dyn Fn()> = Box::new(move || {
+        switch.set_active(state.resume_last_page.get());
+    });
+
+    (root.upcast(), resync)
+}
+
+fn wire_change_notifier(state: &Rc<YoutubeState>) -> Box<dyn FnOnce(Rc<dyn Fn()>)> {
+    let state = state.clone();
+    Box::new(move |save_now| {
+        *state.change_notifier.borrow_mut() = Some(save_now);
+    })
 }
 
 pub fn spawn() -> WidgetInstance {
-    registry::instance_without_settings(build_content())
+    let (state, content) = build_content(HOME_URL, true);
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.resume_last_page.set(true);
+            resync();
+        }
+    };
+    WidgetInstance {
+        content,
+        settings: Some(settings),
+        to_dict: Box::new({
+            let state = state.clone();
+            move || state.to_dict()
+        }),
+        on_reset: Some(Box::new(on_reset)),
+        on_change_ready: Some(wire_change_notifier(&state)),
+    }
 }
 
-pub fn restore(_data: &serde_json::Value) -> WidgetInstance {
-    // No persisted state yet (step 1) - always starts on youtube.com.
-    registry::instance_without_settings(build_content())
+pub fn restore(data: &serde_json::Value) -> WidgetInstance {
+    let (start_url, resume_last_page) = start_state_from_dict(data);
+    let (state, content) = build_content(&start_url, resume_last_page);
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.resume_last_page.set(true);
+            resync();
+        }
+    };
+    WidgetInstance {
+        content,
+        settings: Some(settings),
+        to_dict: Box::new({
+            let state = state.clone();
+            move || state.to_dict()
+        }),
+        on_reset: Some(Box::new(on_reset)),
+        on_change_ready: Some(wire_change_notifier(&state)),
+    }
 }
 
 /// Widget picker tile for this kind - `WidgetDescriptor::preview`, not

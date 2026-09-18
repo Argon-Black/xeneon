@@ -281,5 +281,6 @@
   "widgets.appearance.corner_round": "Round",
   "widgets.appearance.corner_square": "Square",
 
-  "widgets.youtube.title": "YouTube"
+  "widgets.youtube.title": "YouTube",
+  "widgets.youtube.settings.resume_last_page": "Resume last page on startup"
 }
