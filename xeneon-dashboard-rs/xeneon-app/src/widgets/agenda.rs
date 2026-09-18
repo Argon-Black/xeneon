@@ -85,6 +85,7 @@ use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
+use log::{debug, warn};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -332,7 +333,10 @@ struct CalendarSource {
 /// a calendar enabled/disabled or added/removed since the last call is
 /// picked up automatically.
 fn list_calendar_sources(connection: &gio::DBusConnection) -> Vec<CalendarSource> {
-    let Ok(reply) = connection.call_sync(
+    // A failure here means *no* calendar will ever be found - previously
+    // indistinguishable from "the user genuinely has no calendars
+    // configured", the common, non-broken case.
+    let reply = match connection.call_sync(
         Some(SOURCES_BUS_NAME),
         SOURCE_MANAGER_PATH,
         "org.freedesktop.DBus.Introspectable",
@@ -342,14 +346,25 @@ fn list_calendar_sources(connection: &gio::DBusConnection) -> Vec<CalendarSource
         gio::DBusCallFlags::NONE,
         DBUS_CALL_TIMEOUT_MS,
         None::<&gio::Cancellable>,
-    ) else {
+    ) {
+        Ok(reply) => reply,
+        Err(err) => {
+            warn!("failed to introspect {SOURCE_MANAGER_PATH} ({SOURCES_BUS_NAME} not running?): {err}");
+            return Vec::new();
+        }
+    };
+    let Some((xml,)) = reply.get::<(String,)>() else {
+        warn!("introspect reply for {SOURCE_MANAGER_PATH} had an unexpected shape");
         return Vec::new();
     };
-    let Some((xml,)) = reply.get::<(String,)>() else { return Vec::new() };
 
     let mut sources = Vec::new();
     for name in parse_child_node_names(&xml) {
         let path = format!("{SOURCE_MANAGER_PATH}/{name}");
+        // Not every child node is a calendar (mail accounts, address
+        // books...) - a GetAll failure here is a real communication
+        // problem though, worth a trace, unlike the "not a calendar
+        // source" filters below which are just routine skips.
         let Ok(props_reply) = connection.call_sync(
             Some(SOURCES_BUS_NAME),
             &path,
@@ -361,6 +376,7 @@ fn list_calendar_sources(connection: &gio::DBusConnection) -> Vec<CalendarSource
             DBUS_CALL_TIMEOUT_MS,
             None::<&gio::Cancellable>,
         ) else {
+            debug!("GetAll failed for source node {name}, skipping");
             continue;
         };
         let Some((props,)) = props_reply.get::<(HashMap<String, glib::Variant>,)>() else { continue };
@@ -523,8 +539,12 @@ fn fetch_month_events(
     end_date: NaiveDate,
 ) -> HashMap<NaiveDate, Vec<EventInfo>> {
     let mut events_by_date: HashMap<NaiveDate, Vec<EventInfo>> = HashMap::new();
-    let Ok(connection) = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>) else {
-        return events_by_date;
+    let connection = match gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>) {
+        Ok(connection) => connection,
+        Err(err) => {
+            warn!("failed to connect to the session bus: {err}");
+            return events_by_date;
+        }
     };
 
     let start_utc = Local
@@ -545,11 +565,18 @@ fn fetch_month_events(
         end_utc.format("%Y%m%dT%H%M%SZ"),
     );
 
+    let mut calendars_queried = 0u32;
     for source in list_calendar_sources(&connection) {
         if !source.enabled || !selected_uids.contains(&source.uid) {
             continue;
         }
-        let Ok(open_reply) = connection.call_sync(
+        // Every early `continue` from here on means this one calendar
+        // contributes zero events to the fetch - by design (see the
+        // module doc comment: "a calendar that fails to connect... is
+        // skipped rather than failing the whole fetch"), but previously
+        // with no trace of *which* calendar or *why*, indistinguishable
+        // from that calendar genuinely having nothing on it this month.
+        let open_reply = match connection.call_sync(
             Some(CALENDAR_FACTORY_BUS_NAME),
             CALENDAR_FACTORY_PATH,
             CALENDAR_FACTORY_INTERFACE,
@@ -559,38 +586,42 @@ fn fetch_month_events(
             gio::DBusCallFlags::NONE,
             DBUS_CALL_TIMEOUT_MS,
             None::<&gio::Cancellable>,
-        ) else {
-            continue;
+        ) {
+            Ok(reply) => reply,
+            Err(err) => {
+                warn!("{}: OpenCalendar failed: {err}", source.display_name);
+                continue;
+            }
         };
         // `OpenCalendar`'s object-path out-param is typed plain `s`, not
         // `o` (confirmed against a real reply's signature, `"(ss)"`, while
         // debugging why no events ever came back) - `glib::variant::ObjectPath`
         // (GVariant type `o`) doesn't match it, so `.get()` silently failed
-        // and every calendar got skipped.
+        // and every calendar got skipped. Logged now in case a future EDS
+        // version shifts the shape again.
         let Some((object_path, bus_name)) = open_reply.get::<(String, String)>() else {
+            warn!("{}: OpenCalendar reply had an unexpected shape", source.display_name);
             continue;
         };
 
         // `Open()`'s own return value (backend property strings) isn't
         // needed - only that the call succeeds before querying.
-        if connection
-            .call_sync(
-                Some(&bus_name),
-                &object_path,
-                CALENDAR_INTERFACE,
-                "Open",
-                None,
-                None,
-                gio::DBusCallFlags::NONE,
-                DBUS_CALL_TIMEOUT_MS,
-                None::<&gio::Cancellable>,
-            )
-            .is_err()
-        {
+        if let Err(err) = connection.call_sync(
+            Some(&bus_name),
+            &object_path,
+            CALENDAR_INTERFACE,
+            "Open",
+            None,
+            None,
+            gio::DBusCallFlags::NONE,
+            DBUS_CALL_TIMEOUT_MS,
+            None::<&gio::Cancellable>,
+        ) {
+            warn!("{}: Open failed (account disabled, offline, revoked token?): {err}", source.display_name);
             continue;
         }
 
-        let Ok(list_reply) = connection.call_sync(
+        let list_reply = match connection.call_sync(
             Some(&bus_name),
             &object_path,
             CALENDAR_INTERFACE,
@@ -600,10 +631,18 @@ fn fetch_month_events(
             gio::DBusCallFlags::NONE,
             DBUS_CALL_TIMEOUT_MS,
             None::<&gio::Cancellable>,
-        ) else {
+        ) {
+            Ok(reply) => reply,
+            Err(err) => {
+                warn!("{}: GetObjectList failed: {err}", source.display_name);
+                continue;
+            }
+        };
+        let Some((ics_objects,)) = list_reply.get::<(Vec<String>,)>() else {
+            warn!("{}: GetObjectList reply had an unexpected shape", source.display_name);
             continue;
         };
-        let Some((ics_objects,)) = list_reply.get::<(Vec<String>,)>() else { continue };
+        calendars_queried += 1;
 
         for ics in ics_objects {
             let unfolded = unfold_ical_lines(&ics);
@@ -618,6 +657,7 @@ fn fetch_month_events(
                     // support, or malformed data) - fall back to treating
                     // it like a non-recurring event rather than dropping
                     // it entirely.
+                    debug!("{}: RRULE didn't parse, showing only its master date", source.display_name);
                     if (start_date..=end_date).contains(&master_date) {
                         vec![(master_date, master_time)]
                     } else {
@@ -644,6 +684,11 @@ fn fetch_month_events(
     for day_events in events_by_date.values_mut() {
         day_events.sort_by_key(|e| e.time.unwrap_or((0, 0)));
     }
+    debug!(
+        "fetched {calendars_queried} calendar(s), {} event(s) across {} day(s) ({start_date}..{end_date})",
+        events_by_date.values().map(Vec::len).sum::<usize>(),
+        events_by_date.len()
+    );
     events_by_date
 }
 
@@ -929,10 +974,12 @@ fn refresh(state: &Rc<AgendaState>) {
     glib::spawn_future_local(async move {
         let result = gio::spawn_blocking(move || fetch_month_events(&selected_uids, start_date, end_date)).await;
         if generation != state.fetch_generation.get() {
+            debug!("agenda fetch superseded, discarding");
             return;
         }
-        if let Ok(events_by_date) = result {
-            state.apply_events(events_by_date);
+        match result {
+            Ok(events_by_date) => state.apply_events(events_by_date),
+            Err(_) => warn!("agenda fetch task panicked"),
         }
     });
 }
