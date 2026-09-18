@@ -57,10 +57,22 @@ pub fn apply_accent(hex: &str) {
             provider.load_from_string(&format!("{}\n@define-color accent_color {hex};", swatch_static_css()));
         }
     });
+    // Audit finding 2026-09-18: same fix as i18n_runtime.rs's
+    // set_language() - take ownership of the listener list before
+    // calling any of them (an empty Vec left in its place), rather than
+    // calling under a live `listeners.borrow()`, so a listener that
+    // itself calls theme::on_change()/apply_accent() again from inside
+    // its own retranslation can't hit a `BorrowMutError` against a still-
+    // live shared borrow. Latent - no current call site triggers this.
+    let callbacks = LISTENERS.with(|listeners| std::mem::take(&mut *listeners.borrow_mut()));
+    for callback in &callbacks {
+        callback();
+    }
     LISTENERS.with(|listeners| {
-        for callback in listeners.borrow().iter() {
-            callback();
-        }
+        let mut listeners = listeners.borrow_mut();
+        let mut combined = callbacks;
+        combined.extend(std::mem::take(&mut *listeners));
+        *listeners = combined;
     });
 }
 
