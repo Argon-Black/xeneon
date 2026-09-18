@@ -11,6 +11,15 @@
   "tray.relaunch": "Relancer l'application",
   "tray.quit": "Quitter",
 
+  "help.shortcuts.fullscreen_key": "F11",
+  "help.shortcuts.fullscreen_desc": "Plein écran",
+  "help.shortcuts.add_widget_key": "Ctrl + Maj + A",
+  "help.shortcuts.add_widget_desc": "Ajouter un widget",
+  "help.shortcuts.settings_key": "Ctrl + ,",
+  "help.shortcuts.settings_desc": "Aller aux réglages",
+  "help.shortcuts.close_key": "Échap",
+  "help.shortcuts.close_desc": "Fermer la fenêtre superposée active",
+
   "settings.title": "Réglages",
   "settings.interface_group": "Interface",
   "settings.hide_delay_row.title": "Délai avant masquage de la barre de pages",

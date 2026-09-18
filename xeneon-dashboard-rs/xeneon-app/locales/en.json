@@ -11,6 +11,15 @@
   "tray.relaunch": "Relaunch the app",
   "tray.quit": "Quit",
 
+  "help.shortcuts.fullscreen_key": "F11",
+  "help.shortcuts.fullscreen_desc": "Fullscreen",
+  "help.shortcuts.add_widget_key": "Ctrl + Shift + A",
+  "help.shortcuts.add_widget_desc": "Add a widget",
+  "help.shortcuts.settings_key": "Ctrl + ,",
+  "help.shortcuts.settings_desc": "Go to Settings",
+  "help.shortcuts.close_key": "Esc",
+  "help.shortcuts.close_desc": "Close the active overlay",
+
   "settings.title": "Settings",
   "settings.interface_group": "Interface",
   "settings.hide_delay_row.title": "Page bar hide delay",

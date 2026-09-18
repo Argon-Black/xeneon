@@ -90,7 +90,11 @@ const PICKER_CSS: &str = "
 
 static INSTALL_CSS: std::sync::Once = std::sync::Once::new();
 
-fn ensure_css_installed() {
+/// `pub(crate)` so `help_overlay.rs` can install the same stylesheet and
+/// reuse the `.xeneon-widget-picker-header`/`-close` classes verbatim for
+/// its own full-screen overlay header, instead of duplicating an
+/// almost-identical block of CSS for a second overlay that looks the same.
+pub(crate) fn ensure_css_installed() {
     INSTALL_CSS.call_once(|| {
         let Some(display) = gtk::gdk::Display::default() else { return };
         let provider = gtk::CssProvider::new();

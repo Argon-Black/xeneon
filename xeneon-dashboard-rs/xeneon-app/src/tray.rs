@@ -1,7 +1,7 @@
 //! System tray icon (StatusNotifierItem, via the `ksni` crate) - a
 //! right-click menu mirroring some of the app's own shortcuts: open the
-//! widget picker, jump to Settings, show help (placeholder for now,
-//! content not decided yet), relaunch, quit. Left-click is left at ksni's
+//! widget picker, jump to Settings, show help (see help_overlay.rs - a
+//! keyboard-shortcuts overlay), relaunch, quit. Left-click is left at ksni's
 //! default no-op `Tray::activate` - this version of ksni doesn't expose
 //! the SNI `ItemIsMenu` property that would let us ask hosts to treat
 //! left-click the same as right-click, so whether left-click also opens
@@ -108,11 +108,7 @@ impl ksni::Tray for XeneonTray {
             MenuItem::Separator,
             StandardItem {
                 label: self.label_help.clone(),
-                // Placeholder: content not decided yet (likely a
-                // full-screen overlay in the style of the widget picker,
-                // listing keyboard shortcuts) - deliberately a no-op until
-                // that's actually built.
-                activate: Box::new(|_this: &mut Self| {}),
+                activate: Box::new(|this: &mut Self| this.sender.emit(AppMsg::ShowHelp)),
                 ..Default::default()
             }
             .into(),

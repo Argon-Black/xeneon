@@ -38,6 +38,7 @@ mod appearance_popover;
 mod config_store;
 mod dashboard_widget;
 mod grid_widget;
+mod help_overlay;
 mod i18n_runtime;
 mod page_indicator;
 mod settings_page;
@@ -100,6 +101,7 @@ struct AppModel {
     // macro like the rest of the window content.
     toast_overlay: adw::ToastOverlay,
     widget_picker: std::rc::Rc<widget_picker::WidgetPicker>,
+    help_overlay: std::rc::Rc<help_overlay::HelpOverlay>,
     // Needed again whenever AddWidget creates a fresh page at runtime -
     // WidgetGrid::new takes them, same as every real page built at
     // startup below.
@@ -143,6 +145,8 @@ enum AppMsg {
     Relaunch,
     /// Tray menu "Quitter".
     Quit,
+    /// Tray menu "Aide" - see help_overlay.rs.
+    ShowHelp,
 }
 
 #[relm4::component]
@@ -200,19 +204,24 @@ impl SimpleComponent for AppModel {
             // (an app-level accelerator, not a per-widget one).
             add_controller = gtk::EventControllerKey {
                 set_propagation_phase: gtk::PropagationPhase::Capture,
-                connect_key_pressed[sender, widget_picker] => move |_, key, _, modifiers| {
+                connect_key_pressed[sender, widget_picker, help_overlay] => move |_, key, _, modifiers| {
                     if key == gtk::gdk::Key::F11 {
                         sender.input(AppMsg::ToggleFullscreen);
                         gtk::glib::Propagation::Stop
                     // Only intercepts Escape (and only stops it here)
-                    // while the picker is actually open - otherwise falls
-                    // through to Propagation::Proceed below so anything
-                    // else that wants Escape for itself (a Gtk.Popover's
-                    // own dismiss handling, say) still gets it normally.
-                    // See widget_picker.rs's own comment on why this
-                    // can't just be a key controller on the picker itself.
+                    // while one of these overlays is actually open -
+                    // otherwise falls through to Propagation::Proceed
+                    // below so anything else that wants Escape for itself
+                    // (a Gtk.Popover's own dismiss handling, say) still
+                    // gets it normally. See widget_picker.rs's own
+                    // comment on why this can't just be a key controller
+                    // on either overlay itself - help_overlay.rs mirrors
+                    // the same reasoning.
                     } else if key == gtk::gdk::Key::Escape && widget_picker.widget().reveals_child() {
                         widget_picker.close();
+                        gtk::glib::Propagation::Stop
+                    } else if key == gtk::gdk::Key::Escape && help_overlay.widget().reveals_child() {
+                        help_overlay.close();
                         gtk::glib::Propagation::Stop
                     } else if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
                         && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
@@ -376,6 +385,7 @@ impl SimpleComponent for AppModel {
             let sender = sender.clone();
             move |kind| sender.input(AppMsg::AddWidget(kind))
         });
+        let help_overlay = help_overlay::HelpOverlay::new();
 
         // Quick, temporary visual-QA aid: fullscreen straight onto the
         // real Xeneon Edge panel (identified by its distinctive
@@ -414,6 +424,7 @@ impl SimpleComponent for AppModel {
             settings_root: settings_root.clone(),
             toast_overlay: toast_overlay.clone(),
             widget_picker: widget_picker.clone(),
+            help_overlay: help_overlay.clone(),
             widgets_dir,
             pages_dir,
             real_grids,
@@ -437,6 +448,7 @@ impl SimpleComponent for AppModel {
         // the whole window while windowed (fullscreen/kiosk already hides
         // the header bar - see ToggleFullscreen).
         widgets.overlay.add_overlay(model.widget_picker.widget());
+        widgets.overlay.add_overlay(model.help_overlay.widget());
 
         // Splice the toast overlay in between the window and its existing
         // content rather than building it inside the view! macro above -
@@ -510,6 +522,7 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::Relaunch => settings_page::relaunch(dev_mode_enabled()),
             AppMsg::Quit => relm4::main_application().quit(),
+            AppMsg::ShowHelp => self.help_overlay.open(),
             AppMsg::PageEmptied(page_id) => {
                 let Some(pos) = self.real_grids.iter().position(|g| g.page_id() == page_id) else { return };
                 // The first page always stays, even empty - there must
