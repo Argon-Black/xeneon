@@ -14,14 +14,21 @@
 //! surviving an app restart (needs an explicit persistent `NetworkSession`
 //! - see that `thread_local`'s own doc comment).
 //!
-//! This step (2) adds the "resume last page" persistence discussed with
-//! the user: which URL was open, and whether to restore it at all, saved
-//! like any other widget's content and restored on the next launch.
-//! Deliberately *not* included: resuming to the exact playback position
-//! within a video - a separate, harder feature (would need polling the
-//! page's actual playback time via injected JavaScript) that the user
-//! asked to keep as a later, distinct step. Also still deferred: the
-//! "only one instance allowed" guard.
+//! Step 2 added the "resume last page" persistence: which URL was open,
+//! and whether to restore it at all, saved like any other widget's
+//! content and restored on the next launch. Deliberately *not* included:
+//! resuming to the exact playback position within a video - a separate,
+//! harder feature (would need polling the page's actual playback time via
+//! injected JavaScript) that the user asked to keep as a later, distinct
+//! step.
+//!
+//! The "only one instance allowed" guard (`WidgetDescriptor::singleton`,
+//! enforced by the picker - see widget_picker.rs's `grouped_catalog`) is
+//! in place: for stability/resource reasons the user asked for up front,
+//! a `webkit6::WebView` is its own WebKit web process, unlike every other
+//! widget here (cheap D-Bus/local-file work). This module itself has no
+//! way to *know* it's a singleton - that's purely the picker's job, kept
+//! there rather than duplicated here.
 
 use gtk::glib;
 use gtk::prelude::*;

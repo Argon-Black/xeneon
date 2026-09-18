@@ -489,7 +489,8 @@ impl SimpleComponent for AppModel {
                 self.window_title.set_title(&self.title);
             }
             AppMsg::ShowWidgetPicker => {
-                self.widget_picker.open();
+                let existing_kinds: Vec<String> = self.real_grids.iter().flat_map(|grid| grid.kinds()).collect();
+                self.widget_picker.open(&existing_kinds);
             }
             AppMsg::GotoSettings => {
                 self.carousel.scroll_to(&self.settings_root, true);

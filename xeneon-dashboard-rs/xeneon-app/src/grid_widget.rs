@@ -312,6 +312,16 @@ impl WidgetGrid {
         grid::find_free_position(&occupied, size, self.page_w, self.page_h).is_some()
     }
 
+    /// Every `kind` currently placed on this page - used by the widget
+    /// picker to enforce `WidgetDescriptor::singleton` (only the YouTube
+    /// widget, so far) across all real pages before offering it as a
+    /// choice again. Duplicates on purpose if the same kind is placed
+    /// more than once (audio_l twice, say) - the caller only cares
+    /// whether a *specific* kind appears at all.
+    pub fn kinds(&self) -> Vec<String> {
+        self.placed.borrow().iter().map(|p| p.kind.clone()).collect()
+    }
+
     /// Places a freshly spawned widget at the first free spot for `size`,
     /// titled `title_key` (an i18n key, or `""` for no header label) and
     /// identified by `kind` (what a saved file's `"kind"` field will read

@@ -139,10 +139,18 @@ fn size_label_key(size: Size) -> &'static str {
 /// nothing in it is omitted rather than shown as an empty section.
 /// Catalog order is kept within a section (already same-size, so
 /// there's nothing meaningful left to sort by).
-fn grouped_catalog() -> Vec<(&'static str, Vec<&'static WidgetDescriptor>)> {
+///
+/// `existing_kinds` is every kind currently placed on any real page
+/// (`WidgetGrid::kinds`, collected in main.rs right before `open()`) -
+/// used to also skip a `WidgetDescriptor::singleton` kind that's already
+/// placed somewhere, the same way `dummy_*` is skipped unconditionally.
+fn grouped_catalog(existing_kinds: &[String]) -> Vec<(&'static str, Vec<&'static WidgetDescriptor>)> {
     let mut buckets: Vec<Vec<&'static WidgetDescriptor>> = vec![Vec::new(); SIZE_ORDER.len()];
     for descriptor in CATALOG {
         if descriptor.kind.starts_with("dummy_") {
+            continue;
+        }
+        if descriptor.singleton && existing_kinds.iter().any(|kind| kind == descriptor.kind) {
             continue;
         }
         if let Some(index) = SIZE_ORDER.iter().position(|(size, _)| *size == descriptor.size) {
@@ -344,8 +352,8 @@ impl WidgetPicker {
         picker
     }
 
-    pub fn open(self: &std::rc::Rc<Self>) {
-        self.rebuild_body();
+    pub fn open(self: &std::rc::Rc<Self>, existing_kinds: &[String]) {
+        self.rebuild_body(existing_kinds);
         self.revealer.set_can_target(true);
         self.revealer.set_reveal_child(true);
         self.revealer.grab_focus();
@@ -363,7 +371,7 @@ impl WidgetPicker {
         }
     }
 
-    fn rebuild_body(self: &std::rc::Rc<Self>) {
+    fn rebuild_body(self: &std::rc::Rc<Self>, existing_kinds: &[String]) {
         self.clear_body();
         // Manually wrapped plain `gtk::Box` rows, not `gtk::FlowBox`:
         // FlowBox's own row-height negotiation - shared across every
@@ -391,7 +399,7 @@ impl WidgetPicker {
         // both problems at once: no FlowBox row-height coupling, and no
         // row ever wider than the page itself.
         let available_width = PAGE_W - 2 * BODY_MARGIN;
-        for (size_key, entries) in grouped_catalog() {
+        for (size_key, entries) in grouped_catalog(existing_kinds) {
             let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
             let label = gtk::Label::new(Some(&i18n::t(size_key)));
