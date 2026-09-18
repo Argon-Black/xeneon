@@ -79,7 +79,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+// Audit finding 2026-09-18: this used to be a private copy (with a
+// WHITE parse-failure fallback, unlike appearance_popover.rs's BLACK) -
+// unified on BLACK everywhere per the user's call, then deduped onto
+// the one shared implementation.
 use crate::appearance_css;
+use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::WidgetInstance;
 use xeneon_core::grid::{Size, GAP, SIZE_L};
@@ -104,22 +109,6 @@ const BACKDROP_RADIUS_PX: i32 = 12;
 
 fn default_backdrop_rgba() -> gtk::gdk::RGBA {
     gtk::gdk::RGBA::parse(DEFAULT_BACKDROP_HEX).unwrap_or(gtk::gdk::RGBA::BLACK)
-}
-
-// Same duplicated-per-widget rgba<->hex convention as clock.rs/temp_gauge.rs/
-// agenda.rs (each keeps its own private copy rather than importing
-// appearance_popover.rs's `pub(crate)` ones).
-fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
-    format!(
-        "#{:02x}{:02x}{:02x}",
-        (rgba.red() * 255.0).round() as u8,
-        (rgba.green() * 255.0).round() as u8,
-        (rgba.blue() * 255.0).round() as u8
-    )
-}
-
-fn hex_to_rgba(hex: &str) -> gtk::gdk::RGBA {
-    gtk::gdk::RGBA::parse(hex).unwrap_or(gtk::gdk::RGBA::WHITE)
 }
 
 thread_local! {

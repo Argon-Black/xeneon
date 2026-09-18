@@ -10,6 +10,11 @@ use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+// Audit finding 2026-09-18: this used to be a private copy (with a
+// WHITE parse-failure fallback, unlike appearance_popover.rs's BLACK) -
+// unified on BLACK everywhere per the user's call, then deduped onto
+// the one shared implementation.
+use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::WidgetInstance;
 
@@ -45,19 +50,6 @@ const CITIES: [(&str, &str); 12] = [
 const DAY_KEYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const MONTH_KEYS: [&str; 12] =
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-
-fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
-    format!(
-        "#{:02x}{:02x}{:02x}",
-        (rgba.red() * 255.0).round() as u8,
-        (rgba.green() * 255.0).round() as u8,
-        (rgba.blue() * 255.0).round() as u8
-    )
-}
-
-fn hex_to_rgba(hex: &str) -> gtk::gdk::RGBA {
-    gtk::gdk::RGBA::parse(hex).unwrap_or_else(|_| gtk::gdk::RGBA::WHITE)
-}
 
 fn markup(text: &str, font_desc: &gtk::pango::FontDescription, color: &gtk::gdk::RGBA) -> String {
     format!(

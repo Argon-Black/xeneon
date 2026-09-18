@@ -91,6 +91,11 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Once;
 
+// Audit finding 2026-09-18: this used to be a private copy (with a
+// WHITE parse-failure fallback, unlike appearance_popover.rs's BLACK) -
+// unified on BLACK everywhere per the user's call, then deduped onto
+// the one shared implementation.
+use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::widgets::registry::WidgetInstance;
 
 const SOURCES_BUS_NAME: &str = "org.gnome.evolution.dataserver.Sources5";
@@ -738,19 +743,6 @@ fn set_label_color(label: &gtk::Label, text: &str, color_hex: Option<&str>) {
             glib::markup_escape_text(text)
         )),
     }
-}
-
-fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
-    format!(
-        "#{:02x}{:02x}{:02x}",
-        (rgba.red() * 255.0).round() as u8,
-        (rgba.green() * 255.0).round() as u8,
-        (rgba.blue() * 255.0).round() as u8
-    )
-}
-
-fn hex_to_rgba(hex: &str) -> gtk::gdk::RGBA {
-    gtk::gdk::RGBA::parse(hex).unwrap_or_else(|_| gtk::gdk::RGBA::WHITE)
 }
 
 impl AgendaState {

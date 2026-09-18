@@ -29,6 +29,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// Audit finding 2026-09-18: this used to be a private copy (with a
+// WHITE parse-failure fallback, unlike appearance_popover.rs's BLACK) -
+// unified on BLACK everywhere per the user's call, then deduped onto
+// the one shared implementation.
+use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
 use crate::widgets::cpu_temp::{all_sensors, auto_pick_sensor, sensor_display_name, SensorReading};
 use crate::widgets::registry::WidgetInstance;
@@ -63,19 +68,6 @@ const DEFAULT_CONTENT_SCALE: f64 = 1.0;
 
 const DEFAULT_TEXT_HEX: &str = "#ffffff";
 const DEFAULT_BAR_HEX: &str = "#e0218a";
-
-fn rgba_to_hex(rgba: &gtk::gdk::RGBA) -> String {
-    format!(
-        "#{:02x}{:02x}{:02x}",
-        (rgba.red() * 255.0).round() as u8,
-        (rgba.green() * 255.0).round() as u8,
-        (rgba.blue() * 255.0).round() as u8
-    )
-}
-
-fn hex_to_rgba(hex: &str) -> gtk::gdk::RGBA {
-    gtk::gdk::RGBA::parse(hex).unwrap_or(gtk::gdk::RGBA::WHITE)
-}
 
 /// Per-instance scaled font rules, keyed by each instance's own unique CSS
 /// class, exactly like `WeatherContent`'s `_rules`/`_reload_css` on the
