@@ -815,6 +815,77 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
 
     screen2_block1.append(&appearance_group);
 
+    // --- Screen 2, block 2: Backup (export/import the whole config) ---
+    let backup_group = adw::PreferencesGroup::new();
+    backup_group.set_title(&i18n::t("settings.backup_group.title"));
+
+    let export_row = adw::ActionRow::new();
+    export_row.set_title(&i18n::t("settings.backup_group.export_row.title"));
+    export_row.set_subtitle(&i18n::t("settings.backup_group.export_row.subtitle"));
+    let export_button = gtk::Button::with_label(&i18n::t("settings.backup_group.export_row.button"));
+    export_button.set_valign(gtk::Align::Center);
+    export_row.add_suffix(&export_button);
+    backup_group.add(&export_row);
+
+    let import_row = adw::ActionRow::new();
+    import_row.set_title(&i18n::t("settings.backup_group.import_row.title"));
+    import_row.set_subtitle(&i18n::t("settings.backup_group.import_row.subtitle"));
+    let import_button = gtk::Button::with_label(&i18n::t("settings.backup_group.import_row.button"));
+    import_button.set_valign(gtk::Align::Center);
+    import_row.add_suffix(&import_button);
+    backup_group.add(&import_row);
+
+    screen2_block2.append(&backup_group);
+
+    export_button.connect_clicked({
+        let root = root.clone();
+        move |button| {
+            let dialog = gtk::FileDialog::new();
+            let root_window = button.root().and_downcast::<gtk::Window>();
+            let root = root.clone();
+            dialog.select_folder(root_window.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
+                let Ok(folder) = result else { return };
+                let Some(destination) = folder.path() else { return };
+                match crate::backup::export(&destination) {
+                    Ok(target) => info_dialog(
+                        &root,
+                        &i18n::t("settings.backup_group.export_row.success_heading"),
+                        &i18n::t_args("settings.backup_group.export_row.success_body", &[("path", &target.display().to_string())]),
+                    ),
+                    Err(err) => {
+                        warn!("failed to export configuration: {err}");
+                        info_dialog(
+                            &root,
+                            &i18n::t("settings.backup_group.export_row.error_heading"),
+                            &i18n::t_args("settings.backup_group.export_row.error_body", &[("error", &err.to_string())]),
+                        );
+                    }
+                }
+            });
+        }
+    });
+    import_button.connect_clicked({
+        let root = root.clone();
+        move |button| {
+            let dialog = gtk::FileDialog::new();
+            let root_window = button.root().and_downcast::<gtk::Window>();
+            let root = root.clone();
+            dialog.select_folder(root_window.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
+                let Ok(folder) = result else { return };
+                let Some(source) = folder.path() else { return };
+                if !crate::backup::looks_like_config_dir(&source) {
+                    info_dialog(
+                        &root,
+                        &i18n::t("settings.backup_group.import_row.invalid_heading"),
+                        &i18n::t("settings.backup_group.import_row.invalid_body"),
+                    );
+                    return;
+                }
+                confirm_import(&root, source);
+            });
+        }
+    });
+
     // --- Screen 2, block 3: Keyboard shortcuts + dev tools ---
     let shortcuts_group = adw::PreferencesGroup::new();
     shortcuts_group.set_title(&i18n::t("settings.shortcuts_group"));
@@ -963,6 +1034,11 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let appearance_border_color_row = appearance_border_color_row.clone();
         let appearance_apply_row = appearance_apply_row.clone();
         let appearance_apply_button = appearance_apply_button.clone();
+        let backup_group = backup_group.clone();
+        let export_row = export_row.clone();
+        let export_button = export_button.clone();
+        let import_row = import_row.clone();
+        let import_button = import_button.clone();
         let ha_row = ha_row.clone();
         let ha_url_row = ha_url_row.clone();
         move || {
@@ -1016,6 +1092,13 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             appearance_apply_row.set_title(&i18n::t("settings.appearance_apply_row.title"));
             appearance_apply_row.set_subtitle(&i18n::t("settings.appearance_apply_row.subtitle"));
             appearance_apply_button.set_label(&i18n::t("settings.appearance_apply_row.button"));
+            backup_group.set_title(&i18n::t("settings.backup_group.title"));
+            export_row.set_title(&i18n::t("settings.backup_group.export_row.title"));
+            export_row.set_subtitle(&i18n::t("settings.backup_group.export_row.subtitle"));
+            export_button.set_label(&i18n::t("settings.backup_group.export_row.button"));
+            import_row.set_title(&i18n::t("settings.backup_group.import_row.title"));
+            import_row.set_subtitle(&i18n::t("settings.backup_group.import_row.subtitle"));
+            import_button.set_label(&i18n::t("settings.backup_group.import_row.button"));
             ha_row.set_title(&i18n::t("settings.ha_group.title"));
             ha_url_row.set_title(&i18n::t("settings.ha_group.url_row.title"));
             if let Some((group, row)) = &dev_group {
@@ -1145,6 +1228,58 @@ fn confirm_ha_restart(parent: &gtk::Box) {
     dialog.connect_response(None, move |_dialog, response| {
         if response == "restart" {
             relaunch(dev_mode);
+        }
+    });
+    dialog.present(Some(parent));
+}
+
+/// A single "OK" alert dialog, for reporting the outcome of the export/
+/// import buttons below - there's no toast overlay threaded into this page
+/// (see `populate`'s own signature) to use instead.
+fn info_dialog(parent: &gtk::Box, heading: &str, body: &str) {
+    let dialog = adw::AlertDialog::new(Some(heading), Some(body));
+    dialog.add_response("ok", &i18n::t("settings.backup_group.ok"));
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("ok");
+    dialog.present(Some(parent));
+}
+
+/// Asks before actually importing - replacing the whole config directory
+/// and relaunching is exactly the kind of hard-to-reverse, everything-
+/// changes action `confirm_ha_restart` above also gates. Only "Importer et
+/// redémarrer" proceeds; "Annuler" (also the dialog's close response)
+/// leaves everything untouched. `source` has already been checked with
+/// `xeneon_core::backup::looks_like_config_dir` by the caller - this only
+/// handles the (unlikely, e.g. a permissions error mid-copy) case of
+/// `backup::import` itself failing.
+fn confirm_import(parent: &gtk::Box, source: std::path::PathBuf) {
+    let dialog = adw::AlertDialog::new(
+        Some(&i18n::t("settings.backup_group.import_row.confirm_heading")),
+        Some(&i18n::t("settings.backup_group.import_row.confirm_body")),
+    );
+    dialog.add_response("cancel", &i18n::t("settings.backup_group.import_row.confirm_cancel"));
+    dialog.add_response("import", &i18n::t("settings.backup_group.import_row.confirm_import"));
+    dialog.set_response_appearance("import", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let dev_mode = crate::dev_mode_enabled();
+    dialog.connect_response(None, {
+        let parent = parent.clone();
+        move |_dialog, response| {
+            if response != "import" {
+                return;
+            }
+            match crate::backup::import(&source) {
+                Ok(()) => relaunch(dev_mode),
+                Err(err) => {
+                    warn!("failed to import configuration: {err}");
+                    info_dialog(
+                        &parent,
+                        &i18n::t("settings.backup_group.import_row.error_heading"),
+                        &i18n::t_args("settings.backup_group.import_row.error_body", &[("error", &err.to_string())]),
+                    );
+                }
+            }
         }
     });
     dialog.present(Some(parent));

@@ -8,6 +8,7 @@
 
 pub mod appearance;
 pub mod assets;
+pub mod backup;
 pub mod config;
 pub mod grid;
 pub mod i18n;

@@ -36,6 +36,7 @@
 
 mod appearance_css;
 mod appearance_popover;
+mod backup;
 mod config_store;
 mod dashboard_widget;
 mod grid_widget;
