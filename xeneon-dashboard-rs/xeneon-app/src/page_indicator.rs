@@ -264,6 +264,18 @@ impl Inner {
         self.carousel.nth_page(position) == self.settings_page
     }
 
+    /// The mouse wheel flips between carousel pages by default
+    /// (`Adw.Carousel`'s own `allow-scroll-wheel`, on unless told
+    /// otherwise) - fine on a real widget page, but on the settings page
+    /// it fights with scrolling a control under the pointer (the opacity
+    /// slider, a spin row): the wheel event would swipe the whole page
+    /// away instead of nudging that control's value. Off only while
+    /// actually on the settings page, so every other page keeps the
+    /// wheel-swipe convenience.
+    fn update_scroll_wheel(&self) {
+        self.carousel.set_allow_scroll_wheel(!self.is_on_settings_page());
+    }
+
     fn show(self: &Rc<Self>) {
         self.revealer.set_reveal_child(true);
         self.revealer.set_can_target(true);
@@ -335,6 +347,7 @@ impl PageIndicator {
             page_buttons: RefCell::new(Vec::new()),
         });
         inner.refresh();
+        inner.update_scroll_wheel();
 
         // Reveals only on an actual page change (swipe, or a dot tap once
         // already visible mid-swipe) - deliberately not on hover/motion, so
@@ -342,7 +355,10 @@ impl PageIndicator {
         // it. Matches page_indicator.py's own two connections.
         {
             let inner = inner.clone();
-            carousel.connect_notify_local(Some("position"), move |_, _| inner.show());
+            carousel.connect_notify_local(Some("position"), move |_, _| {
+                inner.show();
+                inner.update_scroll_wheel();
+            });
         }
         {
             let inner = inner.clone();
