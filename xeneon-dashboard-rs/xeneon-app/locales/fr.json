@@ -5,6 +5,8 @@
 
   "carousel.add_page_tooltip": "Ajouter une page",
 
+  "ha_page.not_configured": "Configure l'URL du tableau de bord dans les réglages",
+
   "tray.add_widget": "Ajouter un widget",
   "tray.settings": "Réglages",
   "tray.help": "Aide",

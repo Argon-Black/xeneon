@@ -5,6 +5,8 @@
 
   "carousel.add_page_tooltip": "添加页面",
 
+  "ha_page.not_configured": "请在设置中配置仪表盘 URL",
+
   "tray.add_widget": "添加小组件",
   "tray.settings": "设置",
   "tray.help": "帮助",

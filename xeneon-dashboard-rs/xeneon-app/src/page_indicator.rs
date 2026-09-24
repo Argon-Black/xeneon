@@ -13,6 +13,17 @@
 //! `AppMsg::AddPage`/`AppModel::create_page` in main.rs for what it
 //! actually does: create an empty page and navigate to it). This one isn't
 //! in the Python original - it was added directly in this Rust port.
+//!
+//! The optional Home Assistant page (see ha_page.rs) gets the same
+//! special treatment as the settings page - its own icon button (reusing
+//! `.xeneon-page-settings`'s look, just a different icon), skipped by the
+//! numbered-dot loop below, placed leftmost in the row (it's also the
+//! carousel's leftmost page - see main.rs's append order) rather than
+//! generalizing `settings_page`/`ha_page` into a list: there are only ever
+//! these two, both fixed for the app's whole lifetime (neither is ever
+//! added or removed while running - the HA page's own enable switch is a
+//! full relaunch, see ha_page.rs), so a list would just be indirection
+//! with no case it actually needs to handle.
 
 use adw::prelude::*;
 use std::cell::RefCell;
@@ -145,6 +156,10 @@ struct Inner {
     row: gtk::Box,
     carousel: adw::Carousel,
     settings_page: gtk::Widget,
+    // `None` when the Home Assistant page is disabled - see its own module
+    // doc comment. Compared by identity (GObject Hash/Eq) the same way
+    // `settings_page` is, everywhere both are used below.
+    ha_page: Option<gtk::Widget>,
     // Keyed by the page's own gtk::Widget (glib object identity, not
     // pointer casts - GObject wrappers implement Hash/Eq that way) rather
     // than duck-typing a `custom_name` attribute onto the page the way
@@ -174,6 +189,31 @@ impl Inner {
         }
         self.page_buttons.borrow_mut().clear();
 
+        // The Home Assistant page, when enabled, is always the carousel's
+        // very first page (see main.rs's append order) - its own button is
+        // built first below, right here, so it lands leftmost in the row,
+        // ahead of every numbered dot.
+        if let Some(ha_page) = &self.ha_page {
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            let icon = gtk::Image::from_icon_name("user-home-symbolic");
+            icon.set_pixel_size(SETTINGS_ICON_PIXEL_SIZE);
+            button.set_child(Some(&icon));
+            // Reuses the settings button's own CSS class - same size,
+            // same "set apart from the numbered pages" look, just a
+            // different icon. See the module doc comment on why a second
+            // dedicated field/button beats generalizing into a list here.
+            button.add_css_class("xeneon-page-settings");
+            let inner = self.clone();
+            let ha_page_for_click = ha_page.clone();
+            button.connect_clicked(move |_| {
+                inner.carousel.scroll_to(&ha_page_for_click, true);
+                inner.show();
+            });
+            self.page_buttons.borrow_mut().push((button.clone().upcast(), ha_page.clone()));
+            self.row.append(&button);
+        }
+
         // Settings is always the carousel's last page (see main.rs's
         // append order), but skipped here by identity rather than assumed
         // by position - it's built separately below, after the "+" button,
@@ -181,7 +221,7 @@ impl Inner {
         // happens to iterate in.
         for i in 0..self.carousel.n_pages() {
             let page = self.carousel.nth_page(i);
-            if page == self.settings_page {
+            if page == self.settings_page || self.ha_page.as_ref() == Some(&page) {
                 continue;
             }
             let button = gtk::Button::new();
@@ -325,8 +365,15 @@ impl PageIndicator {
     /// `on_add_page` fires (no args) whenever the "+" button is tapped -
     /// the caller decides what that actually means (main.rs wires it to
     /// `AppMsg::AddPage`, which creates an empty page and navigates to it,
-    /// or shows a "max pages" toast if already at the cap).
-    pub fn new(carousel: &adw::Carousel, settings_page: &impl IsA<gtk::Widget>, on_add_page: impl Fn() + 'static) -> Self {
+    /// or shows a "max pages" toast if already at the cap). `ha_page` is
+    /// `None` when the Home Assistant page is disabled - see ha_page.rs
+    /// and this module's own doc comment.
+    pub fn new(
+        carousel: &adw::Carousel,
+        settings_page: &impl IsA<gtk::Widget>,
+        ha_page: Option<&impl IsA<gtk::Widget>>,
+        on_add_page: impl Fn() + 'static,
+    ) -> Self {
         set_style(DEFAULT_OPACITY_PERCENT, None);
 
         let revealer = gtk::Revealer::new();
@@ -350,6 +397,7 @@ impl PageIndicator {
             row,
             carousel: carousel.clone(),
             settings_page: settings_page.clone().upcast(),
+            ha_page: ha_page.map(|w| w.clone().upcast()),
             named_pages: RefCell::new(HashMap::new()),
             hide_delay_seconds: RefCell::new(DEFAULT_HIDE_DELAY_SECONDS),
             hide_source: RefCell::new(None),

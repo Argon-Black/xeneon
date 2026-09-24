@@ -5,6 +5,8 @@
 
   "carousel.add_page_tooltip": "ページを追加",
 
+  "ha_page.not_configured": "設定でダッシュボードのURLを設定してください",
+
   "tray.add_widget": "ウィジェットを追加",
   "tray.settings": "設定",
   "tray.help": "ヘルプ",

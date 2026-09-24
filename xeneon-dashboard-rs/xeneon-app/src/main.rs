@@ -39,6 +39,7 @@ mod appearance_popover;
 mod config_store;
 mod dashboard_widget;
 mod grid_widget;
+mod ha_page;
 mod help_overlay;
 mod i18n_runtime;
 mod logging;
@@ -117,6 +118,13 @@ struct AppModel {
     // the "which pages can I add a widget to" list for AddWidget below.
     real_grids: Vec<Rc<WidgetGrid>>,
     _dev_grid: Option<Rc<WidgetGrid>>,
+    // Kept alive for the app's lifetime, same as `_dev_grid` - `None` when
+    // `Config.ha_page_enabled` is off. Always the carousel's very first
+    // page when present (see the append order in init()), which is why
+    // every carousel-position <-> `real_grids`-index conversion below
+    // (`current_widget_page_index`, `create_page`) has to add this many
+    // slots back in - see those two call sites' own comments.
+    _ha_page: Option<gtk::Widget>,
     _page_indicator: PageIndicator,
     // Lets AddWidget append a page to the Settings "Pages" rename list the
     // moment it creates one, instead of the list only catching up on the
@@ -368,6 +376,23 @@ impl SimpleComponent for AppModel {
             Rc::new(grid)
         });
 
+        // Built here, before the carousel, purely so its widget already
+        // exists for `PageIndicator::new` below (same reason the settings
+        // page's shell is built early too, see the next comment) - `None`
+        // whenever the feature is off, so nothing else in this function
+        // has to build a WebView or touch webkit6 at all. `ha_page_url`
+        // missing/invalid shows the "configure me" placeholder instead of
+        // `None` - the page still exists (and still gets its carousel
+        // slot/indicator icon) since the switch alone is what the user
+        // asked to control here, not whether a URL happens to be filled
+        // in yet. See ha_page.rs's own doc comment for the rest of the
+        // design (why enabling this is a relaunch, not live carousel
+        // surgery).
+        let ha_page_widget: Option<gtk::Widget> = app_config.ha_page_enabled.then(|| match &app_config.ha_page_url {
+            Some(url) => ha_page::build(url),
+            None => ha_page::build_unconfigured(),
+        });
+
         let carousel = adw::Carousel::new();
         carousel.set_vexpand(true); // parity with window.py's self.carousel.set_vexpand(True)
 
@@ -378,7 +403,7 @@ impl SimpleComponent for AppModel {
         // below needs a live indicator to refresh on rename. Building the
         // shell first and filling it in after breaks that cycle.
         let settings_root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let page_indicator = PageIndicator::new(&carousel, &settings_root, {
+        let page_indicator = PageIndicator::new(&carousel, &settings_root, ha_page_widget.as_ref(), {
             let sender = sender.clone();
             move || sender.input(AppMsg::AddPage)
         });
@@ -448,6 +473,7 @@ impl SimpleComponent for AppModel {
             pages_dir,
             real_grids,
             _dev_grid: dev_grid,
+            _ha_page: ha_page_widget,
             _page_indicator: page_indicator,
             pages_handle,
             _tray: tray,
@@ -480,6 +506,13 @@ impl SimpleComponent for AppModel {
         root.set_content(Some(&toast_overlay));
         toast_overlay.set_child(Some(&widgets.overlay));
 
+        // First, ahead of every widget page - "set apart before the other
+        // pages" per the design discussion in the memory system, matching
+        // its own leftmost spot in the page indicator's row (see
+        // page_indicator.rs).
+        if let Some(ha_page) = &model._ha_page {
+            carousel.append(ha_page);
+        }
         for grid in &model.real_grids {
             carousel.append(grid.widget());
         }
@@ -516,7 +549,7 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::AddWidget(kind) => {
                 let Some(descriptor) = widgets::registry::find(kind) else { return };
-                let start = current_widget_page_index(&self.carousel, self.real_grids.len());
+                let start = current_widget_page_index(&self.carousel, self.real_grids.len(), self.leading_page_count());
                 let target = (start..self.real_grids.len()).find(|&i| self.real_grids[i].has_room_for(descriptor.size));
 
                 // No existing page has room - either every one is full, or
@@ -609,10 +642,25 @@ impl AppModel {
         let grid = Rc::new(grid);
         register_page_emptied(&grid, sender);
         self._page_indicator.register_page(grid.widget(), grid.clone());
-        self.carousel.insert(grid.widget(), new_index as i32);
+        // `real_grids[new_index]` belongs at this carousel index only when
+        // nothing sits ahead of the real pages - offset by one whenever
+        // the Home Assistant page occupies carousel slot 0 (see
+        // `leading_page_count`), otherwise every page from here on would
+        // insert one slot too early (landing on the HA page itself, or
+        // before it).
+        self.carousel.insert(grid.widget(), (new_index + self.leading_page_count()) as i32);
         self.pages_handle.add_page(grid.clone());
         self.real_grids.push(grid);
         Some(new_index)
+    }
+
+    /// How many carousel pages sit ahead of `real_grids[0]` - only ever the
+    /// Home Assistant page (0 or 1), but named generically since anything
+    /// else added ahead of the real pages later would belong here too.
+    /// Needed anywhere a `real_grids` index has to become an absolute
+    /// carousel index or vice versa - see this method's two call sites.
+    fn leading_page_count(&self) -> usize {
+        self._ha_page.is_some() as usize
     }
 
     /// Scrolls the carousel to `real_grids[index]`'s page once it actually
@@ -656,14 +704,23 @@ fn register_page_emptied(grid: &Rc<WidgetGrid>, sender: &ComponentSender<AppMode
     grid.set_on_emptied(move || sender.input(AppMsg::PageEmptied(page_id.clone())));
 }
 
-/// Which real (non-dev, non-settings) page a newly added widget should
-/// land on - the currently visible one, clamped into range. Mirrors
-/// `XeneonWindow._current_widget_page_index()`.
-fn current_widget_page_index(carousel: &adw::Carousel, real_page_count: usize) -> usize {
+/// Which real (non-dev, non-settings, non-Home-Assistant) page a newly
+/// added widget should land on - the currently visible one, clamped into
+/// range. Mirrors `XeneonWindow._current_widget_page_index()`.
+///
+/// `leading_page_count` (see `AppModel::leading_page_count`) shifts the
+/// carousel's own absolute position back down into a `real_grids` index -
+/// without it, every real page would read one too high whenever the Home
+/// Assistant page occupies carousel slot 0. Viewing the HA page itself (or
+/// the dev/settings pages past the end) saturates/clamps into range rather
+/// than being a meaningful "current" page - same accepted ambiguity the
+/// clamp already had for the dev/settings pages before this.
+fn current_widget_page_index(carousel: &adw::Carousel, real_page_count: usize, leading_page_count: usize) -> usize {
     if real_page_count == 0 {
         return 0;
     }
-    (carousel.position().round().max(0.0) as usize).min(real_page_count - 1)
+    let position = carousel.position().round().max(0.0) as usize;
+    position.saturating_sub(leading_page_count).min(real_page_count - 1)
 }
 
 /// The Xeneon Edge bar's real panel resolution (2560x720) is distinctive

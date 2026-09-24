@@ -38,6 +38,7 @@ use crate::appearance_css;
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::config_store;
 use crate::grid_widget::WidgetGrid;
+use crate::ha_page;
 use crate::i18n_runtime as i18n;
 use crate::page_indicator::PageIndicator;
 use crate::theme;
@@ -676,21 +677,15 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         }
     }
 
-    ha_enable_switch.connect_active_notify({
-        let ha_url_row = ha_url_row.clone();
-        let hide_ha_status = hide_ha_status.clone();
-        let run_ha_ping = run_ha_ping.clone();
-        move |switch| {
-            let enabled = switch.is_active();
-            config_store::update(|c| c.ha_page_enabled = enabled);
-            ha_url_row.set_sensitive(enabled);
-            let text = ha_url_row.text().to_string();
-            if enabled && is_http_url(text.trim()) {
-                run_ha_ping(text.trim().to_string());
-            } else {
-                hide_ha_status();
-            }
-        }
+    ha_enable_switch.connect_active_notify(|switch| {
+        config_store::update(|c| c.ha_page_enabled = switch.is_active());
+        // Adding/removing the whole carousel page (and its page-indicator
+        // icon) is a full relaunch here, not live carousel surgery - same
+        // trade, same reason as the dev-mode toggle just below (see
+        // ha_page.rs's own doc comment). `dev_mode_enabled()` carries the
+        // *current* dev-mode state through unchanged - this relaunch is
+        // about the HA page, not about dev mode.
+        relaunch(crate::dev_mode_enabled());
     });
     ha_url_row.connect_apply(move |row| {
         let text = row.text().to_string();
@@ -724,6 +719,11 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         row.set_tooltip_text(None);
         config_store::update(|c| c.ha_page_url = Some(trimmed.to_string()));
         run_ha_ping(trimmed.to_string());
+        // Takes effect immediately if the page already exists (a no-op
+        // otherwise: disabled, or still on the "configure me" placeholder
+        // - see ha_page.rs's own doc comment) - only the enable switch
+        // itself needs the full relaunch.
+        ha_page::set_url(trimmed);
     });
 
     screen2_block2.append(&ha_group);

@@ -5,6 +5,8 @@
 
   "carousel.add_page_tooltip": "Aggiungi una pagina",
 
+  "ha_page.not_configured": "Configura l'URL della dashboard nelle impostazioni",
+
   "tray.add_widget": "Aggiungi un widget",
   "tray.settings": "Impostazioni",
   "tray.help": "Aiuto",
