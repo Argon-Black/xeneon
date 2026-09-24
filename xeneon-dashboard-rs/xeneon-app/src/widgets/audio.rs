@@ -460,6 +460,25 @@ impl AudioState {
         if self.players.borrow().contains_key(bus_name) {
             return;
         }
+        // WebKitGTK bridges whatever's playing in the youtube widget's own
+        // WebView to MPRIS (so media keys work on it too) - under a name
+        // derived from *this app's own* `APP_ID`
+        // (`org.mpris.MediaPlayer2.com.n3tlab.XeneonDashboardRust...`,
+        // confirmed against a real hang: `[...].Sandboxed.instance-44`).
+        // Treating that as just another player is a guaranteed self-
+        // deadlock: `tick()` below calls `position_seconds()` synchronously
+        // on this same GTK main thread once a second, but the only thing
+        // that could ever answer that D-Bus call is this same thread's own
+        // main loop - which can't run while it's blocked waiting on the
+        // call it just made. Every tick blocked the whole app for a full
+        // `DBUS_CALL_TIMEOUT_MS` before giving up, reported as "app not
+        // responding" - confirmed 2026-09-24 from a live repro's debug
+        // logs (steady ~1.5s-apart "failed to read Position" timeouts for
+        // exactly this bus name, for as long as a video kept playing).
+        if bus_name.contains(crate::APP_ID) {
+            debug!("ignoring our own MPRIS name (youtube widget's WebView): {bus_name}");
+            return;
+        }
         // A failure here used to just mean the player silently never
         // showed up, with nothing to say whether it wasn't MPRIS-
         // compliant, was already gone by the time this ran (a

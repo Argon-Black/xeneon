@@ -69,8 +69,10 @@ const WINDOW_HEIGHT: i32 = 720;
 
 /// GApplication id, also reused as the icon name below - both need to
 /// agree so a future .desktop file's `Icon=` key (conventionally set to
-/// the app id) resolves to the same icon this window already uses.
-const APP_ID: &str = "com.n3tlab.XeneonDashboardRust";
+/// the app id) resolves to the same icon this window already uses. `pub`
+/// so `widgets::audio` can recognize (and ignore) an MPRIS name that's
+/// actually this same process - see that module's own use of it.
+pub(crate) const APP_ID: &str = "com.n3tlab.XeneonDashboardRust";
 
 /// Hard cap on real (non-dev, non-settings) pages, matching the limit the
 /// user asked for so a runaway sequence of "add a widget" calls can't
