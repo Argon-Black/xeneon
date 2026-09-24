@@ -260,7 +260,17 @@ impl Inner {
     }
 
     fn is_on_settings_page(&self) -> bool {
-        let position = self.carousel.position().round().max(0.0) as u32;
+        // Guards nth_page() against a carousel that has no pages yet -
+        // real at construction time: PageIndicator::new() runs before
+        // main.rs appends a single page, and calling nth_page() on an
+        // empty carousel is an out-of-bounds panic in libadwaita's own
+        // Rust bindings (assert!(n < self.n_pages())), not a graceful
+        // None.
+        let n_pages = self.carousel.n_pages();
+        if n_pages == 0 {
+            return false;
+        }
+        let position = (self.carousel.position().round().max(0.0) as u32).min(n_pages - 1);
         self.carousel.nth_page(position) == self.settings_page
     }
 
@@ -362,7 +372,15 @@ impl PageIndicator {
         }
         {
             let inner = inner.clone();
-            carousel.connect_notify_local(Some("n-pages"), move |_, _| inner.refresh());
+            carousel.connect_notify_local(Some("n-pages"), move |_, _| {
+                inner.refresh();
+                // Pages append one at a time at startup while position
+                // stays 0 throughout, so "position" alone might never
+                // fire before the settings page itself is appended -
+                // re-checked here too so allow-scroll-wheel is never left
+                // stale at the true-until-now default.
+                inner.update_scroll_wheel();
+            });
         }
 
         Self { inner }
