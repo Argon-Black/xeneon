@@ -197,9 +197,9 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
 
     // Full-bleed background image behind every *real* widget page (not the
     // dev-mode test page, not this settings page - see
-    // grid_widget.rs's `set_background_image`). A later phase adds a
-    // per-page override on top of this app-wide default, hence the
-    // subtitle spelling that out now rather than leaving it a surprise.
+    // grid_widget.rs's `set_background_image`). A page can override this
+    // with its own image via its own row in Settings > Pages (see
+    // `build_page_row` below) - the subtitle points there.
     let app_background_row = adw::ActionRow::new();
     app_background_row.set_title(&i18n::t("settings.app_background_row.title"));
     app_background_row.set_subtitle(&i18n::t("settings.app_background_row.subtitle"));
@@ -262,8 +262,12 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
                     }
                 };
                 config_store::update(|c| c.app_background_image_path = Some(path.clone()));
+                // A page with its own override keeps showing it - only a
+                // page still following the app-wide default repaints here.
                 for page in pages_shared.borrow().iter() {
-                    page.set_background_image(Some(&path));
+                    if page.background_override().is_none() {
+                        page.set_background_image(Some(&path));
+                    }
                 }
                 sync_app_background_buttons();
             });
@@ -281,7 +285,9 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             }
             let path = config_store::get().app_background_image_path;
             for page in pages_shared.borrow().iter() {
-                page.set_background_image(path.as_deref());
+                if page.background_override().is_none() {
+                    page.set_background_image(path.as_deref());
+                }
             }
             sync_app_background_buttons();
         }
@@ -1245,7 +1251,81 @@ fn build_page_row(grid: Rc<WidgetGrid>, page_indicator: PageIndicator) -> adw::E
     });
 
     expander.add_row(&name_row);
-    // Background (color/image) isn't ported yet - PageBackground doesn't
-    // exist on the Rust side yet, see project memory.
+
+    // Per-page background image override - mirrors the app-wide
+    // "app_background_row" pair (choose/clear) above, but scoped to this
+    // one `grid` instead of iterating every page, and with simpler
+    // show/hide logic: "has an override" vs. not, rather than
+    // `is_default_background` (there's no "default" to compare against
+    // here, only "follows the app-wide setting" or "doesn't").
+    let bg_row = adw::ActionRow::new();
+    bg_row.set_title(&i18n::t("settings.pages_group.background_row.title"));
+    bg_row.set_subtitle(&i18n::t("settings.pages_group.background_row.subtitle"));
+    let bg_choose_button = gtk::Button::with_label(&i18n::t("settings.pages_group.background_row.choose_image"));
+    bg_choose_button.set_valign(gtk::Align::Center);
+    bg_row.add_suffix(&bg_choose_button);
+    let bg_clear_button = gtk::Button::with_label(&i18n::t("settings.pages_group.background_row.clear_image"));
+    bg_clear_button.set_valign(gtk::Align::Center);
+    bg_row.add_suffix(&bg_clear_button);
+    expander.add_row(&bg_row);
+
+    let sync_bg_buttons = {
+        let grid = grid.clone();
+        let bg_choose_button = bg_choose_button.clone();
+        let bg_clear_button = bg_clear_button.clone();
+        move || {
+            let has_override = grid.background_override().is_some();
+            bg_choose_button.set_visible(!has_override);
+            bg_clear_button.set_visible(has_override);
+        }
+    };
+    sync_bg_buttons();
+
+    bg_choose_button.connect_clicked({
+        let grid = grid.clone();
+        let sync_bg_buttons = sync_bg_buttons.clone();
+        move |button| {
+            let dialog = gtk::FileDialog::new();
+            let image_filter = gtk::FileFilter::new();
+            image_filter.set_name(Some(&i18n::t("widgets.appearance.bg_image_filter")));
+            for mime in crate::appearance_popover::IMAGE_MIME_TYPES {
+                image_filter.add_mime_type(mime);
+            }
+            let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&image_filter);
+            dialog.set_filters(Some(&filters));
+            let root = button.root().and_downcast::<gtk::Window>();
+            let grid = grid.clone();
+            let sync_bg_buttons = sync_bg_buttons.clone();
+            dialog.open(root.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
+                let Ok(file) = result else { return };
+                let Some(source) = file.path() else { return };
+                // Copied into pages_dir(), alongside this page's own
+                // <id>.json - see `xeneon_core::assets::store_asset`'s own
+                // doc comment.
+                let path = match xeneon_core::assets::store_asset(&xeneon_core::config::pages_dir(), &source) {
+                    Ok(path) => path.display().to_string(),
+                    Err(err) => {
+                        warn!("failed to store page background image: {err}");
+                        return;
+                    }
+                };
+                grid.set_background_override(Some(&path));
+                grid.set_background_image(Some(&path));
+                sync_bg_buttons();
+            });
+        }
+    });
+    bg_clear_button.connect_clicked({
+        let grid = grid.clone();
+        let sync_bg_buttons = sync_bg_buttons.clone();
+        move |_| {
+            grid.set_background_override(None);
+            let app_wide = config_store::get().app_background_image_path;
+            grid.set_background_image(app_wide.as_deref());
+            sync_bg_buttons();
+        }
+    });
+
     expander
 }
