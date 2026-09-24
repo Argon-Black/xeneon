@@ -409,6 +409,14 @@ impl SimpleComponent for AppModel {
         });
         page_indicator.set_hide_delay_seconds(app_config.indicator_hide_delay_seconds);
         page_indicator.set_style(app_config.indicator_opacity, app_config.indicator_button_color.as_deref());
+        // Lets a click anywhere on the HA page flash the indicator into
+        // view (see ha_page.rs's own `reveal_indicator`/`set_reveal_indicator`
+        // doc comments) - only meaningful, so only wired, when that page
+        // actually exists.
+        if ha_page_widget.is_some() {
+            let page_indicator = page_indicator.clone();
+            ha_page::set_reveal_indicator(move || page_indicator.show());
+        }
         for grid in &real_grids {
             page_indicator.register_page(grid.widget(), grid.clone());
         }
@@ -526,13 +534,15 @@ impl SimpleComponent for AppModel {
         // The indicator otherwise stays hidden and non-targetable (see
         // PageIndicator::hide) until some interaction first calls show()
         // - fine normally (nothing needs it before the first swipe), but
-        // the Home Assistant page is always the very first page and, once
-        // landed there, offers no way to leave it by mouse *at all* if
-        // the bar is still hidden (see page_indicator.rs's
-        // `is_on_reveal_locked_page` for why a mouse can't drag/swipe off
-        // that page itself). Shown once here, unconditionally, only when
-        // that page actually exists; `is_on_reveal_locked_page` then keeps
-        // it up for good once the carousel is actually sitting on it.
+        // the Home Assistant page is always the very first page, and a
+        // mouse can't drag/swipe off it at all (see ha_page.rs's own doc
+        // comment) - so without this, landing there directly at startup
+        // would leave no visible way out until the first click (which
+        // ha_page.rs's `reveal_indicator` already handles afterward; this
+        // is purely about that very first moment, before any click has
+        // happened yet). One normal, auto-hiding reveal - not a permanent
+        // one, see page_indicator.rs's own doc comment on why that was
+        // tried and rejected.
         if model._ha_page.is_some() {
             model._page_indicator.show();
         }

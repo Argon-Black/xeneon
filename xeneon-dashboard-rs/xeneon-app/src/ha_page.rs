@@ -22,21 +22,30 @@
 //! surgery - see the design discussion in the memory system for why that
 //! trade was made.
 //!
-//! Leaving this page by mouse is the page indicator's job, not this
-//! module's: a mouse click-drag over the WebView can't reach
+//! Leaving this page by mouse: a click-drag over the WebView can't reach
 //! `Adw.Carousel`'s own swipe tracker at all - confirmed in hands-on
-//! testing (`drag-begin` fires on a `GestureDrag` added here at Capture
-//! phase, so the press itself is seen, but `drag-update` never once
-//! fires afterward, meaning WebKit's own pointer handling takes over the
-//! rest of the sequence at a level no ancestor `GtkGesture`/
-//! `EventController` can contest, regardless of propagation phase or
-//! claiming - likely tied to WebKit's accelerated-compositing subsurface,
-//! see main.rs's DMA-BUF renderer history for the related, already
-//! reverted attempt at changing that rendering path). Touch-drag is
-//! unaffected and still swipes normally. See
-//! `page_indicator.rs::is_on_reveal_locked_page` for the actual fix: the
-//! indicator bar stays permanently visible (and clickable) while on this
-//! page, the same way it already does on the settings page.
+//! testing (a `GestureDrag` added here at Capture phase saw `drag-begin`
+//! fire, so the press itself was seen, but `drag-update` never once fired
+//! afterward, meaning WebKit's own pointer handling takes over the rest
+//! of the sequence at a level no ancestor `GtkGesture`/`EventController`
+//! can contest, regardless of propagation phase or claiming - likely tied
+//! to WebKit's accelerated-compositing subsurface, see main.rs's DMA-BUF
+//! renderer history for the related, already reverted attempt at
+//! changing that rendering path) - so that approach was abandoned
+//! outright, not worked around. Touch-drag is unaffected and still swipes
+//! normally.
+//!
+//! For a mouse, the page indicator's own gear/dot/home buttons are the
+//! way out instead - ordinary widgets the WebView can't intercept clicks
+//! on - but they auto-hide after a delay like on every other page (a
+//! first attempt at keeping them permanently shown here, like on the
+//! settings page, was rejected on sight: it defeats the point of a
+//! full-screen, unobstructed dashboard - see page_indicator.rs's own doc
+//! comment). `reveal_indicator` below is the discoverability fix for
+//! that: any click anywhere on this page also flashes the bar into view
+//! for its normal timed reveal (see `wire_reveal_on_click`), without
+//! stealing that click from whatever the dashboard itself does with it -
+//! a Capture-phase `GestureClick` that only watches, never claims.
 
 use gtk::glib;
 use gtk::prelude::*;
@@ -47,6 +56,16 @@ use webkit6::prelude::*;
 use crate::i18n_runtime as i18n;
 
 thread_local! {
+    // Set once by main.rs right after `PageIndicator::new` (see that
+    // call site) - `Fn`, not `FnOnce`, since every click on the page
+    // needs to trigger it, potentially many times over the page's
+    // lifetime. `None` until then (a click landing in the narrow startup
+    // window before that wiring runs is simply a no-op - negligible, and
+    // no worse than that click just not having revealed the bar) and
+    // forever `None` if the page is disabled (nothing to build, nothing
+    // to click).
+    static REVEAL_INDICATOR: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+
     // Own directory, deliberately separate from `widgets/youtube.rs`'s -
     // two `webkit6::NetworkSession`s writing to the same cookies.sqlite at
     // once (this page and a YouTube widget can both be live simultaneously,
@@ -128,6 +147,8 @@ pub fn build(url: &str) -> gtk::Widget {
     block_swipe.connect_scroll(|_controller, _dx, _dy| glib::Propagation::Stop);
     overlay.add_controller(block_swipe);
 
+    wire_reveal_on_click(&overlay);
+
     webview.connect_load_changed({
         let spinner = spinner.clone();
         move |webview, event| {
@@ -162,6 +183,39 @@ pub fn build(url: &str) -> gtk::Widget {
     CURRENT_WEBVIEW.with(|cell| *cell.borrow_mut() = Some(webview));
 
     overlay.upcast()
+}
+
+/// Watches (never claims) every press on `overlay` purely to flash the
+/// page indicator into view - see the module doc comment for why this
+/// exists at all. `Capture` phase so it reliably sees the press even
+/// though nothing here needs to win any race against WebKit (nothing is
+/// claimed, so WebKit still gets the event immediately afterward,
+/// completely unaffected - this is just an extra, passive observer of the
+/// same sequence).
+fn wire_reveal_on_click(overlay: &gtk::Overlay) {
+    let reveal = gtk::GestureClick::new();
+    reveal.set_propagation_phase(gtk::PropagationPhase::Capture);
+    reveal.connect_pressed(|_gesture, _n_press, _x, _y| reveal_indicator());
+    overlay.add_controller(reveal);
+}
+
+/// Registers the closure `reveal_on_click` (via `wire_reveal_on_click`)
+/// calls on every press - main.rs calls this once, right after building
+/// the page indicator, with a closure that calls its own `show()`. A
+/// closure-in-a-thread_local rather than threading a `PageIndicator`
+/// reference through `build`'s signature (and `build_unconfigured`'s, and
+/// every call site of either) for one callback - see `set_url`'s own
+/// `CURRENT_WEBVIEW` for the same trade made for the same reason.
+pub fn set_reveal_indicator(show: impl Fn() + 'static) {
+    REVEAL_INDICATOR.with(|cell| *cell.borrow_mut() = Some(Box::new(show)));
+}
+
+fn reveal_indicator() {
+    REVEAL_INDICATOR.with(|cell| {
+        if let Some(show) = cell.borrow().as_ref() {
+            show();
+        }
+    });
 }
 
 /// Shown instead of `build()` when the page is enabled but no URL has been

@@ -14,16 +14,19 @@
 //! actually does: create an empty page and navigate to it). This one isn't
 //! in the Python original - it was added directly in this Rust port.
 //!
-//! The optional Home Assistant page (see ha_page.rs) gets the same
-//! special treatment as the settings page - its own icon button (reusing
-//! `.xeneon-page-settings`'s look, just a different icon), skipped by the
-//! numbered-dot loop below, placed leftmost in the row (it's also the
-//! carousel's leftmost page - see main.rs's append order) rather than
-//! generalizing `settings_page`/`ha_page` into a list: there are only ever
-//! these two, both fixed for the app's whole lifetime (neither is ever
-//! added or removed while running - the HA page's own enable switch is a
-//! full relaunch, see ha_page.rs), so a list would just be indirection
-//! with no case it actually needs to handle.
+//! The optional Home Assistant page (see ha_page.rs) gets a similar, but
+//! not identical, special treatment to the settings page: its own icon
+//! button (reusing `.xeneon-page-settings`'s look, just a different
+//! icon), skipped by the numbered-dot loop below, placed leftmost in the
+//! row (it's also the carousel's leftmost page - see main.rs's append
+//! order) rather than generalizing `settings_page`/`ha_page` into a list
+//! - there are only ever these two, both fixed for the app's whole
+//! lifetime (neither is ever added or removed while running - the HA
+//! page's own enable switch is a full relaunch, see ha_page.rs), so a
+//! list would just be indirection with no case it actually needs to
+//! handle. Unlike settings, it does NOT keep the bar permanently
+//! revealed while on it (see `is_on_settings_page`'s own doc comment on
+//! `show()`) - a full-screen dashboard has to actually be full-screen.
 
 use adw::prelude::*;
 use std::cell::RefCell;
@@ -299,23 +302,7 @@ impl Inner {
         }
     }
 
-    /// True on the settings page, or on the Home Assistant page when it
-    /// exists - both keep the indicator bar permanently on-screen instead
-    /// of letting it auto-hide (see `show()`), since both are otherwise a
-    /// dead end for a mouse: settings has its own scrollable/draggable
-    /// controls (see `update_scroll_wheel`'s own doc comment) that a
-    /// vanished indicator can't get you out of, and the Home Assistant
-    /// page's WebView can't be left by mouse drag at all - WebKitGTK's own
-    /// pointer handling wins the input race against `Adw.Carousel`'s
-    /// swipe tracker (confirmed in hands-on testing: touch-drag reaches
-    /// the tracker fine, but mouse click-drag never does, likely because
-    /// WebKit's accelerated compositing renders through its own subsurface
-    /// - see main.rs's DMA-BUF renderer history for the related, already
-    /// reverted attempt at working around that surface). A visible,
-    /// always-there gear/dot/home button a normal click can reach is a far
-    /// more reliable fix than continuing to fight that race at the
-    /// gesture-controller level.
-    fn is_on_reveal_locked_page(&self) -> bool {
+    fn is_on_settings_page(&self) -> bool {
         // Guards nth_page() against a carousel that has no pages yet -
         // real at construction time: PageIndicator::new() runs before
         // main.rs appends a single page, and calling nth_page() on an
@@ -327,8 +314,7 @@ impl Inner {
             return false;
         }
         let position = (self.carousel.position().round().max(0.0) as u32).min(n_pages - 1);
-        let current_page = self.carousel.nth_page(position);
-        current_page == self.settings_page || self.ha_page.as_ref() == Some(&current_page)
+        self.carousel.nth_page(position) == self.settings_page
     }
 
     /// The mouse wheel flips between carousel pages by default
@@ -336,14 +322,11 @@ impl Inner {
     /// otherwise) - fine on a real widget page, but on the settings page
     /// it fights with scrolling a control under the pointer (the opacity
     /// slider, a spin row): the wheel event would swipe the whole page
-    /// away instead of nudging that control's value. Off while on the
-    /// settings or Home Assistant page (the latter is a no-op in
-    /// practice - ha_page.rs's own scroll guard already claims every
-    /// scroll event over the WebView before the carousel would ever see
-    /// it either way - but harmless and one less special case to carry
-    /// here), so every other page keeps the wheel-swipe convenience.
+    /// away instead of nudging that control's value. Off only while
+    /// actually on the settings page, so every other page keeps the
+    /// wheel-swipe convenience.
     fn update_scroll_wheel(&self) {
-        self.carousel.set_allow_scroll_wheel(!self.is_on_reveal_locked_page());
+        self.carousel.set_allow_scroll_wheel(!self.is_on_settings_page());
     }
 
     fn show(self: &Rc<Self>) {
@@ -354,12 +337,16 @@ impl Inner {
         if let Some(source) = self.hide_source.borrow_mut().take() {
             source.remove();
         }
-        // Stays revealed on the settings page and the Home Assistant page
-        // instead of auto-hiding - settings for its own scrollable/
-        // draggable controls (matches page_indicator.py's `_show()`), the
-        // HA page so there's always a clickable way off it for a mouse -
-        // see `is_on_reveal_locked_page`'s own doc comment.
-        if self.is_on_reveal_locked_page() {
+        // Stays revealed on the settings page itself (its own scrollable/
+        // draggable controls need it) instead of auto-hiding - matches
+        // page_indicator.py's `_show()`. Deliberately NOT also kept up on
+        // the Home Assistant page: a first attempt at this did exactly
+        // that (see git history), and the user rejected it on sight - a
+        // permanent bar defeats the point of a full-screen, unobstructed
+        // dashboard. The HA page still calls `show()` (a normal, timed
+        // reveal) from its own click-to-reveal affordance instead - see
+        // ha_page.rs's `reveal_indicator`.
+        if self.is_on_settings_page() {
             return;
         }
         let inner = self.clone();
