@@ -50,6 +50,7 @@
   "settings.dev_group.restart_button": "重新启动应用",
   "widgets.dev_page.title": "DEV",
   "settings.pages_group.title": "页面",
+  "settings.pages_group.default_row.title": "默认页面",
   "settings.pages_group.subtitle": "第 {n} 页",
   "settings.pages_group.default_name": "第 {n} 页",
   "settings.pages_group.name_row.title": "页面名称",

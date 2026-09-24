@@ -531,19 +531,66 @@ impl SimpleComponent for AppModel {
         // `self.carousel.append(self._settings_page)`.
         carousel.append(&settings_root);
 
+        // Which page the carousel should actually open on - independent
+        // of carousel *order* (the Home Assistant page, when present, is
+        // always carousel slot 0 regardless, appended first above) since
+        // the two ended up wanting different defaults: "Home Assistant
+        // always leftmost" for swiping/the page indicator, but "Page 1 by
+        // default" for what you actually see at launch (per the design
+        // discussion in the memory system), unless the user explicitly
+        // picked something else via Settings > Pages > "Page par défaut".
+        // `"ha"` is the same sentinel settings_page.rs's own
+        // `HA_DEFAULT_PAGE_VALUE` writes - kept as a plain literal here
+        // rather than a shared constant, since these are the only two
+        // places it's ever compared. Unset, or naming a page/`"ha"` that
+        // no longer exists (deleted, or HA since disabled), both fall
+        // back the same way: whatever's first in `real_grids`.
+        let default_target: Option<gtk::Widget> = app_config
+            .default_page
+            .as_deref()
+            .and_then(|choice| {
+                if choice == "ha" {
+                    model._ha_page.clone()
+                } else {
+                    model.real_grids.iter().find(|g| g.page_id() == choice).map(|g| g.widget().clone().upcast())
+                }
+            })
+            .or_else(|| model.real_grids.first().map(|g| g.widget().clone().upcast()));
+
+        if let Some(target) = &default_target {
+            // Same reasoning as AppModel::scroll_to_once_sized: a page's
+            // width is still 0 immediately after append(), before the
+            // very first layout pass, so scroll_to() called directly here
+            // would silently fall short whenever the target isn't already
+            // carousel position 0 (the plain "do nothing" case, e.g. Page
+            // 1 as default with no Home Assistant page ahead of it, never
+            // actually needs this - scroll_to would just be a no-op then
+            // regardless).
+            let carousel = carousel.clone();
+            let target_for_scroll = target.clone();
+            target.add_tick_callback(move |widget, _frame_clock| {
+                if widget.width() == 0 {
+                    return gtk::glib::ControlFlow::Continue;
+                }
+                carousel.scroll_to(&target_for_scroll, false);
+                gtk::glib::ControlFlow::Break
+            });
+        }
+
         // The indicator otherwise stays hidden and non-targetable (see
         // PageIndicator::hide) until some interaction first calls show()
         // - fine normally (nothing needs it before the first swipe), but
-        // the Home Assistant page is always the very first page, and a
-        // mouse can't drag/swipe off it at all (see ha_page.rs's own doc
-        // comment) - so without this, landing there directly at startup
+        // a mouse can't drag/swipe off the Home Assistant page at all
+        // (see ha_page.rs's own doc comment) - so without this, actually
+        // landing there directly at startup (only when it's the resolved
+        // default above, not just whenever the page happens to exist)
         // would leave no visible way out until the first click (which
         // ha_page.rs's `reveal_indicator` already handles afterward; this
         // is purely about that very first moment, before any click has
         // happened yet). One normal, auto-hiding reveal - not a permanent
         // one, see page_indicator.rs's own doc comment on why that was
         // tried and rejected.
-        if model._ha_page.is_some() {
+        if model._ha_page.is_some() && default_target == model._ha_page {
             model._page_indicator.show();
         }
 

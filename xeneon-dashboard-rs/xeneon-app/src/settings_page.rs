@@ -59,6 +59,8 @@ pub struct PagesHandle {
     rows: Rc<RefCell<Vec<adw::ExpanderRow>>>,
     pages: Rc<RefCell<Vec<Rc<WidgetGrid>>>>,
     page_indicator: PageIndicator,
+    default_row: adw::ComboRow,
+    default_values: Rc<RefCell<Vec<String>>>,
 }
 
 impl PagesHandle {
@@ -67,6 +69,7 @@ impl PagesHandle {
         self.group.add(&row);
         self.rows.borrow_mut().push(row);
         self.pages.borrow_mut().push(grid);
+        refresh_default_row(&self.default_row, &self.default_values, &self.pages.borrow());
     }
 
     /// Drops a page's rename row - `rows` and `pages` are built in
@@ -78,6 +81,13 @@ impl PagesHandle {
         pages.remove(idx);
         let row = self.rows.borrow_mut().remove(idx);
         self.group.remove(&row);
+        // A deleted page named as the saved default is left as-is here
+        // (not cleared back to `None`) - whoever resolves `default_page`
+        // next (main.rs, at the next startup) already treats a
+        // no-longer-existing choice the same as unset, see `Config`'s own
+        // doc comment on that field, so this doesn't need to duplicate
+        // that fallback.
+        refresh_default_row(&self.default_row, &self.default_values, &pages);
     }
 }
 
@@ -620,6 +630,29 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         }
     });
 
+    // "Page par défaut": which carousel page actually opens at launch -
+    // independent of carousel *order* (the Home Assistant page, when
+    // enabled, is always leftmost regardless of this choice - see
+    // ha_page.rs's own append order) since "Home Assistant always
+    // leftmost" and "Page 1 by default" turned out to be two different
+    // needs (see the design discussion in the memory system). Options are
+    // rebuilt (see `refresh_default_row`) rather than fixed at startup,
+    // same rebuild-on-change spirit as `refresh_pages_group` just below -
+    // a page added/removed/renamed, or Home Assistant enabled/disabled,
+    // all change what belongs in this list.
+    let default_row = adw::ComboRow::new();
+    default_row.set_title(&i18n::t("settings.pages_group.default_row.title"));
+    pages_group.add(&default_row);
+    let default_values: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    refresh_default_row(&default_row, &default_values, &pages_shared.borrow());
+    default_row.connect_selected_notify({
+        let default_values = default_values.clone();
+        move |row| {
+            let value = default_values.borrow().get(row.selected() as usize).cloned();
+            config_store::update(|c| c.default_page = value);
+        }
+    });
+
     let page_rows: Rc<RefCell<Vec<adw::ExpanderRow>>> = Rc::new(RefCell::new(Vec::new()));
     refresh_pages_group(&pages_group, &page_rows, &pages_shared.borrow(), &page_indicator);
 
@@ -888,6 +921,8 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let follow_system_row = follow_system_row.clone();
         let dev_group = dev_group.clone();
         let pages_group = pages_group.clone();
+        let default_row = default_row.clone();
+        let default_values = default_values.clone();
         let page_rows = page_rows.clone();
         let pages_shared = pages_shared.clone();
         let page_indicator = page_indicator.clone();
@@ -933,6 +968,10 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             follow_system_row.set_title(&i18n::t("settings.theme_group.follow_system_row.title"));
             follow_system_row.set_subtitle(&i18n::t("settings.theme_group.follow_system_row.subtitle"));
             pages_group.set_title(&i18n::t("settings.pages_group.title"));
+            default_row.set_title(&i18n::t("settings.pages_group.default_row.title"));
+            // Same reasoning as the page list just below: its labels
+            // ("Home Assistant", "Page N"...) are translated strings too.
+            refresh_default_row(&default_row, &default_values, &pages_shared.borrow());
             // Rebuilding is the simplest way to keep a dynamic-length,
             // per-row-translated list in sync - same call Python's
             // _retranslate() makes to refresh_pages() for the same reason.
@@ -968,7 +1007,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         }
     });
 
-    PagesHandle { group: pages_group, rows: page_rows, pages: pages_shared, page_indicator }
+    PagesHandle { group: pages_group, rows: page_rows, pages: pages_shared, page_indicator, default_row, default_values }
 }
 
 /// One settings-page "screen": a fixed 3-column row of blocks, exactly
@@ -1083,6 +1122,50 @@ fn confirm_ha_restart(parent: &gtk::Box) {
         }
     });
     dialog.present(Some(parent));
+}
+
+/// Sentinel `Config.default_page` value meaning "the Home Assistant
+/// page" - never a real page id (those come from `WidgetGrid::page_id`,
+/// a UUID-shaped string this could never collide with). The one other
+/// place this exact string is compared is main.rs's own default-page
+/// resolution at startup - kept as a plain literal in both rather than a
+/// shared constant, since these are the only two places it's ever used.
+const HA_DEFAULT_PAGE_VALUE: &str = "ha";
+
+/// Rebuilds the "Page par défaut" combo's options from the current pages
+/// (+ "Home Assistant" first, if enabled) - same rebuild-on-change spirit
+/// as `refresh_pages_group`, just for this row's model instead of the
+/// page list itself. Selection is preserved by *value* (a page id, or
+/// `HA_DEFAULT_PAGE_VALUE`), not by index, since the same value can land
+/// on a different index across rebuilds (a page added/removed ahead of
+/// it, Home Assistant's own slot appearing/disappearing) - falls back to
+/// the first real page whenever the saved choice is unset or no longer
+/// among the options, mirroring `Config.default_page`'s own doc comment
+/// on why that's the right fallback (not an error) for both cases.
+fn refresh_default_row(row: &adw::ComboRow, values: &Rc<RefCell<Vec<String>>>, pages: &[Rc<WidgetGrid>]) {
+    let ha_enabled = config_store::get().ha_page_enabled;
+    let mut new_values = Vec::with_capacity(pages.len() + 1);
+    let mut labels = Vec::with_capacity(pages.len() + 1);
+    if ha_enabled {
+        new_values.push(HA_DEFAULT_PAGE_VALUE.to_string());
+        labels.push(i18n::t("settings.ha_group.title"));
+    }
+    // Page 1 is always right here, immediately after Home Assistant's own
+    // slot if present - the fallback index below relies on that.
+    for grid in pages {
+        new_values.push(grid.page_id().to_string());
+        labels.push(grid.display_name());
+    }
+
+    let model = gtk::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>());
+    row.set_model(Some(&model));
+
+    let page_1_index = if ha_enabled { 1 } else { 0 };
+    let saved = config_store::get().default_page;
+    let index = saved.and_then(|value| new_values.iter().position(|v| *v == value)).unwrap_or(page_1_index);
+    row.set_selected(index as u32);
+
+    *values.borrow_mut() = new_values;
 }
 
 /// Tears down and rebuilds one `Adw.ExpanderRow` per page - mirrors

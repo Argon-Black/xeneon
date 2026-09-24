@@ -50,6 +50,7 @@
   "settings.dev_group.restart_button": "Riavvia l'app",
   "widgets.dev_page.title": "DEV",
   "settings.pages_group.title": "Pagine",
+  "settings.pages_group.default_row.title": "Pagina predefinita",
   "settings.pages_group.subtitle": "Pagina {n}",
   "settings.pages_group.default_name": "Pagina {n}",
   "settings.pages_group.name_row.title": "Nome della pagina",

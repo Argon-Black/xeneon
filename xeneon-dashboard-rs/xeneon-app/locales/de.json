@@ -50,6 +50,7 @@
   "settings.dev_group.restart_button": "App neu starten",
   "widgets.dev_page.title": "DEV",
   "settings.pages_group.title": "Seiten",
+  "settings.pages_group.default_row.title": "Standardseite",
   "settings.pages_group.subtitle": "Seite {n}",
   "settings.pages_group.default_name": "Seite {n}",
   "settings.pages_group.name_row.title": "Seitenname",

@@ -97,6 +97,20 @@ pub struct Config {
     // URL is already known), same optional-until-configured shape as
     // `indicator_button_color` above.
     pub ha_page_url: Option<String>,
+    // Which carousel page to actually open on at launch, independent of
+    // carousel *order* (the Home Assistant page, when enabled, is always
+    // the leftmost/first page regardless - see xeneon-app's ha_page.rs).
+    // `None` means "Page 1" (whichever real widget page is currently
+    // first) - the implicit default so a fresh install needs no explicit
+    // choice. `Some("ha")` (a plain sentinel string, not a real page id -
+    // see xeneon-app's settings_page.rs for the one other place that
+    // string is compared against) means the Home Assistant page; any
+    // other `Some(id)` is a real widget page's own id. A value naming a
+    // page that no longer exists (deleted, or Home Assistant since
+    // disabled) is read the same as `None` by whoever resolves it -
+    // deliberately not validated/corrected here, since `Config` itself
+    // has no way to know which pages currently exist.
+    pub default_page: Option<String>,
 }
 
 impl Default for Config {
@@ -116,6 +130,7 @@ impl Default for Config {
             app_background_image_path: None,
             ha_page_enabled: false,
             ha_page_url: None,
+            default_page: None,
         }
     }
 }

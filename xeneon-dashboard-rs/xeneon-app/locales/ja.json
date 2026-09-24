@@ -50,6 +50,7 @@
   "settings.dev_group.restart_button": "アプリを再起動",
   "widgets.dev_page.title": "DEV",
   "settings.pages_group.title": "ページ",
+  "settings.pages_group.default_row.title": "デフォルトのページ",
   "settings.pages_group.subtitle": "ページ {n}",
   "settings.pages_group.default_name": "ページ {n}",
   "settings.pages_group.name_row.title": "ページ名",
