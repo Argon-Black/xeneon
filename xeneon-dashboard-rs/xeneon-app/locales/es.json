@@ -66,7 +66,10 @@
   "settings.goto_row.title": "Ir a ajustes",
 
   "settings.ha_group.title": "Home Assistant",
-  "settings.ha_group.restart_toast": "La aplicación se reiniciará para aplicar este cambio…",
+  "settings.ha_group.restart_dialog.heading": "¿Reiniciar la aplicación?",
+  "settings.ha_group.restart_dialog.body": "Este cambio necesita que la aplicación se reinicie para aplicarse.",
+  "settings.ha_group.restart_dialog.cancel": "Cancelar",
+  "settings.ha_group.restart_dialog.restart": "Reiniciar",
   "settings.ha_group.url_row.title": "URL del panel",
   "settings.ha_group.url_row.invalid": "Debe empezar por http:// o https://",
   "settings.ha_group.url_row.reachable": "Dirección accesible",

@@ -66,7 +66,10 @@
   "settings.goto_row.title": "Vai alle impostazioni",
 
   "settings.ha_group.title": "Home Assistant",
-  "settings.ha_group.restart_toast": "L'app si riavvierà per applicare questa modifica…",
+  "settings.ha_group.restart_dialog.heading": "Riavviare l'app?",
+  "settings.ha_group.restart_dialog.body": "Questa modifica richiede il riavvio dell'app per essere applicata.",
+  "settings.ha_group.restart_dialog.cancel": "Annulla",
+  "settings.ha_group.restart_dialog.restart": "Riavvia",
   "settings.ha_group.url_row.title": "URL della dashboard",
   "settings.ha_group.url_row.invalid": "Deve iniziare con http:// o https://",
   "settings.ha_group.url_row.reachable": "Indirizzo raggiungibile",

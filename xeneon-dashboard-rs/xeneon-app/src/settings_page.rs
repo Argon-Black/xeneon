@@ -92,12 +92,7 @@ impl PagesHandle {
 /// `pages` is every *renameable* widget page (not the dev-mode test page,
 /// not the settings page itself) - mirrors `window.widget_pages()` feeding
 /// `SettingsPage.refresh_pages()`.
-pub fn populate(
-    root: &gtk::Box,
-    pages: &[Rc<WidgetGrid>],
-    page_indicator: PageIndicator,
-    toast_overlay: &adw::ToastOverlay,
-) -> PagesHandle {
+pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageIndicator) -> PagesHandle {
     root.set_orientation(gtk::Orientation::Vertical);
     root.set_hexpand(true);
     root.set_vexpand(true);
@@ -550,7 +545,7 @@ pub fn populate(
     }
 
     ha_row.connect_enable_expansion_notify({
-        let toast_overlay = toast_overlay.clone();
+        let root = root.clone();
         move |row| {
             let enabled = row.enables_expansion();
             config_store::update(|c| c.ha_page_enabled = enabled);
@@ -558,7 +553,7 @@ pub fn populate(
                 // Tearing the carousel page back down needs the same full
                 // relaunch building it did - see ha_page.rs's own doc
                 // comment on why this isn't live carousel surgery.
-                relaunch_for_ha_change(&toast_overlay);
+                confirm_ha_restart(&root);
                 return;
             }
             // Turning it on is only immediately actionable if a URL is
@@ -570,12 +565,12 @@ pub fn populate(
             // relaunches instead once a URL is actually entered.
             let has_valid_url = config_store::get().ha_page_url.as_deref().is_some_and(is_http_url);
             if has_valid_url {
-                relaunch_for_ha_change(&toast_overlay);
+                confirm_ha_restart(&root);
             }
         }
     });
     ha_url_row.connect_apply({
-        let toast_overlay = toast_overlay.clone();
+        let root = root.clone();
         move |row| {
             let text = row.text().to_string();
             let trimmed = text.trim();
@@ -618,7 +613,7 @@ pub fn populate(
             // `ha_row.connect_enable_expansion_notify` above for why that
             // switch alone doesn't relaunch in this case).
             if config_store::get().ha_page_enabled && !ha_page::is_live() {
-                relaunch_for_ha_change(&toast_overlay);
+                confirm_ha_restart(&root);
             } else {
                 ha_page::set_url(trimmed);
             }
@@ -1058,26 +1053,36 @@ pub(crate) fn relaunch(dev_mode: bool) {
     relm4::main_application().quit();
 }
 
-/// `relaunch()` itself is effectively instant (spawn the new process,
-/// quit this one, in the same call) - too fast for anything shown in the
-/// same frame to actually be read before the window is gone. Used
-/// wherever a Home Assistant config change needs that same relaunch (see
-/// ha_page.rs's own doc comment on why enabling/disabling the page is a
-/// relaunch, not live carousel surgery) but shouldn't just vanish the
-/// window with no explanation: shows a toast, then relaunches after a
-/// couple of seconds - long enough to actually read it, not so long it
-/// feels unresponsive. `dev_mode_enabled()` carries the *current*
-/// dev-mode state through unchanged - this relaunch is about the HA page,
-/// not about dev mode.
-fn relaunch_for_ha_change(toast_overlay: &adw::ToastOverlay) {
-    let toast = adw::Toast::new(&i18n::t("settings.ha_group.restart_toast"));
-    toast.set_timeout(3);
-    toast_overlay.add_toast(toast);
+/// Used wherever a Home Assistant config change needs the same full
+/// relaunch enabling/disabling the page always does (see ha_page.rs's own
+/// doc comment on why that isn't live carousel surgery) - asks first
+/// rather than just vanishing the window: `relaunch()` itself is
+/// effectively instant (spawn the new process, quit this one, in the same
+/// call), so without a confirmation step first there'd be nothing to see
+/// or react to at all, not even a moment's warning. Only "Redémarrer"
+/// actually relaunches; "Annuler" (also the dialog's close response, so
+/// Escape/clicking outside behaves the same as clicking it) just closes
+/// the dialog and leaves the setting saved but not yet applied - the same
+/// prompt reappears the next time something tries to apply it.
+/// `dev_mode_enabled()` carries the *current* dev-mode state through
+/// unchanged - this relaunch is about the HA page, not about dev mode.
+fn confirm_ha_restart(parent: &gtk::Box) {
+    let dialog = adw::AlertDialog::new(
+        Some(&i18n::t("settings.ha_group.restart_dialog.heading")),
+        Some(&i18n::t("settings.ha_group.restart_dialog.body")),
+    );
+    dialog.add_response("cancel", &i18n::t("settings.ha_group.restart_dialog.cancel"));
+    dialog.add_response("restart", &i18n::t("settings.ha_group.restart_dialog.restart"));
+    dialog.set_response_appearance("restart", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("restart"));
+    dialog.set_close_response("cancel");
     let dev_mode = crate::dev_mode_enabled();
-    gtk::glib::timeout_add_seconds_local(2, move || {
-        relaunch(dev_mode);
-        gtk::glib::ControlFlow::Break
+    dialog.connect_response(None, move |_dialog, response| {
+        if response == "restart" {
+            relaunch(dev_mode);
+        }
     });
+    dialog.present(Some(parent));
 }
 
 /// Tears down and rebuilds one `Adw.ExpanderRow` per page - mirrors

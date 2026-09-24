@@ -424,19 +424,14 @@ impl SimpleComponent for AppModel {
             page_indicator.register_page(dev_grid.widget(), dev_grid.clone());
         }
 
-        // Built here, before settings_page::populate, so its HA row can
-        // show a "restarting..." toast on it directly (see that row's own
-        // comment on why the restart itself needs a moment of warning
-        // first) rather than settings_page.rs needing its own separate
-        // overlay just for that one message.
-        let toast_overlay = adw::ToastOverlay::new();
-
-        let pages_handle = settings_page::populate(&settings_root, &real_grids, page_indicator.clone(), &toast_overlay);
+        let pages_handle = settings_page::populate(&settings_root, &real_grids, page_indicator.clone());
 
         let window_title = adw::WindowTitle::new(&i18n_runtime::t("window.title"), "");
         let header_bar = adw::HeaderBar::new();
         header_bar.set_valign(gtk::Align::Start);
         header_bar.set_title_widget(Some(&window_title));
+
+        let toast_overlay = adw::ToastOverlay::new();
 
         let widget_picker = widget_picker::WidgetPicker::new({
             let sender = sender.clone();

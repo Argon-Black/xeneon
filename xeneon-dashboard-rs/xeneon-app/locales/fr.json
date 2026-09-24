@@ -66,7 +66,10 @@
   "settings.goto_row.title": "Aller aux réglages",
 
   "settings.ha_group.title": "Home Assistant",
-  "settings.ha_group.restart_toast": "L'application va redémarrer pour appliquer ce changement…",
+  "settings.ha_group.restart_dialog.heading": "Redémarrer l'application ?",
+  "settings.ha_group.restart_dialog.body": "Ce changement nécessite de redémarrer l'application pour être pris en compte.",
+  "settings.ha_group.restart_dialog.cancel": "Annuler",
+  "settings.ha_group.restart_dialog.restart": "Redémarrer",
   "settings.ha_group.url_row.title": "URL du tableau de bord",
   "settings.ha_group.url_row.invalid": "Doit commencer par http:// ou https://",
   "settings.ha_group.url_row.reachable": "Adresse joignable",
