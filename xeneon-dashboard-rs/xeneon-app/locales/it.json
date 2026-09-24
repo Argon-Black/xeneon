@@ -66,8 +66,6 @@
   "settings.goto_row.title": "Vai alle impostazioni",
 
   "settings.ha_group.title": "Home Assistant",
-  "settings.ha_group.enable_row.title": "Attiva la pagina Home Assistant",
-  "settings.ha_group.enable_row.subtitle": "Aggiunge una pagina dedicata, separata, prima delle altre pagine",
   "settings.ha_group.url_row.title": "URL della dashboard",
   "settings.ha_group.url_row.invalid": "Deve iniziare con http:// o https://",
   "settings.ha_group.url_row.reachable": "Indirizzo raggiungibile",

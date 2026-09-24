@@ -66,8 +66,6 @@
   "settings.goto_row.title": "前往设置",
 
   "settings.ha_group.title": "Home Assistant",
-  "settings.ha_group.enable_row.title": "启用 Home Assistant 页面",
-  "settings.ha_group.enable_row.subtitle": "在其他页面之前添加一个独立的专用页面",
   "settings.ha_group.url_row.title": "仪表盘 URL",
   "settings.ha_group.url_row.invalid": "必须以 http:// 或 https:// 开头",
   "settings.ha_group.url_row.reachable": "地址可访问",

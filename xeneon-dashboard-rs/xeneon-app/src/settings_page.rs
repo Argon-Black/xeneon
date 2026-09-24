@@ -119,9 +119,11 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     // that holds whichever groups fit; a group too tall to fit anywhere on
     // screen 1 moves whole onto the matching block on screen 2 instead of
     // truncating or scrolling - laid out by hand below, block by block.
-    // Screen 1: block1 Interface+Language, block2 Theme, block3 Pages.
-    // Screen 2: block1 default widget appearance, block2 Home Assistant,
-    // block3 keyboard shortcuts + dev tools.
+    // Screen 1: block1 Interface+Language, block2 Theme, block3 Pages
+    // (which also carries the Home Assistant row - see its own comment
+    // below on why it lives there rather than in a group of its own).
+    // Screen 2: block1 default widget appearance, block2 empty (nothing
+    // needs it yet), block3 keyboard shortcuts + dev tools.
     let screen1 = new_screen();
     let (screen1_block1, screen1_block2, screen1_block3) = (new_column(), new_column(), new_column());
     screen1.append(&screen1_block1);
@@ -425,6 +427,173 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     let pages_group = adw::PreferencesGroup::new();
     pages_group.set_title(&i18n::t("settings.pages_group.title"));
     screen1_block3.append(&pages_group);
+
+    // The Home Assistant page's row - added here, first, rather than in a
+    // group of its own (an earlier version had one - see git history):
+    // it's conceptually just another entry in this same "which pages
+    // exist" list, and its own carousel page is likewise always first
+    // (see ha_page.rs's append order) - one list, one mental model,
+    // instead of a second one to keep in sync with it. Same `ExpanderRow`
+    // shape as `build_page_row` below, minus the rename row (this isn't a
+    // renameable widget page - `set_icon_name`-equivalent via
+    // `add_prefix` is the whole identity it needs, no name to edit) and
+    // using `show-enable-switch` (a built-in `AdwExpanderRow` feature)
+    // for the on/off switch instead of a separate suffix `gtk::Switch` -
+    // it already ties directly into whether the row can even expand,
+    // which is exactly "no URL to look at until this is on" for free.
+    let ha_row = adw::ExpanderRow::new();
+    ha_row.set_title(&i18n::t("settings.ha_group.title"));
+    let ha_row_icon = gtk::Image::from_icon_name("user-home-symbolic");
+    ha_row.add_prefix(&ha_row_icon);
+    ha_row.set_show_enable_switch(true);
+    ha_row.set_enable_expansion(config.ha_page_enabled);
+    ha_row.set_expanded(config.ha_page_enabled);
+
+    let ha_url_row = adw::EntryRow::new();
+    ha_url_row.set_title(&i18n::t("settings.ha_group.url_row.title"));
+    ha_url_row.set_text(config.ha_page_url.as_deref().unwrap_or(""));
+    ha_url_row.set_show_apply_button(true);
+    // Flags a value already on disk that wouldn't pass `is_http_url` today -
+    // a hand-edited or pre-this-change config.json - the same way a fresh
+    // invalid entry gets flagged below, rather than silently showing as if
+    // nothing were wrong.
+    if config.ha_page_url.as_deref().is_some_and(|url| !is_http_url(url)) {
+        ha_url_row.add_css_class("error");
+        ha_url_row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
+    }
+
+    // Reachability badge: purely informational (never blocks saving the
+    // URL, see the design discussion in the memory system - a kiosk can
+    // legitimately be set up before Home Assistant itself is reachable on
+    // the network), so it's a suffix on the row rather than anything tied
+    // to `connect_apply`'s accept/reject flow above. `ha_ping_spinner`
+    // spins while a check is in flight; `ha_ping_status_icon` shows the
+    // outcome once it lands - never both visible at once.
+    let ha_ping_spinner = gtk::Spinner::new();
+    ha_ping_spinner.set_valign(gtk::Align::Center);
+    ha_ping_spinner.set_visible(false);
+    ha_url_row.add_suffix(&ha_ping_spinner);
+    let ha_ping_status_icon = gtk::Image::new();
+    ha_ping_status_icon.set_valign(gtk::Align::Center);
+    ha_ping_status_icon.set_visible(false);
+    ha_url_row.add_suffix(&ha_ping_status_icon);
+
+    ha_row.add_row(&ha_url_row);
+    pages_group.add(&ha_row);
+
+    // Bumped on every new ping and compared after the blocking call
+    // returns - a still-in-flight ping from a superseded URL becomes a
+    // no-op when it lands, same technique (and same reason) as
+    // `weather.rs`'s own `fetch_generation`/`search_generation`.
+    let ha_ping_generation = Rc::new(Cell::new(0u64));
+
+    let hide_ha_status = {
+        let ha_ping_spinner = ha_ping_spinner.clone();
+        let ha_ping_status_icon = ha_ping_status_icon.clone();
+        move || {
+            ha_ping_spinner.set_visible(false);
+            ha_ping_spinner.set_spinning(false);
+            ha_ping_status_icon.set_visible(false);
+        }
+    };
+
+    let run_ha_ping = {
+        let ha_ping_spinner = ha_ping_spinner.clone();
+        let ha_ping_status_icon = ha_ping_status_icon.clone();
+        let ha_ping_generation = ha_ping_generation.clone();
+        move |url: String| {
+            ha_ping_status_icon.set_visible(false);
+            ha_ping_spinner.set_visible(true);
+            ha_ping_spinner.set_spinning(true);
+            let generation = ha_ping_generation.get() + 1;
+            ha_ping_generation.set(generation);
+            debug!("pinging Home Assistant URL {url:?}");
+
+            let ha_ping_spinner = ha_ping_spinner.clone();
+            let ha_ping_status_icon = ha_ping_status_icon.clone();
+            let ha_ping_generation = ha_ping_generation.clone();
+            glib::spawn_future_local(async move {
+                let url_for_probe = url.clone();
+                let reachable = gio::spawn_blocking(move || ping_ha_url(&url_for_probe)).await.unwrap_or(false);
+                if generation != ha_ping_generation.get() {
+                    debug!("ping for {url:?} superseded, discarding");
+                    return;
+                }
+                ha_ping_spinner.set_visible(false);
+                ha_ping_spinner.set_spinning(false);
+                ha_ping_status_icon.set_visible(true);
+                if reachable {
+                    ha_ping_status_icon.set_icon_name(Some("emblem-ok-symbolic"));
+                    ha_ping_status_icon.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.reachable")));
+                } else {
+                    ha_ping_status_icon.set_icon_name(Some("dialog-warning-symbolic"));
+                    ha_ping_status_icon.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.unreachable")));
+                }
+            });
+        }
+    };
+
+    // Checked once up front too, not just on the next `connect_apply` -
+    // otherwise reopening settings on an already-configured page would
+    // show no badge at all until the user re-applies the same URL.
+    if config.ha_page_enabled {
+        if let Some(url) = config.ha_page_url.as_deref() {
+            if is_http_url(url) {
+                run_ha_ping(url.to_string());
+            }
+        }
+    }
+
+    ha_row.connect_enable_expansion_notify(|row| {
+        config_store::update(|c| c.ha_page_enabled = row.enables_expansion());
+        // Adding/removing the whole carousel page (and its page-indicator
+        // icon) is a full relaunch here, not live carousel surgery - same
+        // trade, same reason as the dev-mode toggle further below (see
+        // ha_page.rs's own doc comment). `dev_mode_enabled()` carries the
+        // *current* dev-mode state through unchanged - this relaunch is
+        // about the HA page, not about dev mode.
+        relaunch(crate::dev_mode_enabled());
+    });
+    ha_url_row.connect_apply(move |row| {
+        let text = row.text().to_string();
+        let trimmed = text.trim();
+        // Empty text means "not configured yet", same as a freshly
+        // installed app - stored as `None`, not an empty string, so
+        // `Option::is_some()` stays a reliable "has a URL" check for
+        // whatever reads this later (the page's own WebView load logic).
+        if trimmed.is_empty() {
+            row.remove_css_class("error");
+            row.set_tooltip_text(None);
+            hide_ha_status();
+            config_store::update(|c| c.ha_page_url = None);
+            return;
+        }
+        // Restricted to http(s) so a typo or a hand-edited config.json can
+        // never hand WebKit's `load_uri` a `file://` (local filesystem
+        // read) or `javascript:`/`data:` URI (arbitrary script in the
+        // page's context) - this is the only gate that check ever gets on
+        // the settings side, so it has to reject here rather than merely
+        // warn (ha_page.rs's own `build` re-checks independently too, see
+        // its own doc comment, since config.json is a plain user-editable
+        // file). The URL is saved either way once valid, live-applied via
+        // `ha_page::set_url` below if the page already exists.
+        if !is_http_url(trimmed) {
+            row.add_css_class("error");
+            row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
+            hide_ha_status();
+            return;
+        }
+        row.remove_css_class("error");
+        row.set_tooltip_text(None);
+        config_store::update(|c| c.ha_page_url = Some(trimmed.to_string()));
+        run_ha_ping(trimmed.to_string());
+        // Takes effect immediately if the page already exists (a no-op
+        // otherwise: disabled, or still on the "configure me" placeholder
+        // - see ha_page.rs's own doc comment) - only the enable switch
+        // itself needs the full relaunch.
+        ha_page::set_url(trimmed);
+    });
+
     let page_rows: Rc<RefCell<Vec<adw::ExpanderRow>>> = Rc::new(RefCell::new(Vec::new()));
     refresh_pages_group(&pages_group, &page_rows, &pages_shared.borrow(), &page_indicator);
 
@@ -560,173 +729,6 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     });
 
     screen2_block1.append(&appearance_group);
-
-    // --- Screen 2, block 2: Home Assistant ---
-    // Just the on/off switch and the dashboard URL for now (step 1 of the
-    // feature) - the dedicated full-screen carousel page the switch will
-    // actually control, positioned before the first widget page and set
-    // apart visually in the page indicator (per the design discussion in
-    // the memory system), is a later step built on top of this once the
-    // setting itself exists to read.
-    let ha_group = adw::PreferencesGroup::new();
-    ha_group.set_title(&i18n::t("settings.ha_group.title"));
-
-    let ha_enable_row = adw::ActionRow::new();
-    ha_enable_row.set_title(&i18n::t("settings.ha_group.enable_row.title"));
-    ha_enable_row.set_subtitle(&i18n::t("settings.ha_group.enable_row.subtitle"));
-    let ha_enable_switch = gtk::Switch::new();
-    ha_enable_switch.set_active(config.ha_page_enabled);
-    ha_enable_switch.set_valign(gtk::Align::Center);
-    ha_enable_row.add_suffix(&ha_enable_switch);
-    ha_group.add(&ha_enable_row);
-
-    let ha_url_row = adw::EntryRow::new();
-    ha_url_row.set_title(&i18n::t("settings.ha_group.url_row.title"));
-    ha_url_row.set_text(config.ha_page_url.as_deref().unwrap_or(""));
-    ha_url_row.set_show_apply_button(true);
-    // Editable only once the page is actually enabled - avoids implying a
-    // URL typed here does anything while the page it feeds doesn't exist.
-    ha_url_row.set_sensitive(config.ha_page_enabled);
-    // Flags a value already on disk that wouldn't pass `is_http_url` today -
-    // a hand-edited or pre-this-change config.json - the same way a fresh
-    // invalid entry gets flagged below, rather than silently showing as if
-    // nothing were wrong.
-    if config.ha_page_url.as_deref().is_some_and(|url| !is_http_url(url)) {
-        ha_url_row.add_css_class("error");
-        ha_url_row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
-    }
-
-    // Reachability badge: purely informational (never blocks saving the
-    // URL, see the design discussion in the memory system - a kiosk can
-    // legitimately be set up before Home Assistant itself is reachable on
-    // the network), so it's a suffix on the row rather than anything tied
-    // to `connect_apply`'s accept/reject flow above. `ha_ping_spinner`
-    // spins while a check is in flight; `ha_ping_status_icon` shows the
-    // outcome once it lands - never both visible at once.
-    let ha_ping_spinner = gtk::Spinner::new();
-    ha_ping_spinner.set_valign(gtk::Align::Center);
-    ha_ping_spinner.set_visible(false);
-    ha_url_row.add_suffix(&ha_ping_spinner);
-    let ha_ping_status_icon = gtk::Image::new();
-    ha_ping_status_icon.set_valign(gtk::Align::Center);
-    ha_ping_status_icon.set_visible(false);
-    ha_url_row.add_suffix(&ha_ping_status_icon);
-
-    ha_group.add(&ha_url_row);
-
-    // Bumped on every new ping and compared after the blocking call
-    // returns - a still-in-flight ping from a superseded URL becomes a
-    // no-op when it lands, same technique (and same reason) as
-    // `weather.rs`'s own `fetch_generation`/`search_generation`.
-    let ha_ping_generation = Rc::new(Cell::new(0u64));
-
-    let hide_ha_status = {
-        let ha_ping_spinner = ha_ping_spinner.clone();
-        let ha_ping_status_icon = ha_ping_status_icon.clone();
-        move || {
-            ha_ping_spinner.set_visible(false);
-            ha_ping_spinner.set_spinning(false);
-            ha_ping_status_icon.set_visible(false);
-        }
-    };
-
-    let run_ha_ping = {
-        let ha_ping_spinner = ha_ping_spinner.clone();
-        let ha_ping_status_icon = ha_ping_status_icon.clone();
-        let ha_ping_generation = ha_ping_generation.clone();
-        move |url: String| {
-            ha_ping_status_icon.set_visible(false);
-            ha_ping_spinner.set_visible(true);
-            ha_ping_spinner.set_spinning(true);
-            let generation = ha_ping_generation.get() + 1;
-            ha_ping_generation.set(generation);
-            debug!("pinging Home Assistant URL {url:?}");
-
-            let ha_ping_spinner = ha_ping_spinner.clone();
-            let ha_ping_status_icon = ha_ping_status_icon.clone();
-            let ha_ping_generation = ha_ping_generation.clone();
-            glib::spawn_future_local(async move {
-                let url_for_probe = url.clone();
-                let reachable = gio::spawn_blocking(move || ping_ha_url(&url_for_probe)).await.unwrap_or(false);
-                if generation != ha_ping_generation.get() {
-                    debug!("ping for {url:?} superseded, discarding");
-                    return;
-                }
-                ha_ping_spinner.set_visible(false);
-                ha_ping_spinner.set_spinning(false);
-                ha_ping_status_icon.set_visible(true);
-                if reachable {
-                    ha_ping_status_icon.set_icon_name(Some("emblem-ok-symbolic"));
-                    ha_ping_status_icon.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.reachable")));
-                } else {
-                    ha_ping_status_icon.set_icon_name(Some("dialog-warning-symbolic"));
-                    ha_ping_status_icon.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.unreachable")));
-                }
-            });
-        }
-    };
-
-    // Checked once up front too, not just on the next `connect_apply` -
-    // otherwise reopening settings on an already-configured page would
-    // show no badge at all until the user re-applies the same URL.
-    if config.ha_page_enabled {
-        if let Some(url) = config.ha_page_url.as_deref() {
-            if is_http_url(url) {
-                run_ha_ping(url.to_string());
-            }
-        }
-    }
-
-    ha_enable_switch.connect_active_notify(|switch| {
-        config_store::update(|c| c.ha_page_enabled = switch.is_active());
-        // Adding/removing the whole carousel page (and its page-indicator
-        // icon) is a full relaunch here, not live carousel surgery - same
-        // trade, same reason as the dev-mode toggle just below (see
-        // ha_page.rs's own doc comment). `dev_mode_enabled()` carries the
-        // *current* dev-mode state through unchanged - this relaunch is
-        // about the HA page, not about dev mode.
-        relaunch(crate::dev_mode_enabled());
-    });
-    ha_url_row.connect_apply(move |row| {
-        let text = row.text().to_string();
-        let trimmed = text.trim();
-        // Empty text means "not configured yet", same as a freshly
-        // installed app - stored as `None`, not an empty string, so
-        // `Option::is_some()` stays a reliable "has a URL" check for
-        // whatever reads this later (the page's own WebView load logic).
-        if trimmed.is_empty() {
-            row.remove_css_class("error");
-            row.set_tooltip_text(None);
-            hide_ha_status();
-            config_store::update(|c| c.ha_page_url = None);
-            return;
-        }
-        // Restricted to http(s) so a typo or a hand-edited config.json can
-        // never hand WebKit's `load_uri` a `file://` (local filesystem
-        // read) or `javascript:`/`data:` URI (arbitrary script in the
-        // page's context) when the dedicated HA page is built in the next
-        // step - this is the only gate that check ever gets, so it has to
-        // reject here rather than merely warn. The URL still isn't reached
-        // by anything else yet (this step is settings-only), but the
-        // config value is saved now and the page will trust it later.
-        if !is_http_url(trimmed) {
-            row.add_css_class("error");
-            row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
-            hide_ha_status();
-            return;
-        }
-        row.remove_css_class("error");
-        row.set_tooltip_text(None);
-        config_store::update(|c| c.ha_page_url = Some(trimmed.to_string()));
-        run_ha_ping(trimmed.to_string());
-        // Takes effect immediately if the page already exists (a no-op
-        // otherwise: disabled, or still on the "configure me" placeholder
-        // - see ha_page.rs's own doc comment) - only the enable switch
-        // itself needs the full relaunch.
-        ha_page::set_url(trimmed);
-    });
-
-    screen2_block2.append(&ha_group);
 
     // --- Screen 2, block 3: Keyboard shortcuts + dev tools ---
     let shortcuts_group = adw::PreferencesGroup::new();
@@ -874,8 +876,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let appearance_border_color_row = appearance_border_color_row.clone();
         let appearance_apply_row = appearance_apply_row.clone();
         let appearance_apply_button = appearance_apply_button.clone();
-        let ha_group = ha_group.clone();
-        let ha_enable_row = ha_enable_row.clone();
+        let ha_row = ha_row.clone();
         let ha_url_row = ha_url_row.clone();
         move || {
             title.set_label(&i18n::t("settings.title"));
@@ -924,9 +925,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             appearance_apply_row.set_title(&i18n::t("settings.appearance_apply_row.title"));
             appearance_apply_row.set_subtitle(&i18n::t("settings.appearance_apply_row.subtitle"));
             appearance_apply_button.set_label(&i18n::t("settings.appearance_apply_row.button"));
-            ha_group.set_title(&i18n::t("settings.ha_group.title"));
-            ha_enable_row.set_title(&i18n::t("settings.ha_group.enable_row.title"));
-            ha_enable_row.set_subtitle(&i18n::t("settings.ha_group.enable_row.subtitle"));
+            ha_row.set_title(&i18n::t("settings.ha_group.title"));
             ha_url_row.set_title(&i18n::t("settings.ha_group.url_row.title"));
             if let Some((group, row)) = &dev_group {
                 group.set_title(&i18n::t("settings.dev_group.title"));

@@ -66,8 +66,6 @@
   "settings.goto_row.title": "Aller aux réglages",
 
   "settings.ha_group.title": "Home Assistant",
-  "settings.ha_group.enable_row.title": "Activer la page Home Assistant",
-  "settings.ha_group.enable_row.subtitle": "Ajoute une page dédiée, en retrait avant les autres pages",
   "settings.ha_group.url_row.title": "URL du tableau de bord",
   "settings.ha_group.url_row.invalid": "Doit commencer par http:// ou https://",
   "settings.ha_group.url_row.reachable": "Adresse joignable",
