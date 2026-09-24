@@ -7,6 +7,7 @@
 //! memory for the full mapping.
 
 pub mod appearance;
+pub mod assets;
 pub mod config;
 pub mod grid;
 pub mod i18n;

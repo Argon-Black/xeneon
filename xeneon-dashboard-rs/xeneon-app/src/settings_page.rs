@@ -29,7 +29,7 @@
 use adw::prelude::*;
 use gtk::gio;
 use gtk::glib;
-use log::debug;
+use log::{debug, warn};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -245,8 +245,18 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             let sync_app_background_buttons = sync_app_background_buttons.clone();
             dialog.open(root.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
                 let Ok(file) = result else { return };
-                let Some(path) = file.path() else { return };
-                let path = path.display().to_string();
+                let Some(source) = file.path() else { return };
+                // Copied into the config directory rather than kept
+                // pointing at wherever the user picked it from (their
+                // Pictures folder, a USB stick, ...) - see
+                // `xeneon_core::assets::store_asset` for why.
+                let path = match xeneon_core::assets::store_asset(&xeneon_core::config::background_dir(), &source) {
+                    Ok(path) => path.display().to_string(),
+                    Err(err) => {
+                        warn!("failed to store background image: {err}");
+                        return;
+                    }
+                };
                 config_store::update(|c| c.app_background_image_path = Some(path.clone()));
                 for page in pages_shared.borrow().iter() {
                     page.set_background_image(Some(&path));

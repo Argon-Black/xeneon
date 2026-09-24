@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8a8d93"/>
+      <stop offset="50%" stop-color="#4a4d52"/>
+      <stop offset="100%" stop-color="#1a1c1f"/>
+    </linearGradient>
+
+    <!-- Wave Gradients -->
+    <linearGradient id="wave1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.45"/>
+      <stop offset="70%" stop-color="#a0a5ac" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="wave2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.35"/>
+      <stop offset="50%" stop-color="#80858e" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.2"/>
+    </linearGradient>
+
+    <linearGradient id="wave3" x1="30%" y1="0%" x2="70%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#2a2c30" stop-opacity="0.05"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fond -->
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+
+  <!-- Courbes style Aqua Silver -->
+  <path d="M -100,1180 C 300,800 500,300 800,-100 L 1100,-100 C 700,400 400,900 -100,1280 Z" fill="url(#wave1)"/>
+  <path d="M 200,1180 C 600,600 1000,200 1980,-50 L 1980,150 C 1100,350 700,750 300,1280 Z" fill="url(#wave2)"/>
+  <path d="M -50,600 C 400,400 900,100 1600,-100 L 1800,-100 C 1000,200 400,600 -50,900 Z" fill="url(#wave3)"/>
+  <path d="M 600,1180 C 1100,700 1500,300 2020,100 L 2020,250 C 1550,450 1150,850 700,1280 Z" fill="url(#wave1)"/>
+</svg>

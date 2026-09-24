@@ -36,7 +36,21 @@ pub fn pages_dir() -> PathBuf {
     config_dir().join("pages")
 }
 
-fn config_file() -> PathBuf {
+/// Where the app-wide background image (`Config::app_background_image_path`)
+/// is copied to via `assets::store_asset` - separate from `pages_dir()`
+/// because this image applies across every page rather than belonging to
+/// one. A future per-page background override would instead store into
+/// `pages_dir()` itself, alongside that page's own `<id>.json`, since it
+/// belongs to that one page.
+pub fn background_dir() -> PathBuf {
+    config_dir().join("background")
+}
+
+/// Public so callers can check `.exists()` before `Config::load()` runs -
+/// `load()` itself can't tell "the file was missing" apart from "the file
+/// existed and happened to match `Config::default()`", which matters to
+/// xeneon-app's `config_store::init()` (see its own doc comment on why).
+pub fn config_file() -> PathBuf {
     config_dir().join("config.json")
 }
 
