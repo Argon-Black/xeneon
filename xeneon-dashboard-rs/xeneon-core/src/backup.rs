@@ -40,22 +40,33 @@ pub fn extract_archive(archive_path: &Path, dest_dir: &Path) -> io::Result<()> {
 }
 
 /// Whether `archive_path` looks like something `create_archive` produced -
-/// peeks at the archive's own entry list for a top-level `config.json`
-/// without extracting anything. A cheap sanity check against importing an
-/// unrelated file by mistake, not a full validation of the archive's
-/// contents.
+/// finds a top-level `config.json` entry and checks that its bytes parse
+/// as a JSON *object* (not just that the entry exists), without extracting
+/// anything. Doesn't check that object's fields match `Config`'s own shape
+/// - a missing/extra/wrong-typed field is already handled leniently by
+/// `Config::load` itself (`#[serde(default)]`, see config.rs), and this is
+/// meant to catch an unrelated or corrupted file before anything about the
+/// live configuration is touched, not to fully validate the archive.
 pub fn looks_like_config_archive(archive_path: &Path) -> bool {
     let Ok(file) = File::open(archive_path) else { return false };
     let mut archive = tar::Archive::new(GzDecoder::new(file));
     let Ok(entries) = archive.entries() else { return false };
-    entries.flatten().any(|entry| {
-        let Ok(path) = entry.path() else { return false };
-        // `append_dir_all(".", ...)` prefixes every entry with "./" -
-        // strip that before comparing, so this doesn't depend on exactly
-        // how the archive's paths happen to be spelled.
-        let normalized: PathBuf = path.components().filter(|c| !matches!(c, std::path::Component::CurDir)).collect();
-        normalized == Path::new("config.json")
-    })
+    for entry in entries.flatten() {
+        // `append_dir_all(".", ...)` prefixes every entry with "./" - strip
+        // that before comparing, so this doesn't depend on exactly how the
+        // archive's paths happen to be spelled.
+        let is_config_json = entry
+            .path()
+            .map(|path| {
+                let normalized: PathBuf = path.components().filter(|c| !matches!(c, std::path::Component::CurDir)).collect();
+                normalized == Path::new("config.json")
+            })
+            .unwrap_or(false);
+        if is_config_json {
+            return serde_json::from_reader::<_, serde_json::Value>(entry).is_ok_and(|v| v.is_object());
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -99,6 +110,29 @@ mod tests {
         let archive_without = tmp.join("without.tar.gz");
         create_archive(&without_config, &archive_without).unwrap();
         assert!(!looks_like_config_archive(&archive_without));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn looks_like_config_archive_rejects_a_config_json_that_isnt_a_json_object() {
+        let tmp = std::env::temp_dir().join(format!("xeneon-test-backup-corrupt-{}", uuid::Uuid::new_v4()));
+
+        let corrupt = tmp.join("corrupt");
+        fs::create_dir_all(&corrupt).unwrap();
+        fs::write(corrupt.join("config.json"), b"not json at all").unwrap();
+        let archive_corrupt = tmp.join("corrupt.tar.gz");
+        create_archive(&corrupt, &archive_corrupt).unwrap();
+        assert!(!looks_like_config_archive(&archive_corrupt));
+
+        // Valid JSON, but not an object - `Config` itself only ever
+        // deserializes from one, so this should be rejected too.
+        let not_an_object = tmp.join("not_an_object");
+        fs::create_dir_all(&not_an_object).unwrap();
+        fs::write(not_an_object.join("config.json"), b"[1, 2, 3]").unwrap();
+        let archive_not_an_object = tmp.join("not_an_object.tar.gz");
+        create_archive(&not_an_object, &archive_not_an_object).unwrap();
+        assert!(!looks_like_config_archive(&archive_not_an_object));
 
         let _ = fs::remove_dir_all(&tmp);
     }
