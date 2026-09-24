@@ -9,6 +9,7 @@
 //! on the page). Ported from `AppearancePopover` in widget_appearance.py.
 
 use gtk::prelude::*;
+use log::warn;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -207,11 +208,21 @@ pub fn build(
             let css_class = css_class.clone();
             dialog.open(root.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
                 if let Ok(file) = result {
-                    if let Some(path) = file.path() {
-                        let mut a = appearance.borrow_mut();
-                        a.bg_image_path = Some(path.display().to_string());
-                        a.touched.insert(xeneon_core::appearance::TouchedField::Bg);
-                        appearance_css::apply(&css_class, &a);
+                    if let Some(source) = file.path() {
+                        // Copied into the config directory rather than kept
+                        // pointing at wherever the user picked it from -
+                        // same reason and mechanism as the app-wide
+                        // background image, see
+                        // `xeneon_core::assets::store_asset`.
+                        match xeneon_core::assets::store_asset(&xeneon_core::config::widgets_dir(), &source) {
+                            Ok(path) => {
+                                let mut a = appearance.borrow_mut();
+                                a.bg_image_path = Some(path.display().to_string());
+                                a.touched.insert(xeneon_core::appearance::TouchedField::Bg);
+                                appearance_css::apply(&css_class, &a);
+                            }
+                            Err(err) => warn!("failed to store widget background image: {err}"),
+                        }
                     }
                 }
                 // A dismissed picker (Err) just means the user closed it
