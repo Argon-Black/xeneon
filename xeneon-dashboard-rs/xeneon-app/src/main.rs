@@ -318,19 +318,27 @@ impl SimpleComponent for AppModel {
 
         let mut real_grids: Vec<Rc<WidgetGrid>> = Vec::with_capacity(page_count);
         for index in 0..page_count {
-            let grid = match page_states.iter().find(|s| s.page_index == index) {
+            let state = page_states.iter().find(|s| s.page_index == index);
+            let grid = match state {
                 Some(state) => WidgetGrid::restore(
                     PAGE_W,
                     PAGE_H,
                     index,
                     state.id.clone(),
                     state.name.clone(),
+                    state.background_image_path.clone(),
                     widgets_dir.clone(),
                     pages_dir.clone(),
                 ),
                 None => WidgetGrid::new(PAGE_W, PAGE_H, index, widgets_dir.clone(), pages_dir.clone()),
             };
-            grid.set_background_image(app_config.app_background_image_path.as_deref());
+            // This page's own override, when it has one, wins over the
+            // app-wide default - see `WidgetGrid::set_background_image`'s
+            // own doc comment.
+            let effective_background = state
+                .and_then(|s| s.background_image_path.clone())
+                .or_else(|| app_config.app_background_image_path.clone());
+            grid.set_background_image(effective_background.as_deref());
             let grid = Rc::new(grid);
             register_page_emptied(&grid, &sender);
             real_grids.push(grid);

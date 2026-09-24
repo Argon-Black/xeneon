@@ -6,9 +6,12 @@
 //! list alone - both must be loaded and reconciled by whoever rebuilds the
 //! carousel (`xeneon-app`).
 //!
-//! `background` is left as an opaque `serde_json::Value` for now - the
-//! Python `PageBackground` shape wasn't ported in this phase, so this is a
-//! placeholder pass-through until that widget-background feature is built.
+//! `background_image_path`, when set, overrides the app-wide
+//! `Config.app_background_image_path` for this one page - `None` means
+//! "no override, use whatever the app-wide setting currently is", the same
+//! `Option<String>` shape (and the same `xeneon_core::assets::store_asset`
+//! storage mechanism, into `pages_dir()` rather than `config::background_dir()`)
+//! as the app-wide setting itself.
 
 use crate::persistence;
 use log::warn;
@@ -23,12 +26,12 @@ pub struct PageState {
     pub id: String,
     pub page_index: usize,
     pub name: Option<String>,
-    pub background: serde_json::Value,
+    pub background_image_path: Option<String>,
 }
 
 impl Default for PageState {
     fn default() -> Self {
-        Self { id: String::new(), page_index: 0, name: None, background: serde_json::Value::Null }
+        Self { id: String::new(), page_index: 0, name: None, background_image_path: None }
     }
 }
 
@@ -84,6 +87,21 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].name.as_deref(), Some("Cuisine"));
         assert_eq!(loaded[0].id, "p1");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn background_image_path_round_trips_and_defaults_to_none() {
+        let dir = std::env::temp_dir().join(format!("xeneon-test-pages-bg-{}", uuid::Uuid::new_v4()));
+        let with_override = PageState { id: "p1".to_string(), background_image_path: Some("/tmp/bg.png".to_string()), ..Default::default() };
+        let without_override = PageState { id: "p2".to_string(), ..Default::default() };
+        save(&dir, &with_override).unwrap();
+        save(&dir, &without_override).unwrap();
+
+        let loaded = load_all(&dir);
+        assert_eq!(loaded.iter().find(|s| s.id == "p1").unwrap().background_image_path.as_deref(), Some("/tmp/bg.png"));
+        assert_eq!(loaded.iter().find(|s| s.id == "p2").unwrap().background_image_path, None);
 
         let _ = fs::remove_dir_all(&dir);
     }

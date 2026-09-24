@@ -50,6 +50,12 @@ pub struct WidgetGrid {
     page_index: Rc<Cell<usize>>,
     page_id: String,
     custom_name: RefCell<Option<String>>,
+    /// This page's own background image, overriding the app-wide default -
+    /// `None` means "no override, follow the app-wide setting". Persisted
+    /// via `save_page_state` into `PageState.background_image_path`; purely
+    /// bookkeeping here (see `set_background_override`'s own doc comment
+    /// for why it doesn't repaint anything by itself).
+    background_override: RefCell<Option<String>>,
     widgets_dir: PathBuf,
     pages_dir: PathBuf,
     /// False for the dev-mode test page: its dummy widgets are
@@ -69,9 +75,9 @@ pub struct WidgetGrid {
 }
 
 /// One stable CSS class per page, scoped by `page_id` rather than shared
-/// across every page - needed once a later phase lets a page override the
-/// app-wide default image with its own (see `set_background_image`'s own
-/// doc comment), at which point pages can no longer all share one rule.
+/// across every page - needed since a page can override the app-wide
+/// default image with its own (see `set_background_image`'s own doc
+/// comment), so pages can't all share one rule.
 fn background_css_class(page_id: &str) -> String {
     format!("xeneon-page-background-{page_id}")
 }
@@ -119,30 +125,34 @@ struct MovePreview {
 }
 
 impl WidgetGrid {
-    /// A brand-new page: fresh `page_id`, no custom name yet.
+    /// A brand-new page: fresh `page_id`, no custom name and no background
+    /// override yet.
     pub fn new(page_w: i32, page_h: i32, page_index: usize, widgets_dir: PathBuf, pages_dir: PathBuf) -> Self {
-        Self::restore(page_w, page_h, page_index, uuid::Uuid::new_v4().to_string(), None, widgets_dir, pages_dir)
+        Self::restore(page_w, page_h, page_index, uuid::Uuid::new_v4().to_string(), None, None, widgets_dir, pages_dir)
     }
 
     /// A page reconstructed from a saved `PageState` (or a fresh one, via
     /// [`Self::new`] above) - same underlying constructor either way, just
-    /// with an existing identity/name instead of a generated one.
+    /// with an existing identity/name/background override instead of
+    /// generated/empty ones.
+    #[allow(clippy::too_many_arguments)]
     pub fn restore(
         page_w: i32,
         page_h: i32,
         page_index: usize,
         page_id: String,
         custom_name: Option<String>,
+        background_override: Option<String>,
         widgets_dir: PathBuf,
         pages_dir: PathBuf,
     ) -> Self {
-        Self::build(page_w, page_h, page_index, page_id, custom_name, widgets_dir, pages_dir, true)
+        Self::build(page_w, page_h, page_index, page_id, custom_name, background_override, widgets_dir, pages_dir, true)
     }
 
     /// A page whose widgets are never written to disk - see the `persist`
     /// field's own doc comment. Used only for the dev-mode test page.
     pub fn ephemeral(page_w: i32, page_h: i32, page_index: usize) -> Self {
-        Self::build(page_w, page_h, page_index, uuid::Uuid::new_v4().to_string(), None, PathBuf::new(), PathBuf::new(), false)
+        Self::build(page_w, page_h, page_index, uuid::Uuid::new_v4().to_string(), None, None, PathBuf::new(), PathBuf::new(), false)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -152,6 +162,7 @@ impl WidgetGrid {
         page_index: usize,
         page_id: String,
         custom_name: Option<String>,
+        background_override: Option<String>,
         widgets_dir: PathBuf,
         pages_dir: PathBuf,
         persist: bool,
@@ -178,6 +189,7 @@ impl WidgetGrid {
             page_index: Rc::new(Cell::new(page_index)),
             page_id,
             custom_name: RefCell::new(custom_name),
+            background_override: RefCell::new(background_override),
             widgets_dir,
             pages_dir,
             persist,
@@ -196,11 +208,11 @@ impl WidgetGrid {
     /// background - `cover`-scaled, no border, filling `fixed`'s entire
     /// paint box edge to edge (see `build()`'s own note on why margins were
     /// swapped for a grown `size_request` + GAP-offset placement to make
-    /// that possible). Driven today only by the app-wide
-    /// `Config.app_background_image_path` setting (applied to every real
-    /// page uniformly from `main.rs`); not yet persisted per page - that's
-    /// the later per-page-override phase the settings row's own subtitle
-    /// mentions.
+    /// that possible). A pure renderer - it doesn't know or care whether
+    /// `path` is the app-wide default or this page's own override; the
+    /// caller (`main.rs` at startup, `settings_page.rs` on every change) is
+    /// the one that resolves `background_override().or(app-wide path)`
+    /// into the effective path passed in here.
     pub fn set_background_image(&self, path: Option<&str>) {
         let rule = path.map(|path| {
             let uri = gtk::gio::File::for_path(path).uri();
@@ -211,6 +223,27 @@ impl WidgetGrid {
             )
         });
         crate::appearance_css::set_raw_rule(&background_css_class(&self.page_id), rule);
+    }
+
+    /// This page's own background image override, if it has one - `None`
+    /// means it follows the app-wide default instead. Used by
+    /// `settings_page.rs` to decide which of "Choisir une image"/"Retirer
+    /// l'image" to show for this page, and to skip a page that has its own
+    /// override when the app-wide background image changes.
+    pub fn background_override(&self) -> Option<String> {
+        self.background_override.borrow().clone()
+    }
+
+    /// Sets (or clears, with `None`) this page's own background override
+    /// and persists it immediately - the per-page counterpart of the
+    /// app-wide "Choisir une image"/"Retirer l'image" pair. Doesn't repaint
+    /// anything by itself: the caller still needs to call
+    /// `set_background_image` with whichever path is now effective (this
+    /// override, or the app-wide default when cleared), since only the
+    /// caller knows the current app-wide value.
+    pub fn set_background_override(&self, path: Option<&str>) {
+        *self.background_override.borrow_mut() = path.map(str::to_string);
+        self.save_page_state();
     }
 
     /// Stable identity (the `pages/<id>.json` filename), independent of
@@ -297,7 +330,7 @@ impl WidgetGrid {
             id: self.page_id.clone(),
             page_index: self.page_index(),
             name: self.custom_name(),
-            background: serde_json::Value::Null,
+            background_image_path: self.background_override(),
         };
         if let Err(err) = page_state::save(&self.pages_dir, &state) {
             warn!("failed to save page {}: {err}", self.page_id);
