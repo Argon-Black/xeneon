@@ -66,6 +66,7 @@
   "settings.goto_row.title": "設定に移動",
 
   "settings.ha_group.title": "Home Assistant",
+  "settings.ha_group.restart_toast": "この変更を適用するためにアプリが再起動します…",
   "settings.ha_group.url_row.title": "ダッシュボードのURL",
   "settings.ha_group.url_row.invalid": "http:// または https:// で始まる必要があります",
   "settings.ha_group.url_row.reachable": "アドレスに到達できます",

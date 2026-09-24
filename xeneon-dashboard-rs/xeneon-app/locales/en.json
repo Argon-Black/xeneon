@@ -66,6 +66,7 @@
   "settings.goto_row.title": "Go to settings",
 
   "settings.ha_group.title": "Home Assistant",
+  "settings.ha_group.restart_toast": "The app will restart to apply this change…",
   "settings.ha_group.url_row.title": "Dashboard URL",
   "settings.ha_group.url_row.invalid": "Must start with http:// or https://",
   "settings.ha_group.url_row.reachable": "Address reachable",

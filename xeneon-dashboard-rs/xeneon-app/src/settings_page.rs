@@ -92,7 +92,12 @@ impl PagesHandle {
 /// `pages` is every *renameable* widget page (not the dev-mode test page,
 /// not the settings page itself) - mirrors `window.widget_pages()` feeding
 /// `SettingsPage.refresh_pages()`.
-pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageIndicator) -> PagesHandle {
+pub fn populate(
+    root: &gtk::Box,
+    pages: &[Rc<WidgetGrid>],
+    page_indicator: PageIndicator,
+    toast_overlay: &adw::ToastOverlay,
+) -> PagesHandle {
     root.set_orientation(gtk::Orientation::Vertical);
     root.set_hexpand(true);
     root.set_vexpand(true);
@@ -544,54 +549,80 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         }
     }
 
-    ha_row.connect_enable_expansion_notify(|row| {
-        config_store::update(|c| c.ha_page_enabled = row.enables_expansion());
-        // Adding/removing the whole carousel page (and its page-indicator
-        // icon) is a full relaunch here, not live carousel surgery - same
-        // trade, same reason as the dev-mode toggle further below (see
-        // ha_page.rs's own doc comment). `dev_mode_enabled()` carries the
-        // *current* dev-mode state through unchanged - this relaunch is
-        // about the HA page, not about dev mode.
-        relaunch(crate::dev_mode_enabled());
+    ha_row.connect_enable_expansion_notify({
+        let toast_overlay = toast_overlay.clone();
+        move |row| {
+            let enabled = row.enables_expansion();
+            config_store::update(|c| c.ha_page_enabled = enabled);
+            if !enabled {
+                // Tearing the carousel page back down needs the same full
+                // relaunch building it did - see ha_page.rs's own doc
+                // comment on why this isn't live carousel surgery.
+                relaunch_for_ha_change(&toast_overlay);
+                return;
+            }
+            // Turning it on is only immediately actionable if a URL is
+            // already on file (re-enabling after a previous disable,
+            // say) - relaunch now so the page that URL points to
+            // actually appears. Enabling with nothing configured yet
+            // (the common first-time case) has nothing to relaunch
+            // *for* - see `ha_url_row.connect_apply` below, which
+            // relaunches instead once a URL is actually entered.
+            let has_valid_url = config_store::get().ha_page_url.as_deref().is_some_and(is_http_url);
+            if has_valid_url {
+                relaunch_for_ha_change(&toast_overlay);
+            }
+        }
     });
-    ha_url_row.connect_apply(move |row| {
-        let text = row.text().to_string();
-        let trimmed = text.trim();
-        // Empty text means "not configured yet", same as a freshly
-        // installed app - stored as `None`, not an empty string, so
-        // `Option::is_some()` stays a reliable "has a URL" check for
-        // whatever reads this later (the page's own WebView load logic).
-        if trimmed.is_empty() {
+    ha_url_row.connect_apply({
+        let toast_overlay = toast_overlay.clone();
+        move |row| {
+            let text = row.text().to_string();
+            let trimmed = text.trim();
+            // Empty text means "not configured yet", same as a freshly
+            // installed app - stored as `None`, not an empty string, so
+            // `Option::is_some()` stays a reliable "has a URL" check for
+            // whatever reads this later (the page's own WebView load logic).
+            if trimmed.is_empty() {
+                row.remove_css_class("error");
+                row.set_tooltip_text(None);
+                hide_ha_status();
+                config_store::update(|c| c.ha_page_url = None);
+                return;
+            }
+            // Restricted to http(s) so a typo or a hand-edited config.json
+            // can never hand WebKit's `load_uri` a `file://` (local
+            // filesystem read) or `javascript:`/`data:` URI (arbitrary
+            // script in the page's context) - this is the only gate that
+            // check ever gets on the settings side, so it has to reject
+            // here rather than merely warn (ha_page.rs's own `build`
+            // re-checks independently too, see its own doc comment, since
+            // config.json is a plain user-editable file).
+            if !is_http_url(trimmed) {
+                row.add_css_class("error");
+                row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
+                hide_ha_status();
+                return;
+            }
             row.remove_css_class("error");
             row.set_tooltip_text(None);
-            hide_ha_status();
-            config_store::update(|c| c.ha_page_url = None);
-            return;
+            config_store::update(|c| c.ha_page_url = Some(trimmed.to_string()));
+            run_ha_ping(trimmed.to_string());
+            // Two different situations look the same here (a valid URL
+            // just applied) but need different handling: editing an
+            // already-live page's address just needs a live navigation
+            // (`ha_page::set_url`, no restart) - but the very first URL
+            // entered right after flipping the enable switch on is what
+            // actually has to build the real carousel page in the first
+            // place, which only a relaunch can do (see
+            // `ha_row.connect_enable_expansion_notify` above for why that
+            // switch alone doesn't relaunch in this case).
+            if config_store::get().ha_page_enabled && !ha_page::is_live() {
+                relaunch_for_ha_change(&toast_overlay);
+            } else {
+                ha_page::set_url(trimmed);
+            }
         }
-        // Restricted to http(s) so a typo or a hand-edited config.json can
-        // never hand WebKit's `load_uri` a `file://` (local filesystem
-        // read) or `javascript:`/`data:` URI (arbitrary script in the
-        // page's context) - this is the only gate that check ever gets on
-        // the settings side, so it has to reject here rather than merely
-        // warn (ha_page.rs's own `build` re-checks independently too, see
-        // its own doc comment, since config.json is a plain user-editable
-        // file). The URL is saved either way once valid, live-applied via
-        // `ha_page::set_url` below if the page already exists.
-        if !is_http_url(trimmed) {
-            row.add_css_class("error");
-            row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
-            hide_ha_status();
-            return;
-        }
-        row.remove_css_class("error");
-        row.set_tooltip_text(None);
-        config_store::update(|c| c.ha_page_url = Some(trimmed.to_string()));
-        run_ha_ping(trimmed.to_string());
-        // Takes effect immediately if the page already exists (a no-op
-        // otherwise: disabled, or still on the "configure me" placeholder
-        // - see ha_page.rs's own doc comment) - only the enable switch
-        // itself needs the full relaunch.
-        ha_page::set_url(trimmed);
     });
 
     let page_rows: Rc<RefCell<Vec<adw::ExpanderRow>>> = Rc::new(RefCell::new(Vec::new()));
@@ -1025,6 +1056,28 @@ pub(crate) fn relaunch(dev_mode: bool) {
         let _ = cmd.spawn();
     }
     relm4::main_application().quit();
+}
+
+/// `relaunch()` itself is effectively instant (spawn the new process,
+/// quit this one, in the same call) - too fast for anything shown in the
+/// same frame to actually be read before the window is gone. Used
+/// wherever a Home Assistant config change needs that same relaunch (see
+/// ha_page.rs's own doc comment on why enabling/disabling the page is a
+/// relaunch, not live carousel surgery) but shouldn't just vanish the
+/// window with no explanation: shows a toast, then relaunches after a
+/// couple of seconds - long enough to actually read it, not so long it
+/// feels unresponsive. `dev_mode_enabled()` carries the *current*
+/// dev-mode state through unchanged - this relaunch is about the HA page,
+/// not about dev mode.
+fn relaunch_for_ha_change(toast_overlay: &adw::ToastOverlay) {
+    let toast = adw::Toast::new(&i18n::t("settings.ha_group.restart_toast"));
+    toast.set_timeout(3);
+    toast_overlay.add_toast(toast);
+    let dev_mode = crate::dev_mode_enabled();
+    gtk::glib::timeout_add_seconds_local(2, move || {
+        relaunch(dev_mode);
+        gtk::glib::ControlFlow::Break
+    });
 }
 
 /// Tears down and rebuilds one `Adw.ExpanderRow` per page - mirrors

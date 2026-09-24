@@ -66,6 +66,7 @@
   "settings.goto_row.title": "前往设置",
 
   "settings.ha_group.title": "Home Assistant",
+  "settings.ha_group.restart_toast": "应用即将重启以应用此更改…",
   "settings.ha_group.url_row.title": "仪表盘 URL",
   "settings.ha_group.url_row.invalid": "必须以 http:// 或 https:// 开头",
   "settings.ha_group.url_row.reachable": "地址可访问",

@@ -263,3 +263,14 @@ pub fn set_url(url: &str) {
         }
     });
 }
+
+/// Whether `build()` has actually run in this process - lets
+/// settings_page.rs's URL field tell "editing an already-live page's URL"
+/// (safe to apply live via `set_url` above, no restart needed) apart from
+/// "just enabled, still on the unconfigured placeholder, this is the
+/// first URL it's ever had" (needs the relaunch that actually builds the
+/// real page in the first place - see settings_page.rs's own comment on
+/// its enable-switch/URL-apply handlers for the full flow).
+pub fn is_live() -> bool {
+    CURRENT_WEBVIEW.with(|cell| cell.borrow().is_some())
+}
