@@ -841,16 +841,24 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let root = root.clone();
         move |button| {
             let dialog = gtk::FileDialog::new();
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some(&i18n::t("settings.backup_group.archive_filter")));
+            filter.add_pattern("*.tar.gz");
+            let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            dialog.set_filters(Some(&filters));
+            let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+            dialog.set_initial_name(Some(&format!("xeneon-dashboard-config-{stamp}.tar.gz")));
             let root_window = button.root().and_downcast::<gtk::Window>();
             let root = root.clone();
-            dialog.select_folder(root_window.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
-                let Ok(folder) = result else { return };
-                let Some(destination) = folder.path() else { return };
+            dialog.save(root_window.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
+                let Ok(file) = result else { return };
+                let Some(destination) = file.path() else { return };
                 match crate::backup::export(&destination) {
-                    Ok(target) => info_dialog(
+                    Ok(()) => info_dialog(
                         &root,
                         &i18n::t("settings.backup_group.export_row.success_heading"),
-                        &i18n::t_args("settings.backup_group.export_row.success_body", &[("path", &target.display().to_string())]),
+                        &i18n::t_args("settings.backup_group.export_row.success_body", &[("path", &destination.display().to_string())]),
                     ),
                     Err(err) => {
                         warn!("failed to export configuration: {err}");
@@ -868,12 +876,18 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let root = root.clone();
         move |button| {
             let dialog = gtk::FileDialog::new();
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some(&i18n::t("settings.backup_group.archive_filter")));
+            filter.add_pattern("*.tar.gz");
+            let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            dialog.set_filters(Some(&filters));
             let root_window = button.root().and_downcast::<gtk::Window>();
             let root = root.clone();
-            dialog.select_folder(root_window.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
-                let Ok(folder) = result else { return };
-                let Some(source) = folder.path() else { return };
-                if !crate::backup::looks_like_config_dir(&source) {
+            dialog.open(root_window.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
+                let Ok(file) = result else { return };
+                let Some(source) = file.path() else { return };
+                if !crate::backup::looks_like_config_archive(&source) {
                     info_dialog(
                         &root,
                         &i18n::t("settings.backup_group.import_row.invalid_heading"),
