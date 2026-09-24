@@ -21,18 +21,34 @@ thread_local! {
 // `EMPTY_STATE_ICON_PATH`.
 const DEFAULT_BACKGROUND_ASSET: &str = "assets/default-background.svg";
 
+fn default_background_source() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_BACKGROUND_ASSET)
+}
+
 /// Copies the bundled default background image into `background_dir()` and
 /// returns the path it was stored at - shared by `init()` (first run) and
-/// `restore_default_background()` (the settings page's "Restaurer l'image
-/// par défaut" button). Copied in rather than pointed at straight from the
-/// source tree - same storage every user-picked background image goes
-/// through (see `settings_page.rs`), so the config directory stays
-/// self-contained, not dependent on this crate's own source checkout still
-/// being around.
+/// `restore_default_background()` (what "Retirer l'image" actually does,
+/// see below). Copied in rather than pointed at straight from the source
+/// tree - same storage every user-picked background image goes through
+/// (see `settings_page.rs`), so the config directory stays self-contained,
+/// not dependent on this crate's own source checkout still being around.
 fn store_default_background() -> std::io::Result<String> {
-    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_BACKGROUND_ASSET);
-    let path = xeneon_core::assets::store_asset(&xeneon_core::config::background_dir(), &source)?;
+    let path = xeneon_core::assets::store_asset(&xeneon_core::config::background_dir(), &default_background_source())?;
     Ok(path.display().to_string())
+}
+
+/// Whether `path` is the bundled default background's own stored path, as
+/// opposed to one the user picked through the file dialog - compares by
+/// content hash (the same one `store_asset` names files with), not by
+/// string equality with whatever `store_default_background` last returned,
+/// so it stays correct even if the bundled asset's own filename changes.
+/// Used by `settings_page.rs` to decide whether "Choisir une image" or
+/// "Retirer l'image" is the one that makes sense to offer right now.
+pub fn is_default_background(path: &str) -> bool {
+    match xeneon_core::assets::content_filename(&default_background_source()) {
+        Ok(default_name) => std::path::Path::new(path).file_name().and_then(|f| f.to_str()) == Some(default_name.as_str()),
+        Err(_) => false,
+    }
 }
 
 pub fn init() {
@@ -44,8 +60,8 @@ pub fn init() {
     // apart from "the file existed and happened to match defaults" - only
     // checking existence *before* loading can, and only there can this
     // decision be made once, correctly: doing it after every load would
-    // silently undo "Retirer l'image" (see settings_page.rs) on every
-    // subsequent launch instead of respecting that the user cleared it.
+    // silently overwrite a background the user picked on every subsequent
+    // launch instead of respecting it.
     let first_run = !xeneon_core::config::config_file().exists();
     let mut config = Config::load();
     if first_run {
@@ -61,10 +77,10 @@ pub fn init() {
 }
 
 /// Re-copies the bundled default background image and sets it as the
-/// current app-wide background. Without this, clicking "Retirer l'image"
-/// once would be a one-way trip: `init()` only ever applies the default on
-/// a config-less first run, so the default image could otherwise never be
-/// gotten back once cleared.
+/// current app-wide background. What "Retirer l'image" in the settings page
+/// actually does when a custom image is set - there's no "no background at
+/// all" state to fall into, only ever "the default" or "something the user
+/// picked".
 pub fn restore_default_background() -> std::io::Result<()> {
     let path = store_default_background()?;
     update(|c| c.app_background_image_path = Some(path));

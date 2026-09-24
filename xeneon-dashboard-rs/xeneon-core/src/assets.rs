@@ -26,15 +26,7 @@ use std::path::{Path, PathBuf};
 /// lives alongside that page's own `<id>.json`.
 pub fn store_asset(dir: &Path, source: &Path) -> io::Result<PathBuf> {
     let bytes = fs::read(source)?;
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    let ext = source.extension().and_then(|e| e.to_str());
-    let filename = match ext {
-        Some(ext) => format!("{hash:016x}.{ext}"),
-        None => format!("{hash:016x}"),
-    };
+    let filename = hashed_filename(&bytes, source.extension().and_then(|e| e.to_str()));
 
     fs::create_dir_all(dir)?;
     let dest = dir.join(filename);
@@ -42,6 +34,26 @@ pub fn store_asset(dir: &Path, source: &Path) -> io::Result<PathBuf> {
         fs::write(&dest, &bytes)?;
     }
     Ok(dest)
+}
+
+/// The filename `store_asset` would give `source`, without copying it
+/// anywhere - lets a caller check whether some already-stored path holds
+/// the same content as `source` (e.g. "is the app's current background
+/// still the bundled default, or did the user replace it?", see
+/// `config_store::is_default_background`) without re-copying it.
+pub fn content_filename(source: &Path) -> io::Result<String> {
+    let bytes = fs::read(source)?;
+    Ok(hashed_filename(&bytes, source.extension().and_then(|e| e.to_str())))
+}
+
+fn hashed_filename(bytes: &[u8], ext: Option<&str>) -> String {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let hash = hasher.finish();
+    match ext {
+        Some(ext) => format!("{hash:016x}.{ext}"),
+        None => format!("{hash:016x}"),
+    }
 }
 
 #[cfg(test)]

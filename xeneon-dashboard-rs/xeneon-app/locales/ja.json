@@ -34,7 +34,6 @@
   "settings.app_background_row.subtitle": "すべてのウィジェットページで全画面表示、枠なし(開発ページと設定ページを除く)。ページごとの画像は今後追加予定です。",
   "settings.app_background_row.choose_image": "画像を選択…",
   "settings.app_background_row.clear_image": "画像を削除",
-  "settings.app_background_row.restore_default": "デフォルト画像を復元",
   "settings.theme_group.title": "テーマ",
   "settings.theme_group.accent_row.title": "アクセントカラー",
   "settings.theme_group.accent.iris": "アイリス",

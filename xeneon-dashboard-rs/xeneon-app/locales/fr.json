@@ -34,7 +34,6 @@
   "settings.app_background_row.subtitle": "Plein écran, sans bordure, sur toutes les pages de widgets (pas la page dev, pas les réglages). Une image par page viendra ensuite.",
   "settings.app_background_row.choose_image": "Choisir une image…",
   "settings.app_background_row.clear_image": "Retirer l'image",
-  "settings.app_background_row.restore_default": "Restaurer l'image par défaut",
   "settings.theme_group.title": "Thème",
   "settings.theme_group.accent_row.title": "Couleur d'accent",
   "settings.theme_group.accent.iris": "Iris",

@@ -34,7 +34,6 @@
   "settings.app_background_row.subtitle": "Vollbild, ohne Rahmen, auf jeder Widget-Seite (nicht auf der Dev-Seite, nicht in den Einstellungen). Ein Bild pro Seite folgt als Nächstes.",
   "settings.app_background_row.choose_image": "Bild auswählen…",
   "settings.app_background_row.clear_image": "Bild entfernen",
-  "settings.app_background_row.restore_default": "Standardbild wiederherstellen",
   "settings.theme_group.title": "Design",
   "settings.theme_group.accent_row.title": "Akzentfarbe",
   "settings.theme_group.accent.iris": "Iris",
