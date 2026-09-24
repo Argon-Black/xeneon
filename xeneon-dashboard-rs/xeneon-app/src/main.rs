@@ -376,25 +376,26 @@ impl SimpleComponent for AppModel {
             Rc::new(grid)
         });
 
-        // Built here, before the carousel, purely so its widget already
-        // exists for `PageIndicator::new` below (same reason the settings
-        // page's shell is built early too, see the next comment) - `None`
-        // whenever the feature is off, so nothing else in this function
-        // has to build a WebView or touch webkit6 at all. `ha_page_url`
-        // missing/invalid shows the "configure me" placeholder instead of
-        // `None` - the page still exists (and still gets its carousel
-        // slot/indicator icon) since the switch alone is what the user
-        // asked to control here, not whether a URL happens to be filled
-        // in yet. See ha_page.rs's own doc comment for the rest of the
-        // design (why enabling this is a relaunch, not live carousel
-        // surgery).
-        let ha_page_widget: Option<gtk::Widget> = app_config.ha_page_enabled.then(|| match &app_config.ha_page_url {
-            Some(url) => ha_page::build(url),
-            None => ha_page::build_unconfigured(),
-        });
-
         let carousel = adw::Carousel::new();
         carousel.set_vexpand(true); // parity with window.py's self.carousel.set_vexpand(True)
+
+        // Built here (needs `carousel` already, for the mouse-drag swipe
+        // fix - see ha_page.rs's own `wire_swipe_gesture`), purely so its
+        // widget already exists for `PageIndicator::new` below (same
+        // reason the settings page's shell is built early too, see the
+        // next comment) - `None` whenever the feature is off, so nothing
+        // else in this function has to build a WebView or touch webkit6 at
+        // all. `ha_page_url` missing/invalid shows the "configure me"
+        // placeholder instead of `None` - the page still exists (and
+        // still gets its carousel slot/indicator icon) since the switch
+        // alone is what the user asked to control here, not whether a URL
+        // happens to be filled in yet. See ha_page.rs's own doc comment
+        // for the rest of the design (why enabling this is a relaunch,
+        // not live carousel surgery).
+        let ha_page_widget: Option<gtk::Widget> = app_config.ha_page_enabled.then(|| match &app_config.ha_page_url {
+            Some(url) => ha_page::build(url, &carousel),
+            None => ha_page::build_unconfigured(),
+        });
 
         // The settings page's real identity is established here, empty,
         // *before* the page indicator - the indicator needs the actual
