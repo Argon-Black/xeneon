@@ -68,6 +68,8 @@
   "settings.ha_group.enable_row.subtitle": "Ajoute une page dédiée, en retrait avant les autres pages",
   "settings.ha_group.url_row.title": "URL du tableau de bord",
   "settings.ha_group.url_row.invalid": "Doit commencer par http:// ou https://",
+  "settings.ha_group.url_row.reachable": "Adresse joignable",
+  "settings.ha_group.url_row.unreachable": "Adresse injoignable - vérifie l'adresse et le réseau",
 
   "widgets.configure_tooltip": "Configurer",
   "widgets.delete_tooltip": "Supprimer",

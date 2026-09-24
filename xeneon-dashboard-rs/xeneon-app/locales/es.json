@@ -68,6 +68,8 @@
   "settings.ha_group.enable_row.subtitle": "Añade una página dedicada, aparte, antes de las demás páginas",
   "settings.ha_group.url_row.title": "URL del panel",
   "settings.ha_group.url_row.invalid": "Debe empezar por http:// o https://",
+  "settings.ha_group.url_row.reachable": "Dirección accesible",
+  "settings.ha_group.url_row.unreachable": "Dirección inaccesible - comprueba la dirección y la red",
 
   "widgets.configure_tooltip": "Configurar",
   "widgets.delete_tooltip": "Eliminar",

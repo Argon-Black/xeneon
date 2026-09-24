@@ -27,8 +27,12 @@
 //! separately).
 
 use adw::prelude::*;
-use std::cell::RefCell;
+use gtk::gio;
+use gtk::glib;
+use log::debug;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use crate::appearance_css;
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
@@ -590,17 +594,105 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         ha_url_row.add_css_class("error");
         ha_url_row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
     }
+
+    // Reachability badge: purely informational (never blocks saving the
+    // URL, see the design discussion in the memory system - a kiosk can
+    // legitimately be set up before Home Assistant itself is reachable on
+    // the network), so it's a suffix on the row rather than anything tied
+    // to `connect_apply`'s accept/reject flow above. `ha_ping_spinner`
+    // spins while a check is in flight; `ha_ping_status_icon` shows the
+    // outcome once it lands - never both visible at once.
+    let ha_ping_spinner = gtk::Spinner::new();
+    ha_ping_spinner.set_valign(gtk::Align::Center);
+    ha_ping_spinner.set_visible(false);
+    ha_url_row.add_suffix(&ha_ping_spinner);
+    let ha_ping_status_icon = gtk::Image::new();
+    ha_ping_status_icon.set_valign(gtk::Align::Center);
+    ha_ping_status_icon.set_visible(false);
+    ha_url_row.add_suffix(&ha_ping_status_icon);
+
     ha_group.add(&ha_url_row);
+
+    // Bumped on every new ping and compared after the blocking call
+    // returns - a still-in-flight ping from a superseded URL becomes a
+    // no-op when it lands, same technique (and same reason) as
+    // `weather.rs`'s own `fetch_generation`/`search_generation`.
+    let ha_ping_generation = Rc::new(Cell::new(0u64));
+
+    let hide_ha_status = {
+        let ha_ping_spinner = ha_ping_spinner.clone();
+        let ha_ping_status_icon = ha_ping_status_icon.clone();
+        move || {
+            ha_ping_spinner.set_visible(false);
+            ha_ping_spinner.set_spinning(false);
+            ha_ping_status_icon.set_visible(false);
+        }
+    };
+
+    let run_ha_ping = {
+        let ha_ping_spinner = ha_ping_spinner.clone();
+        let ha_ping_status_icon = ha_ping_status_icon.clone();
+        let ha_ping_generation = ha_ping_generation.clone();
+        move |url: String| {
+            ha_ping_status_icon.set_visible(false);
+            ha_ping_spinner.set_visible(true);
+            ha_ping_spinner.set_spinning(true);
+            let generation = ha_ping_generation.get() + 1;
+            ha_ping_generation.set(generation);
+            debug!("pinging Home Assistant URL {url:?}");
+
+            let ha_ping_spinner = ha_ping_spinner.clone();
+            let ha_ping_status_icon = ha_ping_status_icon.clone();
+            let ha_ping_generation = ha_ping_generation.clone();
+            glib::spawn_future_local(async move {
+                let url_for_probe = url.clone();
+                let reachable = gio::spawn_blocking(move || ping_ha_url(&url_for_probe)).await.unwrap_or(false);
+                if generation != ha_ping_generation.get() {
+                    debug!("ping for {url:?} superseded, discarding");
+                    return;
+                }
+                ha_ping_spinner.set_visible(false);
+                ha_ping_spinner.set_spinning(false);
+                ha_ping_status_icon.set_visible(true);
+                if reachable {
+                    ha_ping_status_icon.set_icon_name(Some("emblem-ok-symbolic"));
+                    ha_ping_status_icon.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.reachable")));
+                } else {
+                    ha_ping_status_icon.set_icon_name(Some("dialog-warning-symbolic"));
+                    ha_ping_status_icon.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.unreachable")));
+                }
+            });
+        }
+    };
+
+    // Checked once up front too, not just on the next `connect_apply` -
+    // otherwise reopening settings on an already-configured page would
+    // show no badge at all until the user re-applies the same URL.
+    if config.ha_page_enabled {
+        if let Some(url) = config.ha_page_url.as_deref() {
+            if is_http_url(url) {
+                run_ha_ping(url.to_string());
+            }
+        }
+    }
 
     ha_enable_switch.connect_active_notify({
         let ha_url_row = ha_url_row.clone();
+        let hide_ha_status = hide_ha_status.clone();
+        let run_ha_ping = run_ha_ping.clone();
         move |switch| {
             let enabled = switch.is_active();
             config_store::update(|c| c.ha_page_enabled = enabled);
             ha_url_row.set_sensitive(enabled);
+            let text = ha_url_row.text().to_string();
+            if enabled && is_http_url(text.trim()) {
+                run_ha_ping(text.trim().to_string());
+            } else {
+                hide_ha_status();
+            }
         }
     });
-    ha_url_row.connect_apply(|row| {
+    ha_url_row.connect_apply(move |row| {
         let text = row.text().to_string();
         let trimmed = text.trim();
         // Empty text means "not configured yet", same as a freshly
@@ -610,6 +702,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         if trimmed.is_empty() {
             row.remove_css_class("error");
             row.set_tooltip_text(None);
+            hide_ha_status();
             config_store::update(|c| c.ha_page_url = None);
             return;
         }
@@ -624,11 +717,13 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         if !is_http_url(trimmed) {
             row.add_css_class("error");
             row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
+            hide_ha_status();
             return;
         }
         row.remove_css_class("error");
         row.set_tooltip_text(None);
         config_store::update(|c| c.ha_page_url = Some(trimmed.to_string()));
+        run_ha_ping(trimmed.to_string());
     });
 
     screen2_block2.append(&ha_group);
@@ -889,6 +984,27 @@ fn new_column() -> gtk::Box {
 fn is_http_url(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Blocking reachability probe for the Home Assistant URL - runs on GIO's
+/// thread pool via `gio::spawn_blocking`, never on the GTK main thread,
+/// same pattern as `weather.rs`'s own blocking HTTP calls. Purely
+/// informational (see the design discussion in the memory system: a kiosk
+/// can be set up before Home Assistant is reachable on the network, so
+/// this never blocks saving the URL) - it only drives the small
+/// reachable/unreachable badge next to the field.
+///
+/// Any actual HTTP response counts as reachable, even a 4xx/5xx one (Home
+/// Assistant behind a reverse proxy, or an auth wall, can easily answer
+/// with one of those) - only a transport-level failure (DNS, connection
+/// refused, timeout) means the address itself isn't reachable.
+fn ping_ha_url(url: &str) -> bool {
+    const PING_TIMEOUT_SECONDS: u64 = 3;
+    match ureq::get(url).config().timeout_global(Some(Duration::from_secs(PING_TIMEOUT_SECONDS))).build().call() {
+        Ok(_) => true,
+        Err(ureq::Error::StatusCode(_)) => true,
+        Err(_) => false,
+    }
 }
 
 /// Spawns a fresh instance with dev mode set to `dev_mode` and quits this

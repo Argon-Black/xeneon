@@ -68,6 +68,8 @@
   "settings.ha_group.enable_row.subtitle": "他のページの前に、独立した専用ページを追加します",
   "settings.ha_group.url_row.title": "ダッシュボードのURL",
   "settings.ha_group.url_row.invalid": "http:// または https:// で始まる必要があります",
+  "settings.ha_group.url_row.reachable": "アドレスに到達できます",
+  "settings.ha_group.url_row.unreachable": "アドレスに到達できません - アドレスとネットワークを確認してください",
 
   "widgets.configure_tooltip": "設定",
   "widgets.delete_tooltip": "削除",

@@ -68,6 +68,8 @@
   "settings.ha_group.enable_row.subtitle": "Adds a dedicated page, set apart before the other pages",
   "settings.ha_group.url_row.title": "Dashboard URL",
   "settings.ha_group.url_row.invalid": "Must start with http:// or https://",
+  "settings.ha_group.url_row.reachable": "Address reachable",
+  "settings.ha_group.url_row.unreachable": "Address unreachable - check the address and the network",
 
   "widgets.configure_tooltip": "Configure",
   "widgets.delete_tooltip": "Remove",
