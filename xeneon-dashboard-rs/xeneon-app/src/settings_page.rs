@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Settings page: an Interface group (page-indicator hide delay/opacity/
-//! color), a language switcher and Theme group (accent color) in column 1;
-//! a "Pages" group to rename each widget page in column 2; keyboard
-//! shortcuts plus (dev mode only) a restart button in column 3 - laid out
-//! in 3 columns side by side, same structure as `SettingsPage` in
-//! settings_page.py (a plain `Gtk.Box`, not `Adw.PreferencesPage` - the
-//! page indicator handles this page's own scroll/carousel framing, so
-//! this is just a title label plus a horizontally-scrolled row of column
-//! boxes, each holding a few `Adw.PreferencesGroup`s).
+//! Settings page: a title, then a small vertical carousel (`gtk::Stack`,
+//! not a scrollbar) of "screens", each a fixed 3-column row of "blocks" -
+//! invisible layout slots (no border, no fill, see `new_column`) holding
+//! whichever `Adw.PreferencesGroup`s fit. A group too tall to fit on
+//! screen 1 moves whole onto the matching block on screen 2 rather than
+//! being truncated or scrolled past - see `populate`'s own comment for
+//! exactly which group lives where. Numbered dots next to the stack
+//! (`.xeneon-settings-page-dot`, styled off the same opacity/color knobs
+//! as the app's own bottom page indicator) switch between screens, sliding
+//! vertically so the gesture never collides with the app's own horizontal
+//! page carousel. This whole page is a plain `Gtk.Box`, not
+//! `Adw.PreferencesPage` - the page indicator handles the carousel framing,
+//! so this is just a title label plus the pager described above.
 //!
 //! The keyboard-shortcuts group shows F11 (fullscreen) and Ctrl+, (go to
 //! settings) as static `Gtk.ShortcutLabel`s, not the Python original's
@@ -104,16 +108,27 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     title.set_margin_bottom(12);
     root.append(&title);
 
-    let columns_box = gtk::Box::new(gtk::Orientation::Horizontal, 24);
-    columns_box.set_homogeneous(true);
-    columns_box.set_hexpand(true);
+    // Two fixed-size "screens", each a 3-column row of blocks - not a
+    // scrolled single column. A block is purely a layout slot (no border,
+    // no fill: invisible on purpose, see `new_column`'s own doc comment)
+    // that holds whichever groups fit; a group too tall to fit anywhere on
+    // screen 1 moves whole onto the matching block on screen 2 instead of
+    // truncating or scrolling - laid out by hand below, block by block.
+    // Screen 1: block1 Interface+Language, block2 Theme, block3 Pages.
+    // Screen 2: block1 default widget appearance, block2 empty (nothing
+    // needs it yet), block3 keyboard shortcuts + dev tools.
+    let screen1 = new_screen();
+    let (screen1_block1, screen1_block2, screen1_block3) = (new_column(), new_column(), new_column());
+    screen1.append(&screen1_block1);
+    screen1.append(&screen1_block2);
+    screen1.append(&screen1_block3);
 
-    let column1 = gtk::Box::new(gtk::Orientation::Vertical, 24);
-    column1.set_valign(gtk::Align::Start);
-    let column2 = gtk::Box::new(gtk::Orientation::Vertical, 24);
-    column2.set_valign(gtk::Align::Start);
-    let column3 = gtk::Box::new(gtk::Orientation::Vertical, 24);
-    column3.set_valign(gtk::Align::Start);
+    let screen2 = new_screen();
+    let (screen2_block1, screen2_block2, screen2_block3) = (new_column(), new_column(), new_column());
+    screen2.append(&screen2_block1);
+    screen2.append(&screen2_block2);
+    screen2.append(&screen2_block3);
+    let _ = &screen2_block2; // deliberately empty for now
 
     // Every real widget page, kept live (not just a startup snapshot) so
     // both a page added at runtime (`PagesHandle::add_page`) and a setting
@@ -124,7 +139,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     // Interface group needs it too.
     let pages_shared: Rc<RefCell<Vec<Rc<WidgetGrid>>>> = Rc::new(RefCell::new(pages.to_vec()));
 
-    // --- Column 1: Interface (page indicator look) ---
+    // --- Screen 1, block 1: Interface (page indicator look) ---
     let config = config_store::get();
 
     let interface_group = adw::PreferencesGroup::new();
@@ -291,9 +306,9 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     });
     apply_indicator_style();
 
-    column1.append(&interface_group);
+    screen1_block1.append(&interface_group);
 
-    // --- Column 1 (cont'd): Language + Theme (accent) ---
+    // --- Screen 1, block 1 (cont'd): Language; block 2: Theme (accent) ---
     let language_group = adw::PreferencesGroup::new();
     language_group.set_title(&i18n::t("settings.language_group"));
 
@@ -321,7 +336,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     });
 
     language_group.add(&language_row);
-    column1.append(&language_group);
+    screen1_block1.append(&language_group);
 
     let theme_group = adw::PreferencesGroup::new();
     theme_group.set_title(&i18n::t("settings.theme_group.title"));
@@ -400,16 +415,16 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         }
     });
 
-    column1.append(&theme_group);
+    screen1_block2.append(&theme_group);
 
-    // --- Column 2: Pages ---
+    // --- Screen 1, block 3: Pages ---
     let pages_group = adw::PreferencesGroup::new();
     pages_group.set_title(&i18n::t("settings.pages_group.title"));
-    column2.append(&pages_group);
+    screen1_block3.append(&pages_group);
     let page_rows: Rc<RefCell<Vec<adw::ExpanderRow>>> = Rc::new(RefCell::new(Vec::new()));
     refresh_pages_group(&pages_group, &page_rows, &pages_shared.borrow(), &page_indicator);
 
-    // --- Column 2 (cont'd): Default widget appearance ---
+    // --- Screen 2, block 1: Default widget appearance ---
     // Applied to every widget newly added from here on (see
     // grid_widget.rs's `add_widget`); an already-customized widget's own
     // look stays untouched unless the "apply to all" button below is
@@ -540,9 +555,9 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         }
     });
 
-    column2.append(&appearance_group);
+    screen2_block1.append(&appearance_group);
 
-    // --- Column 3: Keyboard shortcuts + dev tools ---
+    // --- Screen 2, block 3: Keyboard shortcuts + dev tools ---
     let shortcuts_group = adw::PreferencesGroup::new();
     shortcuts_group.set_title(&i18n::t("settings.shortcuts_group"));
 
@@ -561,7 +576,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     goto_row.add_suffix(&goto_shortcut_label);
     shortcuts_group.add(&goto_row);
 
-    column3.append(&shortcuts_group);
+    screen2_block3.append(&shortcuts_group);
 
     // Always visible (unlike dev_group below) - otherwise there'd be no
     // way to turn dev mode *on* from the UI at all, only off (the rest of
@@ -579,7 +594,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     });
     dev_toggle_row.add_suffix(&dev_switch);
     dev_toggle_group.add(&dev_toggle_row);
-    column3.append(&dev_toggle_group);
+    screen2_block3.append(&dev_toggle_group);
 
     // Dev-only: restarting is otherwise just "close the window and run
     // the binary again by hand", which got old fast while iterating on
@@ -602,24 +617,59 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         (group, restart_row)
     });
     if let Some((group, _)) = &dev_group {
-        column3.append(group);
+        screen2_block3.append(group);
     }
 
-    columns_box.append(&column1);
-    columns_box.append(&column2);
-    columns_box.append(&column3);
+    // One vertical carousel for the whole settings screen - not a
+    // scrollbar, and not one carousel per block. Sliding vertically
+    // (rather than the app's own horizontal page carousel) keeps the two
+    // gestures unambiguous. GtkStack's SlideUpDown transition picks the
+    // slide direction itself from each child's position in the stack, so
+    // screen1 -> screen2 slides up and back down, matching the numbered
+    // dots below.
+    let pager = gtk::Stack::new();
+    pager.set_transition_type(gtk::StackTransitionType::SlideUpDown);
+    pager.set_transition_duration(220);
+    pager.set_hexpand(true);
+    pager.set_vexpand(true);
+    pager.add_named(&screen1, Some("screen1"));
+    pager.add_named(&screen2, Some("screen2"));
+    pager.set_visible_child_name("screen1");
 
-    // Scrolls instead of just growing: this page's content only gets
-    // taller as settings groups are added, and the Xeneon Edge panel is a
-    // fixed 720px tall with no room to spare - if this page's natural
-    // height ever exceeded what's actually available, an un-scrolled
-    // Gtk.Box would instead push the whole carousel (and the fullscreened
-    // window itself) taller than the physical monitor.
-    let scroller = gtk::ScrolledWindow::new();
-    scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    scroller.set_vexpand(true);
-    scroller.set_child(Some(&columns_box));
-    root.append(&scroller);
+    let dot1 = gtk::Button::with_label("1");
+    dot1.add_css_class("xeneon-settings-page-dot");
+    dot1.add_css_class("active");
+    let dot2 = gtk::Button::with_label("2");
+    dot2.add_css_class("xeneon-settings-page-dot");
+    dot1.connect_clicked({
+        let pager = pager.clone();
+        let dot2 = dot2.clone();
+        move |dot1| {
+            pager.set_visible_child_name("screen1");
+            dot1.add_css_class("active");
+            dot2.remove_css_class("active");
+        }
+    });
+    dot2.connect_clicked({
+        let pager = pager.clone();
+        let dot1 = dot1.clone();
+        move |dot2| {
+            pager.set_visible_child_name("screen2");
+            dot2.add_css_class("active");
+            dot1.remove_css_class("active");
+        }
+    });
+    let page_dots = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    page_dots.set_valign(gtk::Align::Center);
+    page_dots.append(&dot1);
+    page_dots.append(&dot2);
+
+    let pager_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    pager_row.set_hexpand(true);
+    pager_row.set_vexpand(true);
+    pager_row.append(&pager);
+    pager_row.append(&page_dots);
+    root.append(&pager_row);
 
     i18n::on_change({
         let title = title.clone();
@@ -716,6 +766,33 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     });
 
     PagesHandle { group: pages_group, rows: page_rows, pages: pages_shared, page_indicator }
+}
+
+/// One settings-page "screen": a fixed 3-column row of blocks, exactly
+/// like the other screen - homogeneous widths, same height (whatever the
+/// `gtk::Stack` allocates it, see `populate`'s `pager`). Content that
+/// doesn't fit here moves to the matching block on the other screen
+/// instead of scrolling or stretching this one.
+fn new_screen() -> gtk::Box {
+    let screen = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+    screen.set_homogeneous(true);
+    screen.set_hexpand(true);
+    screen
+}
+
+/// One block: a fixed-size layout slot for a handful of
+/// `Adw.PreferencesGroup`s, not a widget in its own right - no border, no
+/// fill, so it's invisible to the user exactly like the plain column
+/// boxes this replaces. `set_overflow(Hidden)` is a clip-to-bounds safety
+/// net, not the primary correctness mechanism - the primary one is
+/// curating which groups go in which block/screen (see `populate`'s own
+/// comment on the layout) so real content already fits without needing
+/// to clip anything.
+fn new_column() -> gtk::Box {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    column.set_valign(gtk::Align::Start);
+    column.set_overflow(gtk::Overflow::Hidden);
+    column
 }
 
 /// Spawns a fresh instance with dev mode set to `dev_mode` and quits this

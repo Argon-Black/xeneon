@@ -109,6 +109,26 @@ pub fn set_style(opacity_percent: u32, color_hex: Option<&str>) {
           border-radius: 18px;
           {color_rule}
         }}
+        /* Small numbered dots for the settings page's own vertical
+           carousel (see settings_page.rs) - same opacity/color knobs as
+           every other indicator button above, just sized for a slim
+           stack of 2-3 rather than a full touch target. */
+        button.xeneon-settings-page-dot {{
+          min-width: 26px;
+          min-height: 26px;
+          padding: 2px;
+          margin: 4px 0;
+          opacity: {op:.2};
+          background-color: alpha(currentColor, 0.18);
+          font-weight: bold;
+          font-size: 10px;
+          border-radius: 13px;
+          {color_rule}
+        }}
+        button.xeneon-settings-page-dot.active {{
+          opacity: 1;
+          background-color: alpha(currentColor, 0.35);
+        }}
         ",
         tpx = TOUCH_TARGET_PX,
         op = inactive_opacity,
