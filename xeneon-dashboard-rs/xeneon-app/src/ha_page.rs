@@ -22,24 +22,26 @@
 //! surgery - see the design discussion in the memory system for why that
 //! trade was made.
 //!
-//! Also adds a fourth mechanism youtube.rs doesn't need: a mouse
-//! click-drag swipe gesture (`wire_swipe_gesture`). Touch-drag already
-//! reaches `Adw.Carousel`'s own swipe tracker fine (confirmed in hands-on
-//! testing - `Carousel`'s `allow-mouse-drag` property defaults on and
-//! isn't touched anywhere in this codebase), but WebKitGTK's own internal
-//! pointer handling claims a mouse press-and-drag over the WebView before
-//! the carousel's tracker ever sees it, so a mouse (unlike a finger)
-//! couldn't swipe away from this page at all. A youtube.rs-style grid
-//! widget never hit this, since dragging *out* of a small card either
-//! stays inside WebKit's own content or crosses onto the page background,
-//! which the carousel already owns - only a page-filling WebView, where
-//! every pixel is WebKit's, actually needs this fix.
+//! Leaving this page by mouse is the page indicator's job, not this
+//! module's: a mouse click-drag over the WebView can't reach
+//! `Adw.Carousel`'s own swipe tracker at all - confirmed in hands-on
+//! testing (`drag-begin` fires on a `GestureDrag` added here at Capture
+//! phase, so the press itself is seen, but `drag-update` never once
+//! fires afterward, meaning WebKit's own pointer handling takes over the
+//! rest of the sequence at a level no ancestor `GtkGesture`/
+//! `EventController` can contest, regardless of propagation phase or
+//! claiming - likely tied to WebKit's accelerated-compositing subsurface,
+//! see main.rs's DMA-BUF renderer history for the related, already
+//! reverted attempt at changing that rendering path). Touch-drag is
+//! unaffected and still swipes normally. See
+//! `page_indicator.rs::is_on_reveal_locked_page` for the actual fix: the
+//! indicator bar stays permanently visible (and clickable) while on this
+//! page, the same way it already does on the settings page.
 
-use adw::prelude::*;
 use gtk::glib;
+use gtk::prelude::*;
 use log::{debug, warn};
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::cell::RefCell;
 use webkit6::prelude::*;
 
 use crate::i18n_runtime as i18n;
@@ -95,11 +97,7 @@ thread_local! {
 /// only ever gated the settings UI, not this call). A non-conforming URL
 /// falls back to the same "not configured" placeholder `build_unconfigured`
 /// shows, rather than ever reaching `WebView::load_uri`.
-///
-/// `carousel` is only needed for `wire_swipe_gesture` (the mouse-drag
-/// swipe fix, see the module doc comment) - this page isn't otherwise
-/// aware of the carousel it lives in, same as every real widget page.
-pub fn build(url: &str, carousel: &adw::Carousel) -> gtk::Widget {
+pub fn build(url: &str) -> gtk::Widget {
     if !url.to_ascii_lowercase().starts_with("http://") && !url.to_ascii_lowercase().starts_with("https://") {
         warn!("ha_page_url {url:?} in config.json is not http(s), showing the unconfigured placeholder instead");
         return build_unconfigured();
@@ -129,8 +127,6 @@ pub fn build(url: &str, carousel: &adw::Carousel) -> gtk::Widget {
     let block_swipe = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
     block_swipe.connect_scroll(|_controller, _dx, _dy| glib::Propagation::Stop);
     overlay.add_controller(block_swipe);
-
-    wire_swipe_gesture(&overlay, carousel);
 
     webview.connect_load_changed({
         let spinner = spinner.clone();
@@ -166,80 +162,6 @@ pub fn build(url: &str, carousel: &adw::Carousel) -> gtk::Widget {
     CURRENT_WEBVIEW.with(|cell| *cell.borrow_mut() = Some(webview));
 
     overlay.upcast()
-}
-
-// Cumulative drag distance (px) before this is treated as a page-swipe
-// rather than a click/selection inside the dashboard - well past normal
-// pointer jitter (unlike a finger, a mouse click has near-zero incidental
-// movement), so a real click still reaches WebKit as one.
-const SWIPE_THRESHOLD_PX: f64 = 40.0;
-
-/// Lets a mouse click-drag over the WebView still swipe the carousel, the
-/// same way a finger already can - see the module doc comment for why
-/// this is needed at all (WebKit's own internal pointer handling wins the
-/// press-and-drag race against `Adw.Carousel`'s swipe tracker for mouse
-/// input specifically).
-///
-/// Deliberately not a smooth, 1:1 drag-follow like the carousel's native
-/// touch swipe - `Adw.Carousel`/`AdwSwipeTracker` don't expose a way to
-/// feed it a live partial-drag offset from here. Instead: once the
-/// horizontal drag clears `SWIPE_THRESHOLD_PX` (and dominates any
-/// vertical movement, so an up/down drag - selecting dashboard text,
-/// dragging a slider - is left alone), this claims the gesture and jumps
-/// straight to the neighboring page in that direction, animated. A
-/// coarser feel than the native swipe, but simple, and it actually works
-/// - see grid_widget.rs's own move-button drag for the same
-/// claim-the-sequence-to-beat-an-ancestor-recognizer technique, used
-/// there in the opposite direction (a descendant winning against this
-/// same carousel).
-///
-/// `Capture` phase is what actually makes this work, not the claim by
-/// itself: it lets this controller see the mouse press *before* it ever
-/// reaches the WebView, since WebKitGTK's own pointer handling isn't
-/// necessarily playing by GTK4's cooperative gesture-claim rules (it may
-/// just consume the event directly once it gets it) - waiting until
-/// Target/Bubble phase to compete would already be too late.
-fn wire_swipe_gesture(overlay: &gtk::Overlay, carousel: &adw::Carousel) {
-    let gesture = gtk::GestureDrag::new();
-    gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
-
-    // Set once a given drag has already triggered a page change, so a
-    // single mouse-down-move-move-move-up doesn't fire `scroll_to` on
-    // every `drag-update` tick past the threshold - reset at the start of
-    // the next drag.
-    let triggered = Rc::new(Cell::new(false));
-    gesture.connect_drag_begin({
-        let triggered = triggered.clone();
-        move |_gesture, _start_x, _start_y| triggered.set(false)
-    });
-
-    gesture.connect_drag_update({
-        let carousel = carousel.clone();
-        let triggered = triggered.clone();
-        move |gesture, offset_x, offset_y| {
-            if triggered.get() || offset_x.abs() < SWIPE_THRESHOLD_PX || offset_x.abs() <= offset_y.abs() {
-                return;
-            }
-            // Steals the sequence from WebKit now that this is clearly a
-            // horizontal swipe, not a click or a vertical scroll/select -
-            // see `EventSequenceState::Claimed`'s effect described above.
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            triggered.set(true);
-
-            let n_pages = carousel.n_pages();
-            if n_pages == 0 {
-                return;
-            }
-            let current = carousel.position().round().max(0.0) as u32;
-            // Dragging left (negative offset_x, content follows the
-            // pointer) reveals the page to the right - same convention as
-            // a finger swipe - so it moves forward, not back.
-            let target = if offset_x < 0.0 { (current + 1).min(n_pages - 1) } else { current.saturating_sub(1) };
-            carousel.scroll_to(&carousel.nth_page(target), true);
-        }
-    });
-
-    overlay.add_controller(gesture);
 }
 
 /// Shown instead of `build()` when the page is enabled but no URL has been
