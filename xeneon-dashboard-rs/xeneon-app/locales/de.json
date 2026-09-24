@@ -63,6 +63,11 @@
   "settings.fullscreen_row.subtitle": "Nur solange das Fenster den Fokus hat - eine globale Tastenkombination (funktioniert von überall) folgt in einer späteren Phase",
   "settings.goto_row.title": "Zu den Einstellungen",
 
+  "settings.ha_group.title": "Home Assistant",
+  "settings.ha_group.enable_row.title": "Home-Assistant-Seite aktivieren",
+  "settings.ha_group.enable_row.subtitle": "Fügt eine eigene Seite hinzu, abgesetzt vor den anderen Seiten",
+  "settings.ha_group.url_row.title": "Dashboard-URL",
+
   "widgets.configure_tooltip": "Konfigurieren",
   "widgets.delete_tooltip": "Entfernen",
   "widgets.move_tooltip": "Verschieben",

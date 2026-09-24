@@ -86,6 +86,17 @@ pub struct Config {
     // per-page override on top of this app-wide default (see grid_widget.rs
     // in xeneon-app).
     pub app_background_image_path: Option<String>,
+    // Whether the dedicated Home Assistant page exists in the carousel at
+    // all - a plain on/off switch rather than an addable/removable page
+    // like the widget pages, so "at most one" falls out for free (a bool
+    // can't be true twice). Off by default: a freshly-installed app has no
+    // Home Assistant instance to point at yet.
+    pub ha_page_enabled: bool,
+    // The Home Assistant dashboard URL the page's WebView loads - None
+    // until the user fills it in (the enable switch alone doesn't imply a
+    // URL is already known), same optional-until-configured shape as
+    // `indicator_button_color` above.
+    pub ha_page_url: Option<String>,
 }
 
 impl Default for Config {
@@ -103,6 +114,8 @@ impl Default for Config {
             accent_follow_system: false,
             default_widget_appearance: DefaultWidgetAppearance::default(),
             app_background_image_path: None,
+            ha_page_enabled: false,
+            ha_page_url: None,
         }
     }
 }

@@ -63,6 +63,11 @@
   "settings.fullscreen_row.subtitle": "Only while the window has focus - a global shortcut (works from anywhere) is a later phase",
   "settings.goto_row.title": "Go to settings",
 
+  "settings.ha_group.title": "Home Assistant",
+  "settings.ha_group.enable_row.title": "Enable the Home Assistant page",
+  "settings.ha_group.enable_row.subtitle": "Adds a dedicated page, set apart before the other pages",
+  "settings.ha_group.url_row.title": "Dashboard URL",
+
   "widgets.configure_tooltip": "Configure",
   "widgets.delete_tooltip": "Remove",
   "widgets.move_tooltip": "Move",

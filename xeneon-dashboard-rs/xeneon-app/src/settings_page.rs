@@ -115,8 +115,8 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     // screen 1 moves whole onto the matching block on screen 2 instead of
     // truncating or scrolling - laid out by hand below, block by block.
     // Screen 1: block1 Interface+Language, block2 Theme, block3 Pages.
-    // Screen 2: block1 default widget appearance, block2 empty (nothing
-    // needs it yet), block3 keyboard shortcuts + dev tools.
+    // Screen 2: block1 default widget appearance, block2 Home Assistant,
+    // block3 keyboard shortcuts + dev tools.
     let screen1 = new_screen();
     let (screen1_block1, screen1_block2, screen1_block3) = (new_column(), new_column(), new_column());
     screen1.append(&screen1_block1);
@@ -128,7 +128,6 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     screen2.append(&screen2_block1);
     screen2.append(&screen2_block2);
     screen2.append(&screen2_block3);
-    let _ = &screen2_block2; // deliberately empty for now
 
     // Every real widget page, kept live (not just a startup snapshot) so
     // both a page added at runtime (`PagesHandle::add_page`) and a setting
@@ -557,6 +556,54 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
 
     screen2_block1.append(&appearance_group);
 
+    // --- Screen 2, block 2: Home Assistant ---
+    // Just the on/off switch and the dashboard URL for now (step 1 of the
+    // feature) - the dedicated full-screen carousel page the switch will
+    // actually control, positioned before the first widget page and set
+    // apart visually in the page indicator (per the design discussion in
+    // the memory system), is a later step built on top of this once the
+    // setting itself exists to read.
+    let ha_group = adw::PreferencesGroup::new();
+    ha_group.set_title(&i18n::t("settings.ha_group.title"));
+
+    let ha_enable_row = adw::ActionRow::new();
+    ha_enable_row.set_title(&i18n::t("settings.ha_group.enable_row.title"));
+    ha_enable_row.set_subtitle(&i18n::t("settings.ha_group.enable_row.subtitle"));
+    let ha_enable_switch = gtk::Switch::new();
+    ha_enable_switch.set_active(config.ha_page_enabled);
+    ha_enable_switch.set_valign(gtk::Align::Center);
+    ha_enable_row.add_suffix(&ha_enable_switch);
+    ha_group.add(&ha_enable_row);
+
+    let ha_url_row = adw::EntryRow::new();
+    ha_url_row.set_title(&i18n::t("settings.ha_group.url_row.title"));
+    ha_url_row.set_text(config.ha_page_url.as_deref().unwrap_or(""));
+    ha_url_row.set_show_apply_button(true);
+    // Editable only once the page is actually enabled - avoids implying a
+    // URL typed here does anything while the page it feeds doesn't exist.
+    ha_url_row.set_sensitive(config.ha_page_enabled);
+    ha_group.add(&ha_url_row);
+
+    ha_enable_switch.connect_active_notify({
+        let ha_url_row = ha_url_row.clone();
+        move |switch| {
+            let enabled = switch.is_active();
+            config_store::update(|c| c.ha_page_enabled = enabled);
+            ha_url_row.set_sensitive(enabled);
+        }
+    });
+    ha_url_row.connect_apply(|row| {
+        let text = row.text().to_string();
+        // Empty text means "not configured yet", same as a freshly
+        // installed app - stored as `None`, not an empty string, so
+        // `Option::is_some()` stays a reliable "has a URL" check for
+        // whatever reads this later (the page's own WebView load logic).
+        let url = (!text.trim().is_empty()).then_some(text);
+        config_store::update(|c| c.ha_page_url = url);
+    });
+
+    screen2_block2.append(&ha_group);
+
     // --- Screen 2, block 3: Keyboard shortcuts + dev tools ---
     let shortcuts_group = adw::PreferencesGroup::new();
     shortcuts_group.set_title(&i18n::t("settings.shortcuts_group"));
@@ -703,6 +750,9 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let appearance_border_color_row = appearance_border_color_row.clone();
         let appearance_apply_row = appearance_apply_row.clone();
         let appearance_apply_button = appearance_apply_button.clone();
+        let ha_group = ha_group.clone();
+        let ha_enable_row = ha_enable_row.clone();
+        let ha_url_row = ha_url_row.clone();
         move || {
             title.set_label(&i18n::t("settings.title"));
             interface_group.set_title(&i18n::t("settings.interface_group"));
@@ -750,6 +800,10 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             appearance_apply_row.set_title(&i18n::t("settings.appearance_apply_row.title"));
             appearance_apply_row.set_subtitle(&i18n::t("settings.appearance_apply_row.subtitle"));
             appearance_apply_button.set_label(&i18n::t("settings.appearance_apply_row.button"));
+            ha_group.set_title(&i18n::t("settings.ha_group.title"));
+            ha_enable_row.set_title(&i18n::t("settings.ha_group.enable_row.title"));
+            ha_enable_row.set_subtitle(&i18n::t("settings.ha_group.enable_row.subtitle"));
+            ha_url_row.set_title(&i18n::t("settings.ha_group.url_row.title"));
             if let Some((group, row)) = &dev_group {
                 group.set_title(&i18n::t("settings.dev_group.title"));
                 row.set_title(&i18n::t("settings.dev_group.restart_button"));

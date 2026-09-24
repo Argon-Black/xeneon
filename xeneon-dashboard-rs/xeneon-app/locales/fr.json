@@ -63,6 +63,11 @@
   "settings.fullscreen_row.subtitle": "Seulement quand la fenêtre a le focus - un raccourci global (fonctionne de partout) viendra dans une phase ultérieure",
   "settings.goto_row.title": "Aller aux réglages",
 
+  "settings.ha_group.title": "Home Assistant",
+  "settings.ha_group.enable_row.title": "Activer la page Home Assistant",
+  "settings.ha_group.enable_row.subtitle": "Ajoute une page dédiée, en retrait avant les autres pages",
+  "settings.ha_group.url_row.title": "URL du tableau de bord",
+
   "widgets.configure_tooltip": "Configurer",
   "widgets.delete_tooltip": "Supprimer",
   "widgets.move_tooltip": "Déplacer",

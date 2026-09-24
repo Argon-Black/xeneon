@@ -63,6 +63,11 @@
   "settings.fullscreen_row.subtitle": "Solo quando la finestra ha il focus - una scorciatoia globale (funziona da qualsiasi punto) arriverà in una fase successiva",
   "settings.goto_row.title": "Vai alle impostazioni",
 
+  "settings.ha_group.title": "Home Assistant",
+  "settings.ha_group.enable_row.title": "Attiva la pagina Home Assistant",
+  "settings.ha_group.enable_row.subtitle": "Aggiunge una pagina dedicata, separata, prima delle altre pagine",
+  "settings.ha_group.url_row.title": "URL della dashboard",
+
   "widgets.configure_tooltip": "Configura",
   "widgets.delete_tooltip": "Rimuovi",
   "widgets.move_tooltip": "Sposta",

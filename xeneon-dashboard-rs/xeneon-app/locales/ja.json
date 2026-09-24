@@ -63,6 +63,11 @@
   "settings.fullscreen_row.subtitle": "ウィンドウがフォーカスされている間のみ有効です。どこからでも使えるグローバルショートカットは今後追加予定です。",
   "settings.goto_row.title": "設定に移動",
 
+  "settings.ha_group.title": "Home Assistant",
+  "settings.ha_group.enable_row.title": "Home Assistant ページを有効にする",
+  "settings.ha_group.enable_row.subtitle": "他のページの前に、独立した専用ページを追加します",
+  "settings.ha_group.url_row.title": "ダッシュボードのURL",
+
   "widgets.configure_tooltip": "設定",
   "widgets.delete_tooltip": "削除",
   "widgets.move_tooltip": "移動",

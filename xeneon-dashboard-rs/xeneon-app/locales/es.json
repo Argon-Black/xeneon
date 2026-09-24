@@ -63,6 +63,11 @@
   "settings.fullscreen_row.subtitle": "Solo mientras la ventana tiene el foco - un atajo global (funciona desde cualquier lugar) llegará más adelante",
   "settings.goto_row.title": "Ir a ajustes",
 
+  "settings.ha_group.title": "Home Assistant",
+  "settings.ha_group.enable_row.title": "Activar la página de Home Assistant",
+  "settings.ha_group.enable_row.subtitle": "Añade una página dedicada, aparte, antes de las demás páginas",
+  "settings.ha_group.url_row.title": "URL del panel",
+
   "widgets.configure_tooltip": "Configurar",
   "widgets.delete_tooltip": "Eliminar",
   "widgets.move_tooltip": "Mover",
