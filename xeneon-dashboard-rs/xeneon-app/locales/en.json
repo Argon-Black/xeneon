@@ -67,6 +67,7 @@
   "settings.ha_group.enable_row.title": "Enable the Home Assistant page",
   "settings.ha_group.enable_row.subtitle": "Adds a dedicated page, set apart before the other pages",
   "settings.ha_group.url_row.title": "Dashboard URL",
+  "settings.ha_group.url_row.invalid": "Must start with http:// or https://",
 
   "widgets.configure_tooltip": "Configure",
   "widgets.delete_tooltip": "Remove",

@@ -67,6 +67,7 @@
   "settings.ha_group.enable_row.title": "Home-Assistant-Seite aktivieren",
   "settings.ha_group.enable_row.subtitle": "Fügt eine eigene Seite hinzu, abgesetzt vor den anderen Seiten",
   "settings.ha_group.url_row.title": "Dashboard-URL",
+  "settings.ha_group.url_row.invalid": "Muss mit http:// oder https:// beginnen",
 
   "widgets.configure_tooltip": "Konfigurieren",
   "widgets.delete_tooltip": "Entfernen",

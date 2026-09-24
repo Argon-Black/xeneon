@@ -67,6 +67,7 @@
   "settings.ha_group.enable_row.title": "Home Assistant ページを有効にする",
   "settings.ha_group.enable_row.subtitle": "他のページの前に、独立した専用ページを追加します",
   "settings.ha_group.url_row.title": "ダッシュボードのURL",
+  "settings.ha_group.url_row.invalid": "http:// または https:// で始まる必要があります",
 
   "widgets.configure_tooltip": "設定",
   "widgets.delete_tooltip": "削除",

@@ -582,6 +582,14 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     // Editable only once the page is actually enabled - avoids implying a
     // URL typed here does anything while the page it feeds doesn't exist.
     ha_url_row.set_sensitive(config.ha_page_enabled);
+    // Flags a value already on disk that wouldn't pass `is_http_url` today -
+    // a hand-edited or pre-this-change config.json - the same way a fresh
+    // invalid entry gets flagged below, rather than silently showing as if
+    // nothing were wrong.
+    if config.ha_page_url.as_deref().is_some_and(|url| !is_http_url(url)) {
+        ha_url_row.add_css_class("error");
+        ha_url_row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
+    }
     ha_group.add(&ha_url_row);
 
     ha_enable_switch.connect_active_notify({
@@ -594,12 +602,33 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     });
     ha_url_row.connect_apply(|row| {
         let text = row.text().to_string();
+        let trimmed = text.trim();
         // Empty text means "not configured yet", same as a freshly
         // installed app - stored as `None`, not an empty string, so
         // `Option::is_some()` stays a reliable "has a URL" check for
         // whatever reads this later (the page's own WebView load logic).
-        let url = (!text.trim().is_empty()).then_some(text);
-        config_store::update(|c| c.ha_page_url = url);
+        if trimmed.is_empty() {
+            row.remove_css_class("error");
+            row.set_tooltip_text(None);
+            config_store::update(|c| c.ha_page_url = None);
+            return;
+        }
+        // Restricted to http(s) so a typo or a hand-edited config.json can
+        // never hand WebKit's `load_uri` a `file://` (local filesystem
+        // read) or `javascript:`/`data:` URI (arbitrary script in the
+        // page's context) when the dedicated HA page is built in the next
+        // step - this is the only gate that check ever gets, so it has to
+        // reject here rather than merely warn. The URL still isn't reached
+        // by anything else yet (this step is settings-only), but the
+        // config value is saved now and the page will trust it later.
+        if !is_http_url(trimmed) {
+            row.add_css_class("error");
+            row.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.invalid")));
+            return;
+        }
+        row.remove_css_class("error");
+        row.set_tooltip_text(None);
+        config_store::update(|c| c.ha_page_url = Some(trimmed.to_string()));
     });
 
     screen2_block2.append(&ha_group);
@@ -847,6 +876,19 @@ fn new_column() -> gtk::Box {
     column.set_valign(gtk::Align::Start);
     column.set_overflow(gtk::Overflow::Hidden);
     column
+}
+
+/// Whether `text` is safe to eventually hand to WebKit's `load_uri` for the
+/// Home Assistant page - a plain scheme allowlist, not a full URL parser
+/// (no new dependency needed for that: see the memory system's preference
+/// for minimal deps). `http`/`https` is exactly what a Home Assistant
+/// dashboard ever needs; a `file://` or `javascript:`/`data:` value getting
+/// this far is always either a typo or a hand-edited `config.json`, never a
+/// legitimate dashboard URL, so this rejects those outright rather than
+/// trying to sanitize them.
+fn is_http_url(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
 }
 
 /// Spawns a fresh instance with dev mode set to `dev_mode` and quits this
