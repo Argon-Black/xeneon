@@ -34,6 +34,7 @@
   "settings.app_background_row.subtitle": "Full screen, no border, on every widget page (not the dev page, not settings). A per-page image is coming next.",
   "settings.app_background_row.choose_image": "Choose an image…",
   "settings.app_background_row.clear_image": "Remove image",
+  "settings.app_background_row.restore_default": "Restore default image",
   "settings.theme_group.title": "Theme",
   "settings.theme_group.accent_row.title": "Accent color",
   "settings.theme_group.accent.iris": "Iris",

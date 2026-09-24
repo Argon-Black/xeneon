@@ -21,6 +21,20 @@ thread_local! {
 // `EMPTY_STATE_ICON_PATH`.
 const DEFAULT_BACKGROUND_ASSET: &str = "assets/default-background.svg";
 
+/// Copies the bundled default background image into `background_dir()` and
+/// returns the path it was stored at - shared by `init()` (first run) and
+/// `restore_default_background()` (the settings page's "Restaurer l'image
+/// par défaut" button). Copied in rather than pointed at straight from the
+/// source tree - same storage every user-picked background image goes
+/// through (see `settings_page.rs`), so the config directory stays
+/// self-contained, not dependent on this crate's own source checkout still
+/// being around.
+fn store_default_background() -> std::io::Result<String> {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_BACKGROUND_ASSET);
+    let path = xeneon_core::assets::store_asset(&xeneon_core::config::background_dir(), &source)?;
+    Ok(path.display().to_string())
+}
+
 pub fn init() {
     // A brand-new install (no config.json on disk yet) starts with this
     // bundled image as the app-wide background - saved immediately so it
@@ -35,15 +49,8 @@ pub fn init() {
     let first_run = !xeneon_core::config::config_file().exists();
     let mut config = Config::load();
     if first_run {
-        // Copied into `background_dir()` rather than pointed at
-        // straight from the source tree - same storage every
-        // user-picked background image goes through (see
-        // `settings_page.rs`), so a fresh install's config directory is
-        // self-contained from the very first launch, not dependent on
-        // this crate's own source checkout still being around.
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_BACKGROUND_ASSET);
-        match xeneon_core::assets::store_asset(&xeneon_core::config::background_dir(), &source) {
-            Ok(path) => config.app_background_image_path = Some(path.display().to_string()),
+        match store_default_background() {
+            Ok(path) => config.app_background_image_path = Some(path),
             Err(err) => warn!("failed to copy default background image: {err}"),
         }
         if let Err(err) = config.save() {
@@ -51,6 +58,17 @@ pub fn init() {
         }
     }
     CONFIG.with(|c| *c.borrow_mut() = config);
+}
+
+/// Re-copies the bundled default background image and sets it as the
+/// current app-wide background. Without this, clicking "Retirer l'image"
+/// once would be a one-way trip: `init()` only ever applies the default on
+/// a config-less first run, so the default image could otherwise never be
+/// gotten back once cleared.
+pub fn restore_default_background() -> std::io::Result<()> {
+    let path = store_default_background()?;
+    update(|c| c.app_background_image_path = Some(path));
+    Ok(())
 }
 
 pub fn get() -> Config {

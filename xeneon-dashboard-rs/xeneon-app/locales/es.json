@@ -34,6 +34,7 @@
   "settings.app_background_row.subtitle": "Pantalla completa, sin borde, en todas las páginas de widgets (no en la página de desarrollo ni en los ajustes). Una imagen por página llegará próximamente.",
   "settings.app_background_row.choose_image": "Elegir una imagen…",
   "settings.app_background_row.clear_image": "Quitar imagen",
+  "settings.app_background_row.restore_default": "Restaurar imagen predeterminada",
   "settings.theme_group.title": "Tema",
   "settings.theme_group.accent_row.title": "Color de acento",
   "settings.theme_group.accent.iris": "Iris",

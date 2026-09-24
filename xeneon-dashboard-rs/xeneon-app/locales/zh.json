@@ -34,6 +34,7 @@
   "settings.app_background_row.subtitle": "在每个小组件页面全屏显示,无边框(不包括开发页面和设置页面)。按页设置图片的功能即将推出。",
   "settings.app_background_row.choose_image": "选择图片…",
   "settings.app_background_row.clear_image": "移除图片",
+  "settings.app_background_row.restore_default": "恢复默认图片",
   "settings.theme_group.title": "主题",
   "settings.theme_group.accent_row.title": "强调色",
   "settings.theme_group.accent.iris": "鸢尾紫",

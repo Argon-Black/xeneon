@@ -206,22 +206,32 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     let app_background_choose_button = gtk::Button::with_label(&i18n::t("settings.app_background_row.choose_image"));
     app_background_choose_button.set_valign(gtk::Align::Center);
     app_background_row.add_suffix(&app_background_choose_button);
+    // Only shown alongside "choose" (i.e. only when there's currently no
+    // image) - re-copies the bundled default rather than leaving "Retirer
+    // l'image" a dead end with no way back to it. See
+    // `config_store::restore_default_background`.
+    let app_background_restore_default_button =
+        gtk::Button::with_label(&i18n::t("settings.app_background_row.restore_default"));
+    app_background_restore_default_button.set_valign(gtk::Align::Center);
+    app_background_row.add_suffix(&app_background_restore_default_button);
     let app_background_clear_button = gtk::Button::with_label(&i18n::t("settings.app_background_row.clear_image"));
     app_background_clear_button.set_valign(gtk::Align::Center);
     app_background_row.add_suffix(&app_background_clear_button);
     interface_group.add(&app_background_row);
 
-    // Only one of the two is shown at a time: with an image already set,
-    // "choose" is hidden so the only way forward is "clear" first - makes
-    // it obvious that changing the image means removing it, not
-    // overwriting it in place. Mirrors the same pattern the Python
-    // original uses for a page's own background image.
+    // With an image already set, "choose"/"restore default" are hidden so
+    // the only way forward is "clear" first - makes it obvious that
+    // changing the image means removing it, not overwriting it in place.
+    // Mirrors the same pattern the Python original uses for a page's own
+    // background image.
     let sync_app_background_buttons = {
         let app_background_choose_button = app_background_choose_button.clone();
+        let app_background_restore_default_button = app_background_restore_default_button.clone();
         let app_background_clear_button = app_background_clear_button.clone();
         move || {
             let has_image = config_store::get().app_background_image_path.is_some();
             app_background_choose_button.set_visible(!has_image);
+            app_background_restore_default_button.set_visible(!has_image);
             app_background_clear_button.set_visible(has_image);
         }
     };
@@ -263,6 +273,21 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
                 }
                 sync_app_background_buttons();
             });
+        }
+    });
+    app_background_restore_default_button.connect_clicked({
+        let pages_shared = pages_shared.clone();
+        let sync_app_background_buttons = sync_app_background_buttons.clone();
+        move |_| {
+            if let Err(err) = config_store::restore_default_background() {
+                warn!("failed to restore default background image: {err}");
+                return;
+            }
+            let path = config_store::get().app_background_image_path;
+            for page in pages_shared.borrow().iter() {
+                page.set_background_image(path.as_deref());
+            }
+            sync_app_background_buttons();
         }
     });
     app_background_clear_button.connect_clicked({
