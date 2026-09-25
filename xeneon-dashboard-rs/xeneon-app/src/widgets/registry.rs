@@ -169,6 +169,16 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         singleton: false,
     },
     WidgetDescriptor {
+        kind: "network_sx",
+        title_key: "widgets.network.title",
+        card_title_key: "widgets.network.title",
+        size: SIZE_SX,
+        spawn: crate::widgets::network_sx::spawn,
+        restore: crate::widgets::network_sx::restore,
+        preview: None,
+        singleton: false,
+    },
+    WidgetDescriptor {
         kind: "temp_gauge",
         title_key: "widgets.temp_gauge.title",
         card_title_key: "widgets.temp_gauge.title",
