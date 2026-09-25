@@ -437,15 +437,30 @@ fn build_content() -> (Rc<NetworkState>, gtk::Widget) {
     let icon = gtk::Image::from_icon_name(Direction::In.icon_name());
     icon.add_css_class("xeneon-network-icon");
     icon.set_pixel_size(ICON_PX);
+    icon.set_halign(gtk::Align::Center);
+    icon.set_valign(gtk::Align::Center);
     root.append(&icon);
 
     let caption_label = gtk::Label::new(None);
     caption_label.add_css_class("xeneon-network-caption");
+    caption_label.set_halign(gtk::Align::Center);
     caption_label.set_valign(gtk::Align::Center);
+    // Unlike `cpu_temp.rs`'s fixed-length "CPU" caption, this one is a
+    // real interface name (or a user-typed custom label) - either can be
+    // long enough (`enp0s31f6`, or a custom label the user didn't think to
+    // keep short) to overflow this SSX card's ~196px width. Without a cap,
+    // an overflowing label pushes the whole row wider than the card, and
+    // `root`'s centering then centers that oversized, partly-clipped row
+    // instead of the visible content - reading as "off-center" even though
+    // the box math is correct. Capping the caption's width keeps the row's
+    // natural size within the card, so centering always looks right.
+    caption_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    caption_label.set_max_width_chars(6);
     root.append(&caption_label);
 
     let value_label = gtk::Label::new(None);
     value_label.add_css_class("xeneon-network-value");
+    value_label.set_halign(gtk::Align::Center);
     value_label.set_valign(gtk::Align::Center);
     root.append(&value_label);
 
