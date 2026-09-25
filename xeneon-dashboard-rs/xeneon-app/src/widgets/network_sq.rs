@@ -102,7 +102,7 @@ const BASE_HEADER_ICON_PX: f64 = 18.0;
 const BASE_NAME_FONT_PX: f64 = 17.0;
 const MIN_CONTENT_SCALE: f64 = 0.5;
 const MAX_CONTENT_SCALE: f64 = 2.0;
-const DEFAULT_CONTENT_SCALE: f64 = 1.7;
+const DEFAULT_CONTENT_SCALE: f64 = 1.25;
 
 /// Bounds the rate line's width - it no longer includes the interface name
 /// (moved to its own header row), so unlike the earlier text-only version
