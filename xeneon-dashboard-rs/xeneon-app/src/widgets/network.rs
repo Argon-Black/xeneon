@@ -358,7 +358,7 @@ impl NetworkState {
         // (broken) markup instead of displayed literally.
         let name = self.display_label(effective_name.as_deref());
         self.caption_label.set_markup(&format!(
-            "<span color=\"{}\">{}</span> {}",
+            "<span color=\"{}\" weight=\"bold\">{}</span> {}",
             direction.color_hex(),
             direction.arrow(),
             gtk::glib::markup_escape_text(&name)
