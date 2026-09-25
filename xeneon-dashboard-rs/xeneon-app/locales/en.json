@@ -166,6 +166,7 @@
 
   "widgets.network.title": "Network",
   "widgets.network.unavailable": "No interface found",
+  "widgets.network.vpn_active": "VPN active",
   "widgets.network.settings.interface": "Interface",
   "widgets.network.settings.interface_auto": "Automatic",
   "widgets.network.settings.custom_label": "Display name",

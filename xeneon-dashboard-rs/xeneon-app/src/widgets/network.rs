@@ -151,6 +151,40 @@ pub fn default_interface() -> Option<String> {
     None
 }
 
+/// True if `name` is a wireless (Wi-Fi) interface - detected via the
+/// kernel's own marker for this, `/sys/class/net/<name>/wireless` (the
+/// older per-interface wireless-extensions directory) or the
+/// `/sys/class/net/<name>/phy80211` symlink (present for anything driven
+/// by the modern cfg80211/nl80211 stack, which covers virtually every
+/// Wi-Fi adapter in use today) - either existing is enough. A plain
+/// file-existence check, matching this module's `/proc`/`/sys`-only, no-
+/// new-crate approach; `false` for anything not found under
+/// `/sys/class/net` at all; used to pick between the Wi-Fi/Ethernet icon
+/// in the SQ/M cards.
+pub fn is_wireless(name: &str) -> bool {
+    let base = std::path::Path::new("/sys/class/net").join(name);
+    base.join("wireless").exists() || base.join("phy80211").exists()
+}
+
+/// True if `name` looks like a VPN tunnel interface, by name prefix -
+/// WireGuard (`wg`), OpenVPN/generic TUN devices (`tun`), TAP-mode VPNs
+/// (`tap`), and legacy PPP-based VPNs like OpenConnect/PPTP (`ppp`). A
+/// heuristic, not a guarantee: nothing in `/proc`/`/sys` labels an
+/// interface "this is a VPN", so this is inferred the same way a human
+/// would glance at `ip addr` and recognize the name - it covers every
+/// common Linux VPN client without needing to shell out to or link
+/// against any of them, at the cost of a false negative for a VPN
+/// deliberately renamed to something else (rare) or a false positive for
+/// a non-VPN tunnel that happens to share one of these prefixes (rarer
+/// still, on a typical desktop). Used to show the SQ/M cards' VPN badge
+/// for whichever interface the card is currently displaying - see
+/// `network_sq.rs`'s module doc comment for why that's tied to the
+/// displayed interface rather than "is any VPN active on this machine".
+pub fn is_vpn_like(name: &str) -> bool {
+    const VPN_PREFIXES: [&str; 4] = ["wg", "tun", "tap", "ppp"];
+    VPN_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+}
+
 /// Human-readable rate, e.g. `12.4M`, `512K`, `48B` - binary units (1024,
 /// not 1000) to match what `free`/`df`/GNOME System Monitor already show,
 /// one decimal place once past bytes/sec since a bare integer megabyte

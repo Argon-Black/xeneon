@@ -166,6 +166,7 @@
 
   "widgets.network.title": "Netzwerk",
   "widgets.network.unavailable": "Keine Schnittstelle gefunden",
+  "widgets.network.vpn_active": "VPN aktiv",
   "widgets.network.settings.interface": "Schnittstelle",
   "widgets.network.settings.interface_auto": "Automatisch",
   "widgets.network.settings.custom_label": "Anzeigename",

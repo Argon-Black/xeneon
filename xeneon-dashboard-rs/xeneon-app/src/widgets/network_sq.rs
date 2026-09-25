@@ -14,20 +14,30 @@
 //! moved out to its own header row, since the mockup put it in a corner
 //! rather than centered.
 //!
-//! The network icon is a small bundled SVG (`assets/network-icon.svg`),
-//! rasterized once and cached, loaded the same way `audio.rs` loads its
-//! empty-state illustration - deliberately *not* a
-//! `gtk::Image::from_icon_name` freedesktop icon. `network.rs`'s SSX card
-//! originally tried that (`network-receive-symbolic`) and it silently
-//! failed to render: the user's active icon theme turned out to ship
-//! KDE/Breeze-style symbolic SVGs (`currentColor` + a `ColorScheme-Text`
-//! CSS class) rather than the GNOME/Adwaita convention GTK4's symbolic-
-//! icon recoloring expects, so nothing painted. A bundled SVG with its
-//! fill color baked in at source and rendered as a plain raster texture
-//! sidesteps that whole pipeline - same reasoning as switching SSX's own
-//! direction icon to a Unicode arrow, just with a real (small,
-//! monochrome) icon this time instead of a character glyph, since the
-//! user specifically asked for one here.
+//! The header icon switches between Wi-Fi and Ethernet glyphs depending on
+//! what the currently-effective interface actually is (`network::
+//! is_wireless`, a `/sys/class/net/<name>/{wireless,phy80211}` check), and
+//! a small green shield badge appears at the header's far right whenever
+//! that interface looks like a VPN tunnel (`network::is_vpn_like`, a name-
+//! prefix heuristic - `wg`/`tun`/`tap`/`ppp`). The badge is tied to
+//! *this card's own displayed interface* being a VPN, not "is some VPN
+//! active anywhere on the machine" - in `Auto` mode those usually end up
+//! meaning the same thing anyway, since a connected VPN typically takes
+//! over the default route (which is exactly what `Auto` follows), but a
+//! card pinned to a specific physical interface won't light up just
+//! because an unrelated VPN happens to be up elsewhere.
+//!
+//! All three icons are small bundled SVGs (`assets/network-icon.svg`,
+//! `assets/ethernet-icon.svg`, `assets/vpn-icon.svg`), rasterized once
+//! each and cached, loaded the same way `audio.rs` loads its empty-state
+//! illustration - deliberately *not* `gtk::Image::from_icon_name`
+//! freedesktop icons. `network.rs`'s SSX card originally tried that
+//! (`network-receive-symbolic`) and it silently failed to render: the
+//! user's active icon theme turned out to ship KDE/Breeze-style symbolic
+//! SVGs (`currentColor` + a `ColorScheme-Text` CSS class) rather than the
+//! GNOME/Adwaita convention GTK4's symbolic-icon recoloring expects, so
+//! nothing painted. A bundled SVG with its fill color baked in at source
+//! and rendered as a plain raster texture sidesteps that whole pipeline.
 //!
 //! The graph is a `gtk::DrawingArea` painted with Cairo (already pulled in
 //! by `gtk4`, no new crate) - two auto-scaled line+fill traces over the
@@ -45,7 +55,7 @@ use std::sync::Once;
 use std::time::Instant;
 
 use crate::i18n_runtime as i18n;
-use crate::widgets::network::{default_interface, format_rate_fixed, read_interfaces, InterfaceCounters};
+use crate::widgets::network::{default_interface, format_rate_fixed, is_vpn_like, is_wireless, read_interfaces, InterfaceCounters};
 use crate::widgets::registry::WidgetInstance;
 
 const REFRESH_INTERVAL_SECONDS: u32 = 2;
@@ -70,37 +80,47 @@ const MAX_VALUES_WIDTH_CHARS: i32 = 24;
 /// (a plain Vec-backed deque of two `f64`s per sample, nothing fancier).
 const MAX_HISTORY_SAMPLES: usize = 60;
 
-const NETWORK_ICON_PATH: &str = "assets/network-icon.svg";
-/// Rasterized well above the ~18px this icon actually displays at, so it
-/// stays crisp rather than looking like an upscaled bitmap - same
+const WIFI_ICON_PATH: &str = "assets/network-icon.svg";
+const ETHERNET_ICON_PATH: &str = "assets/ethernet-icon.svg";
+const VPN_ICON_PATH: &str = "assets/vpn-icon.svg";
+/// Rasterized well above the ~18px these icons actually display at, so
+/// they stay crisp rather than looking like upscaled bitmaps - same
 /// reasoning as `audio.rs`'s `EMPTY_STATE_ICON_RASTER_PX`, just a much
-/// smaller target size since this is a small corner icon, not hero art.
-const NETWORK_ICON_RASTER_PX: i32 = 96;
-const NETWORK_ICON_DISPLAY_PX: i32 = 18;
+/// smaller target size since these are small corner icons, not hero art.
+const ICON_RASTER_PX: i32 = 96;
+const HEADER_ICON_DISPLAY_PX: i32 = 18;
+const VPN_BADGE_DISPLAY_PX: i32 = 16;
 
 thread_local! {
-    // Loaded once and reused by every instance of this widget, same
-    // caching shape as `audio.rs`'s `EMPTY_STATE_TEXTURE` - the icon never
-    // changes, and a failed load is cached too so a missing/corrupt file
-    // doesn't get retried on every single widget construction.
-    static NETWORK_ICON_TEXTURE: RefCell<Option<Option<gtk::gdk::Texture>>> = RefCell::new(None);
+    // Keyed by source path, loaded once per icon and reused by every
+    // instance of this widget - same caching shape as `audio.rs`'s
+    // `EMPTY_STATE_TEXTURE`, just holding three icons instead of one
+    // (the header icon switches between Wi-Fi/Ethernet at runtime, so a
+    // single cached texture the way the first version of this widget had
+    // isn't enough any more). A failed load is cached too, so a missing/
+    // corrupt file doesn't get retried on every single widget
+    // construction or every `refresh()` tick.
+    static ICON_TEXTURES: RefCell<std::collections::HashMap<&'static str, Option<gtk::gdk::Texture>>> =
+        RefCell::new(std::collections::HashMap::new());
 }
 
-/// The small network glyph shown in the header - `None` if the bundled SVG
-/// failed to load, in which case the header just shows the name with no
-/// icon rather than a broken image.
-fn network_icon_texture() -> Option<gtk::gdk::Texture> {
-    NETWORK_ICON_TEXTURE.with(|cell| {
-        let mut cell = cell.borrow_mut();
-        if cell.is_none() {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(NETWORK_ICON_PATH);
-            let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&path, NETWORK_ICON_RASTER_PX, NETWORK_ICON_RASTER_PX)
-                .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
-                .inspect_err(|err| warn!("failed to load {}: {err}", path.display()))
-                .ok();
-            *cell = Some(texture);
+/// Loads and caches the bundled SVG at `path` (relative to the crate
+/// root, e.g. `WIFI_ICON_PATH`) as a raster texture - `None` if it failed
+/// to load, in which case the caller just shows no icon rather than a
+/// broken image.
+fn load_icon_texture(path: &'static str) -> Option<gtk::gdk::Texture> {
+    ICON_TEXTURES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(texture) = cache.get(path) {
+            return texture.clone();
         }
-        cell.clone().unwrap()
+        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+        let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&full_path, ICON_RASTER_PX, ICON_RASTER_PX)
+            .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
+            .inspect_err(|err| warn!("failed to load {}: {err}", full_path.display()))
+            .ok();
+        cache.insert(path, texture.clone());
+        texture
     })
 }
 
@@ -122,7 +142,9 @@ fn ensure_css_installed() {
 /// Interface pin/custom-label/sample fields mirror `network_sx::
 /// NetworkSxState` exactly; `history` and `graph_area` are what's new here.
 struct NetworkSqState {
+    icon_image: gtk::Image,
     name_label: gtk::Label,
+    vpn_badge: gtk::Image,
     values_label: gtk::Label,
     graph_area: gtk::DrawingArea,
 
@@ -196,6 +218,21 @@ impl NetworkSqState {
 
         let effective_name = self.effective_interface_name(&interfaces);
         self.name_label.set_text(&self.display_label(effective_name.as_deref()));
+
+        // Wi-Fi vs Ethernet icon, and the VPN badge - both derived from
+        // whichever interface is currently effective, re-checked every
+        // tick since `Auto` mode can switch to a different interface (or
+        // a VPN can come up/go down) without any setting changing. `None`
+        // (no interface at all) falls back to the Ethernet icon and no
+        // VPN badge, same as `is_wireless`/`is_vpn_like` would answer for
+        // an interface that doesn't exist.
+        let wireless = effective_name.as_deref().is_some_and(is_wireless);
+        let vpn = effective_name.as_deref().is_some_and(is_vpn_like);
+        let icon_path = if wireless { WIFI_ICON_PATH } else { ETHERNET_ICON_PATH };
+        if let Some(texture) = load_icon_texture(icon_path) {
+            self.icon_image.set_paintable(Some(&texture));
+        }
+        self.vpn_badge.set_visible(vpn);
 
         let counters = effective_name.as_ref().and_then(|name| interfaces.iter().find(|(n, _, _)| n == name));
 
@@ -366,17 +403,39 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
     root.set_margin_top(12);
     root.set_margin_bottom(10);
 
+    // No `set_halign(Start)` here (unlike the earlier version of this
+    // widget) - left at the default `Fill` so this row spans the full
+    // card width, which the spacer below needs to push the VPN badge to
+    // the far right edge rather than right up against the name.
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    header.set_halign(gtk::Align::Start);
-    if let Some(texture) = network_icon_texture() {
-        let icon = gtk::Image::from_paintable(Some(&texture));
-        icon.set_pixel_size(NETWORK_ICON_DISPLAY_PX);
-        header.append(&icon);
-    }
+
+    // Paintable set in the first `refresh()` call below, once the
+    // effective interface (and therefore Wi-Fi vs Ethernet) is known -
+    // starts empty rather than defaulting to one or the other.
+    let icon_image = gtk::Image::new();
+    icon_image.set_pixel_size(HEADER_ICON_DISPLAY_PX);
+    header.append(&icon_image);
+
     let name_label = gtk::Label::new(None);
     name_label.add_css_class("xeneon-network-sq-name");
     name_label.set_halign(gtk::Align::Start);
     header.append(&name_label);
+
+    let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    header_spacer.set_hexpand(true);
+    header.append(&header_spacer);
+
+    let vpn_badge = gtk::Image::new();
+    if let Some(texture) = load_icon_texture(VPN_ICON_PATH) {
+        vpn_badge.set_paintable(Some(&texture));
+    }
+    vpn_badge.set_pixel_size(VPN_BADGE_DISPLAY_PX);
+    vpn_badge.set_tooltip_text(Some(&i18n::t("widgets.network.vpn_active")));
+    // Hidden until the first `refresh()` call below decides whether the
+    // effective interface actually looks like a VPN.
+    vpn_badge.set_visible(false);
+    header.append(&vpn_badge);
+
     root.append(&header);
 
     let values_label = gtk::Label::new(None);
@@ -393,7 +452,9 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
     root.append(&graph_area);
 
     let state = Rc::new(NetworkSqState {
+        icon_image,
         name_label,
+        vpn_badge,
         values_label,
         graph_area: graph_area.clone(),
         interface_name: RefCell::new(None),
