@@ -168,6 +168,7 @@
   "widgets.network.unavailable": "No se encontró ninguna interfaz",
   "widgets.network.settings.interface": "Interfaz",
   "widgets.network.settings.interface_auto": "Automático",
+  "widgets.network.settings.custom_label": "Nombre mostrado",
   "widgets.network.settings.direction": "Sentido",
   "widgets.network.settings.direction_in": "Descarga",
   "widgets.network.settings.direction_out": "Subida",

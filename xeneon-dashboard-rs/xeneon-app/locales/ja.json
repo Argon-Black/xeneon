@@ -168,6 +168,7 @@
   "widgets.network.unavailable": "インターフェースが見つかりません",
   "widgets.network.settings.interface": "インターフェース",
   "widgets.network.settings.interface_auto": "自動",
+  "widgets.network.settings.custom_label": "表示名",
   "widgets.network.settings.direction": "方向",
   "widgets.network.settings.direction_in": "受信",
   "widgets.network.settings.direction_out": "送信",

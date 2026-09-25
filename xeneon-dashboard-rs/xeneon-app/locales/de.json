@@ -168,6 +168,7 @@
   "widgets.network.unavailable": "Keine Schnittstelle gefunden",
   "widgets.network.settings.interface": "Schnittstelle",
   "widgets.network.settings.interface_auto": "Automatisch",
+  "widgets.network.settings.custom_label": "Anzeigename",
   "widgets.network.settings.direction": "Richtung",
   "widgets.network.settings.direction_in": "Empfang",
   "widgets.network.settings.direction_out": "Senden",

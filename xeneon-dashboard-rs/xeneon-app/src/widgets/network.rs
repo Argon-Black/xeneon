@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Network throughput widget (SSX footprint): a one-line "↓ 12.4M" (or
-//! "↑ 12.4M") readout of one network interface's current in or out rate,
+//! Network throughput widget (SSX footprint): a one-line "↓ wlan0 12.4M"
+//! (or "↑ ...") readout of one network interface's current in or out rate,
 //! ported to this project's own design after a quick visual mockup was
 //! agreed with the user. Same overall shape as `cpu_temp.rs`'s SSX widget
-//! (icon + value, `Auto`/pinned choice in settings, a timer-driven
-//! `refresh()`) - see that module's doc comment for the general pattern
-//! this one reuses.
+//! (direction icon + caption + value, `Auto`/pinned choice in settings, a
+//! timer-driven `refresh()`) - see that module's doc comment for the
+//! general pattern this one reuses.
 //!
 //! Unlike hwmon temperatures, there is no single kernel file that already
 //! reports "the current rate" - `/proc/net/dev` only exposes cumulative
@@ -77,6 +77,7 @@ fn ensure_css_installed() {
         let css = gtk::CssProvider::new();
         css.load_from_string(&format!(
             ".xeneon-network-icon {{ color: rgba(255, 255, 255, 0.75); }}\n\
+             .xeneon-network-caption {{ font-size: {FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}\n\
              .xeneon-network-value {{ font-size: {FONT_PX}px; font-weight: 700; color: #ffffff; }}"
         ));
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -222,12 +223,20 @@ impl Direction {
 /// dropdown to list.
 struct NetworkState {
     icon: gtk::Image,
+    caption_label: gtk::Label,
     value_label: gtk::Label,
 
     /// `None` means "auto-pick the default-route interface" (see
     /// `effective_interface_name`) - set independently from `direction`,
     /// since either can change without the other.
     interface_name: RefCell<Option<String>>,
+    /// Free-text override for the caption, only ever shown/edited while an
+    /// interface is pinned manually (see `display_label`) - mirrors
+    /// `CpuTempState::custom_label`: in `Auto` mode the caption already
+    /// shows the real, meaningful interface name, so there's nothing to
+    /// override there; once pinned, the user can still rename it to
+    /// whatever they'd recognize faster ("Salon", "Box"...).
+    custom_label: RefCell<Option<String>>,
     direction: Cell<Direction>,
     /// Snapshot of every non-loopback interface seen on the most recent
     /// `refresh()`, for the settings dropdown to list - re-read here
@@ -274,10 +283,37 @@ impl NetworkState {
         self.refresh();
     }
 
+    fn set_custom_label(&self, text: Option<String>) {
+        *self.custom_label.borrow_mut() = text.filter(|s| !s.is_empty());
+        self.refresh();
+    }
+
     fn set_direction(&self, direction: Direction) {
         self.direction.set(direction);
         self.icon.set_icon_name(Some(direction.icon_name()));
         self.refresh();
+    }
+
+    /// The caption text for `effective_name` (the interface name freshly
+    /// computed by `refresh()` for this tick - passed in rather than
+    /// recomputed here since, unlike `CpuTempState::display_label`, it
+    /// depends on a live `/proc/net/route` read, not just already-stored
+    /// state). While pinned, a non-empty `custom_label` wins; otherwise
+    /// (auto-picking, or pinned with no custom label set) the real
+    /// interface name is shown - this is also the answer to "does Auto
+    /// track whatever's actually in use": yes, and now it's visible on the
+    /// card instead of only in the tooltip. Falls back to this widget's
+    /// own generic title only when no interface name is known at all
+    /// (nothing plugged in / no route yet).
+    fn display_label(&self, effective_name: Option<&str>) -> String {
+        if self.interface_name.borrow().is_some() {
+            if let Some(custom) = self.custom_label.borrow().as_ref() {
+                if !custom.is_empty() {
+                    return custom.clone();
+                }
+            }
+        }
+        effective_name.map(str::to_string).unwrap_or_else(|| i18n::t("widgets.network.title"))
     }
 
     /// Re-reads every interface's counters, recomputes the rate for
@@ -291,6 +327,8 @@ impl NetworkState {
         *self.available_interfaces.borrow_mut() = interfaces.iter().map(|(name, _, _)| name.clone()).collect();
 
         let effective_name = self.effective_interface_name(&interfaces);
+        self.caption_label.set_text(&self.display_label(effective_name.as_deref()));
+
         let counters = effective_name.as_ref().and_then(|name| interfaces.iter().find(|(n, _, _)| n == name));
 
         match counters {
@@ -346,6 +384,7 @@ impl NetworkState {
     fn to_dict(&self) -> serde_json::Value {
         serde_json::json!({
             "interface": self.interface_name.borrow().clone(),
+            "custom_label": self.custom_label.borrow().clone(),
             "direction": self.direction.get().as_str(),
         })
     }
@@ -357,10 +396,22 @@ impl NetworkState {
             let name = data.get("interface").and_then(|v| v.as_str()).map(str::to_string);
             self.set_interface(name);
         }
+        if data.get("custom_label").is_some() {
+            let label = data.get("custom_label").and_then(|v| v.as_str()).map(str::to_string);
+            self.set_custom_label(label);
+        }
         if let Some(value) = data.get("direction").and_then(|v| v.as_str()) {
             self.set_direction(Direction::from_str(value));
         }
     }
+}
+
+/// True if `entries[index]` is a real pinned interface (`Some`) rather
+/// than the "Auto" placeholder (`None` at index 0) - used to gate the
+/// custom-label entry's sensitivity, same role as `cpu_temp.rs`'s own
+/// `is_manual`.
+fn is_manual(entries: &[Option<String>], index: usize) -> bool {
+    entries.get(index).map(|entry| entry.is_some()).unwrap_or(false)
 }
 
 fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
@@ -371,11 +422,11 @@ fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
     row
 }
 
-/// Builds the widget's whole on-card display: a direction icon and the
-/// rate side by side, centered - same layout shape as `cpu_temp.rs`'s
-/// `build_content` (caption + value), with the icon standing in for the
-/// caption label since "↓"/"↑" reads faster than translated text at this
-/// size.
+/// Builds the widget's whole on-card display: a direction icon, the
+/// interface name (or custom label) and the rate, side by side and
+/// centered - the same caption+value shape as `cpu_temp.rs`'s
+/// `build_content`, with a small direction icon added in front since
+/// "↓"/"↑" reads faster than the word "in"/"out" would at this size.
 fn build_content() -> (Rc<NetworkState>, gtk::Widget) {
     ensure_css_installed();
 
@@ -388,6 +439,11 @@ fn build_content() -> (Rc<NetworkState>, gtk::Widget) {
     icon.set_pixel_size(ICON_PX);
     root.append(&icon);
 
+    let caption_label = gtk::Label::new(None);
+    caption_label.add_css_class("xeneon-network-caption");
+    caption_label.set_valign(gtk::Align::Center);
+    root.append(&caption_label);
+
     let value_label = gtk::Label::new(None);
     value_label.add_css_class("xeneon-network-value");
     value_label.set_valign(gtk::Align::Center);
@@ -395,8 +451,10 @@ fn build_content() -> (Rc<NetworkState>, gtk::Widget) {
 
     let state = Rc::new(NetworkState {
         icon,
+        caption_label,
         value_label,
         interface_name: RefCell::new(None),
+        custom_label: RefCell::new(None),
         direction: Cell::new(Direction::In),
         available_interfaces: RefCell::new(Vec::new()),
         last_sample: RefCell::new(None),
@@ -467,15 +525,31 @@ fn build_settings(state: Rc<NetworkState>) -> gtk::Widget {
     interface_dropdown.set_hexpand(true);
     root.append(&interface_dropdown);
 
-    // Rebuilds the dropdown's translated option names + selection from
-    // current state - called once now and again on every language change
-    // (see the `i18n::on_change` registration near the end of this
-    // function), same pattern as `cpu_temp.rs::build_settings`'s
-    // `refresh_sensor_model`.
+    // Kept insensitive rather than hidden while on Auto, so its position
+    // in the popover doesn't jump around when switching back and forth -
+    // same reasoning and layout as `cpu_temp.rs::build_settings`'s
+    // `custom_label_label`/`custom_label_entry`.
+    // Set directly (not left to the `i18n::on_change` listener below,
+    // which only fires on a *later* language change) so the label reads
+    // correctly on first open, not just after switching languages once.
+    let custom_label_label = gtk::Label::new(Some(&i18n::t("widgets.network.settings.custom_label")));
+    custom_label_label.set_halign(gtk::Align::Start);
+    root.append(&custom_label_label);
+    let custom_label_entry = gtk::Entry::new();
+    custom_label_entry.set_text(state.custom_label.borrow().as_deref().unwrap_or(""));
+    root.append(&custom_label_entry);
+
+    // Rebuilds the dropdown's translated option names + selection, and the
+    // custom-label entry's sensitivity, from current state - called once
+    // now and again on every language change (see the `i18n::on_change`
+    // registration near the end of this function), same pattern as
+    // `cpu_temp.rs::build_settings`'s `refresh_sensor_model`.
     let refresh_interface_model: Rc<dyn Fn()> = {
         let entries = entries.clone();
         let state = state.clone();
         let interface_dropdown = interface_dropdown.clone();
+        let custom_label_label = custom_label_label.clone();
+        let custom_label_entry = custom_label_entry.clone();
         Rc::new(move || {
             let entries_ref = entries.borrow();
             let names: Vec<String> = entries_ref
@@ -487,11 +561,14 @@ fn build_settings(state: Rc<NetworkState>) -> gtk::Widget {
                 .collect();
             let current = state.interface_name.borrow().clone();
             let selected_index = entries_ref.iter().position(|e| *e == current).unwrap_or(0);
+            let manual = is_manual(&entries_ref, selected_index);
             drop(entries_ref);
 
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
             interface_dropdown.set_model(Some(&gtk::StringList::new(&name_refs)));
             interface_dropdown.set_selected(selected_index as u32);
+            custom_label_label.set_sensitive(manual);
+            custom_label_entry.set_sensitive(manual);
         })
     };
     refresh_interface_model();
@@ -512,12 +589,23 @@ fn build_settings(state: Rc<NetworkState>) -> gtk::Widget {
     interface_dropdown.connect_selected_notify({
         let state = state.clone();
         let entries = entries.clone();
+        let custom_label_label = custom_label_label.clone();
+        let custom_label_entry = custom_label_entry.clone();
         move |dropdown| {
             let index = dropdown.selected() as usize;
-            if let Some(entry) = entries.borrow().get(index) {
+            let entries_ref = entries.borrow();
+            if let Some(entry) = entries_ref.get(index) {
                 state.set_interface(entry.clone());
             }
+            let manual = is_manual(&entries_ref, index);
+            drop(entries_ref);
+            custom_label_label.set_sensitive(manual);
+            custom_label_entry.set_sensitive(manual);
         }
+    });
+    custom_label_entry.connect_changed({
+        let state = state.clone();
+        move |entry| state.set_custom_label(Some(entry.text().to_string()))
     });
     out_button.connect_toggled({
         let state = state.clone();
@@ -539,12 +627,14 @@ fn build_settings(state: Rc<NetworkState>) -> gtk::Widget {
     // --- retranslation ---
     i18n::on_change({
         let interface_label_widget = interface_label_widget.clone();
+        let custom_label_label = custom_label_label.clone();
         let direction_label = direction_label.clone();
         let in_button = in_button.clone();
         let out_button = out_button.clone();
         let refresh_interface_model = refresh_interface_model.clone();
         move || {
             interface_label_widget.set_label(&i18n::t("widgets.network.settings.interface"));
+            custom_label_label.set_label(&i18n::t("widgets.network.settings.custom_label"));
             direction_label.set_label(&i18n::t("widgets.network.settings.direction"));
             in_button.set_label(&i18n::t("widgets.network.settings.direction_in"));
             out_button.set_label(&i18n::t("widgets.network.settings.direction_out"));

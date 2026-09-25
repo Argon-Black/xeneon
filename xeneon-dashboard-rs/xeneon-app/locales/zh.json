@@ -168,6 +168,7 @@
   "widgets.network.unavailable": "未找到网络接口",
   "widgets.network.settings.interface": "网络接口",
   "widgets.network.settings.interface_auto": "自动",
+  "widgets.network.settings.custom_label": "显示名称",
   "widgets.network.settings.direction": "方向",
   "widgets.network.settings.direction_in": "下载",
   "widgets.network.settings.direction_out": "上传",

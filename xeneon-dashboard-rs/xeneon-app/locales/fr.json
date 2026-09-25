@@ -168,6 +168,7 @@
   "widgets.network.unavailable": "Aucune interface trouvée",
   "widgets.network.settings.interface": "Interface",
   "widgets.network.settings.interface_auto": "Automatique",
+  "widgets.network.settings.custom_label": "Nom affiché",
   "widgets.network.settings.direction": "Sens",
   "widgets.network.settings.direction_in": "Réception",
   "widgets.network.settings.direction_out": "Émission",
