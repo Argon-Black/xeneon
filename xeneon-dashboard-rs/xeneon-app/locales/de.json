@@ -164,6 +164,14 @@
   "widgets.temp_gauge.settings.bar_color": "Balkenfarbe",
   "widgets.temp_gauge.settings.content_scale": "Inhaltsgröße",
 
+  "widgets.network.title": "Netzwerk",
+  "widgets.network.unavailable": "Keine Schnittstelle gefunden",
+  "widgets.network.settings.interface": "Schnittstelle",
+  "widgets.network.settings.interface_auto": "Automatisch",
+  "widgets.network.settings.direction": "Richtung",
+  "widgets.network.settings.direction_in": "Empfang",
+  "widgets.network.settings.direction_out": "Senden",
+
   "widgets.agenda.title": "Agenda",
   "widgets.agenda.date_full": "{month} {year}",
   "widgets.agenda.days_short.mon": "Mo.",

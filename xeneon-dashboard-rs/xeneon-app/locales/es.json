@@ -164,6 +164,14 @@
   "widgets.temp_gauge.settings.bar_color": "Color de la barra",
   "widgets.temp_gauge.settings.content_scale": "Tamaño del contenido",
 
+  "widgets.network.title": "Red",
+  "widgets.network.unavailable": "No se encontró ninguna interfaz",
+  "widgets.network.settings.interface": "Interfaz",
+  "widgets.network.settings.interface_auto": "Automático",
+  "widgets.network.settings.direction": "Sentido",
+  "widgets.network.settings.direction_in": "Descarga",
+  "widgets.network.settings.direction_out": "Subida",
+
   "widgets.agenda.title": "Agenda",
   "widgets.agenda.date_full": "{month} {year}",
   "widgets.agenda.days_short.mon": "lun.",

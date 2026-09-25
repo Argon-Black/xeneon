@@ -164,6 +164,14 @@
   "widgets.temp_gauge.settings.bar_color": "进度条颜色",
   "widgets.temp_gauge.settings.content_scale": "内容大小",
 
+  "widgets.network.title": "网络",
+  "widgets.network.unavailable": "未找到网络接口",
+  "widgets.network.settings.interface": "网络接口",
+  "widgets.network.settings.interface_auto": "自动",
+  "widgets.network.settings.direction": "方向",
+  "widgets.network.settings.direction_in": "下载",
+  "widgets.network.settings.direction_out": "上传",
+
   "widgets.agenda.title": "日程",
   "widgets.agenda.date_full": "{year}年{month}",
   "widgets.agenda.days_short.mon": "周一",

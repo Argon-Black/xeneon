@@ -164,6 +164,14 @@
   "widgets.temp_gauge.settings.bar_color": "Bar color",
   "widgets.temp_gauge.settings.content_scale": "Content size",
 
+  "widgets.network.title": "Network",
+  "widgets.network.unavailable": "No interface found",
+  "widgets.network.settings.interface": "Interface",
+  "widgets.network.settings.interface_auto": "Automatic",
+  "widgets.network.settings.direction": "Direction",
+  "widgets.network.settings.direction_in": "Download",
+  "widgets.network.settings.direction_out": "Upload",
+
   "widgets.agenda.title": "Agenda",
   "widgets.agenda.date_full": "{month} {year}",
   "widgets.agenda.days_short.mon": "Mon",

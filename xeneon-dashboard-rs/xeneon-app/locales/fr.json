@@ -164,6 +164,14 @@
   "widgets.temp_gauge.settings.bar_color": "Couleur de la barre",
   "widgets.temp_gauge.settings.content_scale": "Taille du contenu",
 
+  "widgets.network.title": "Réseau",
+  "widgets.network.unavailable": "Aucune interface trouvée",
+  "widgets.network.settings.interface": "Interface",
+  "widgets.network.settings.interface_auto": "Automatique",
+  "widgets.network.settings.direction": "Sens",
+  "widgets.network.settings.direction_in": "Réception",
+  "widgets.network.settings.direction_out": "Émission",
+
   "widgets.agenda.title": "Agenda",
   "widgets.agenda.date_full": "{month} {year}",
   "widgets.agenda.days_short.mon": "lun.",
