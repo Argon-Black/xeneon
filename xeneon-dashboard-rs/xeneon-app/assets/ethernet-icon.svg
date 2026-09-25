@@ -1,7 +1,3 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <path d="M12 3.5v6.5M6 15.5v-4.5M18 15.5v-4.5M6 11h12" fill="none" stroke="#ffffff" stroke-opacity="0.85" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="9.4" y="1" width="5.2" height="3.6" rx="1.1" fill="#ffffff" fill-opacity="0.85"/>
-  <rect x="3.4" y="15" width="5.2" height="3.6" rx="1.1" fill="#ffffff" fill-opacity="0.85"/>
-  <rect x="9.4" y="15" width="5.2" height="3.6" rx="1.1" fill="#ffffff" fill-opacity="0.85"/>
-  <rect x="15.4" y="15" width="5.2" height="3.6" rx="1.1" fill="#ffffff" fill-opacity="0.6"/>
+  <path d="M8.1 2.6h7.8a1.3 1.3 0 0 1 1.3 1.3v5.9a1.3 1.3 0 0 1-.4.94L14.6 12.9v5.9a1 1 0 0 1-.52.88l-1.68.9a1 1 0 0 1-.94 0l-1.68-.9a1 1 0 0 1-.52-.88v-5.9L7.1 10.74a1.3 1.3 0 0 1-.4-.94V3.9a1.3 1.3 0 0 1 1.4-1.3Z" fill="#ffffff" fill-opacity="0.85"/>
 </svg>

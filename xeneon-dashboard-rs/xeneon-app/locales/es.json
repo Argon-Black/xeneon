@@ -167,6 +167,7 @@
   "widgets.network.title": "Red",
   "widgets.network.unavailable": "No se encontró ninguna interfaz",
   "widgets.network.vpn_active": "VPN activa",
+  "widgets.network.vpn_badge_label": "VPN",
   "widgets.network.settings.interface": "Interfaz",
   "widgets.network.settings.interface_auto": "Automático",
   "widgets.network.settings.custom_label": "Nombre mostrado",

@@ -167,6 +167,7 @@
   "widgets.network.title": "网络",
   "widgets.network.unavailable": "未找到网络接口",
   "widgets.network.vpn_active": "VPN 已连接",
+  "widgets.network.vpn_badge_label": "VPN",
   "widgets.network.settings.interface": "网络接口",
   "widgets.network.settings.interface_auto": "自动",
   "widgets.network.settings.custom_label": "显示名称",

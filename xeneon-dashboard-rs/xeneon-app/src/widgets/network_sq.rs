@@ -129,7 +129,12 @@ const ICON_SOURCE_FILL: &str = "#ffffff";
 /// `audio.rs`'s `EMPTY_STATE_ICON_RASTER_PX`, just a much smaller target
 /// size since these are small corner icons, not hero art.
 const ICON_RASTER_PX: i32 = 96;
-const VPN_BADGE_DISPLAY_PX: i32 = 16;
+/// Bigger than the header's own Wi-Fi/Ethernet icon (`BASE_HEADER_ICON_PX`
+/// at 100% scale) - a pill badge with a label reads as a unit even at
+/// this size, where a bare small icon didn't.
+const VPN_BADGE_ICON_PX: i32 = 15;
+const VPN_BADGE_FONT_PX: i32 = 12;
+const VPN_COLOR_HEX: &str = "#5DCAA5";
 
 thread_local! {
     // The VPN badge's fixed green never changes, so it only ever needs
@@ -200,7 +205,11 @@ fn ensure_css_installed() {
         let Some(display) = gtk::gdk::Display::default() else { return };
         let css = gtk::CssProvider::new();
         css.load_from_string(&format!(
-            ".xeneon-network-sq-values {{ font-size: {VALUES_FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}"
+            ".xeneon-network-sq-values {{ font-size: {VALUES_FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}\n\
+             .xeneon-network-sq-vpn-badge {{ background-color: rgba(93, 202, 165, 0.15); \
+             border-radius: 10px; padding: 3px 9px; }}\n\
+             .xeneon-network-sq-vpn-badge-label {{ font-size: {VPN_BADGE_FONT_PX}px; font-weight: 700; \
+             color: {VPN_COLOR_HEX}; }}"
         ));
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     });
@@ -223,7 +232,7 @@ struct NetworkSqState {
     css_class: String,
     icon_image: gtk::Image,
     name_label: gtk::Label,
-    vpn_badge: gtk::Image,
+    vpn_badge: gtk::Box,
     values_label: gtk::Label,
     graph_area: gtk::DrawingArea,
 
@@ -607,14 +616,24 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
     header_spacer.set_hexpand(true);
     header.append(&header_spacer);
 
-    let vpn_badge = gtk::Image::new();
+    // A pill (icon + "VPN" label), not a bare icon - a small icon on its
+    // own didn't read clearly at this size; the label makes it
+    // unambiguous at a glance, matching the mockup shown to the user.
+    let vpn_badge = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    vpn_badge.add_css_class("xeneon-network-sq-vpn-badge");
+    vpn_badge.set_valign(gtk::Align::Center);
+    let vpn_badge_icon = gtk::Image::new();
     if let Some(texture) = load_icon_texture(VPN_ICON_PATH) {
-        vpn_badge.set_paintable(Some(&texture));
+        vpn_badge_icon.set_paintable(Some(&texture));
     }
-    vpn_badge.set_pixel_size(VPN_BADGE_DISPLAY_PX);
+    vpn_badge_icon.set_pixel_size(VPN_BADGE_ICON_PX);
+    vpn_badge.append(&vpn_badge_icon);
+    let vpn_badge_label = gtk::Label::new(Some(&i18n::t("widgets.network.vpn_badge_label")));
+    vpn_badge_label.add_css_class("xeneon-network-sq-vpn-badge-label");
+    vpn_badge.append(&vpn_badge_label);
     vpn_badge.set_tooltip_text(Some(&i18n::t("widgets.network.vpn_active")));
-    // Hidden until the first `refresh()` call below decides whether the
-    // effective interface actually looks like a VPN.
+    // Hidden until the first `refresh()` call below decides whether any
+    // interface actually looks like a VPN.
     vpn_badge.set_visible(false);
     header.append(&vpn_badge);
 
