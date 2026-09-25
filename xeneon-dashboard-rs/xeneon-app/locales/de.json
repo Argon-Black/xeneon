@@ -352,5 +352,9 @@
   "widgets.system_info.unit_hour": "Std",
   "widgets.system_info.unit_minute": "Min",
   "widgets.system_info.uptime_label": "Betriebszeit: {value}",
-  "widgets.system_info.settings.disk_path": "Einhängepunkt"
+  "widgets.system_info.settings.disk_path": "Einhängepunkt",
+  "widgets.system_info.settings.content_scale": "Inhaltsgröße",
+  "widgets.system_info.settings.cpu_color": "CPU-Farbe",
+  "widgets.system_info.settings.mem_color": "Speicherfarbe",
+  "widgets.system_info.settings.disk_color": "Speicherplatzfarbe"
 }

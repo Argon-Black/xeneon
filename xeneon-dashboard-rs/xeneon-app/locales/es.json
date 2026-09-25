@@ -352,5 +352,9 @@
   "widgets.system_info.unit_hour": "h",
   "widgets.system_info.unit_minute": "min",
   "widgets.system_info.uptime_label": "En funcionamiento desde hace {value}",
-  "widgets.system_info.settings.disk_path": "Punto de montaje"
+  "widgets.system_info.settings.disk_path": "Punto de montaje",
+  "widgets.system_info.settings.content_scale": "Tamaño del contenido",
+  "widgets.system_info.settings.cpu_color": "Color de CPU",
+  "widgets.system_info.settings.mem_color": "Color de memoria",
+  "widgets.system_info.settings.disk_color": "Color de disco"
 }

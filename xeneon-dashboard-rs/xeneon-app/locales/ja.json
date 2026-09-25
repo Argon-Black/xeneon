@@ -352,5 +352,9 @@
   "widgets.system_info.unit_hour": "時間",
   "widgets.system_info.unit_minute": "分",
   "widgets.system_info.uptime_label": "稼働時間: {value}",
-  "widgets.system_info.settings.disk_path": "マウントポイント"
+  "widgets.system_info.settings.disk_path": "マウントポイント",
+  "widgets.system_info.settings.content_scale": "コンテンツサイズ",
+  "widgets.system_info.settings.cpu_color": "CPUの色",
+  "widgets.system_info.settings.mem_color": "メモリの色",
+  "widgets.system_info.settings.disk_color": "ディスクの色"
 }

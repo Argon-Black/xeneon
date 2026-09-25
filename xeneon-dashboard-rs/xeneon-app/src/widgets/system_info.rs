@@ -224,24 +224,65 @@ fn unquote(value: &str) -> String {
     value.trim().trim_matches('"').to_string()
 }
 
-/// The distro's human-facing name, preferring `PRETTY_NAME` (e.g. "Fedora
-/// Linux 44 (Workstation Edition)") and falling back to the plainer `NAME`
-/// field if that's missing, then to `""` if the file itself can't be read -
-/// every systemd-based distro ships at least one of the two.
-pub fn read_os_pretty_name() -> String {
+/// Uppercases the first character only (e.g. `fedora` -> `Fedora`) - used
+/// to turn `/etc/os-release`'s lowercase `ID` field into something
+/// display-worthy, without assuming anything about the rest of the string
+/// (some IDs are already multi-word/hyphenated, e.g. `opensuse-leap`).
+fn capitalize_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Builds the short OS badge text from already-parsed `/etc/os-release`
+/// fields - split out from `read_os_short_name` so the formatting logic
+/// (as opposed to the file reading/parsing) can be unit-tested directly.
+/// `id`/`version_id` (e.g. `fedora` + `44`) produce "Fedora 44"; `id` alone
+/// (a rolling-release distro with no `VERSION_ID`, e.g. Arch) produces just
+/// "Fedora"/"Arch"; with no usable `id` at all, falls back to whatever
+/// `pretty_name` holds, then to `""`.
+fn short_os_name_from_fields(id: Option<&str>, version_id: Option<&str>, pretty_name: Option<&str>) -> String {
+    match id.filter(|v| !v.is_empty()) {
+        Some(id) => {
+            let name = capitalize_first(id);
+            match version_id.filter(|v| !v.is_empty()) {
+                Some(version) => format!("{name} {version}"),
+                None => name,
+            }
+        }
+        None => pretty_name.unwrap_or_default().to_string(),
+    }
+}
+
+/// The distro's short badge text (e.g. "Fedora 44", "Ubuntu 24.04", or just
+/// "Arch" on a rolling release) - built from `/etc/os-release`'s `ID` and
+/// `VERSION_ID` fields rather than `PRETTY_NAME`, which is usually far
+/// longer ("Fedora Linux 44 (Workstation Edition)") than a small SQ card's
+/// header badge has room for. Falls back to `PRETTY_NAME`, then `NAME`,
+/// then `""` if the file can't be read or has none of these fields -
+/// every systemd-based distro ships at least `ID`.
+pub fn read_os_short_name() -> String {
     let Ok(content) = std::fs::read_to_string(OS_RELEASE_PATH) else {
         return String::new();
     };
+    let mut id = None;
+    let mut version_id = None;
     let mut pretty_name = None;
     let mut plain_name = None;
     for line in content.lines() {
-        if let Some(value) = line.strip_prefix("PRETTY_NAME=") {
+        if let Some(value) = line.strip_prefix("ID=") {
+            id = Some(unquote(value));
+        } else if let Some(value) = line.strip_prefix("VERSION_ID=") {
+            version_id = Some(unquote(value));
+        } else if let Some(value) = line.strip_prefix("PRETTY_NAME=") {
             pretty_name = Some(unquote(value));
         } else if let Some(value) = line.strip_prefix("NAME=") {
             plain_name = Some(unquote(value));
         }
     }
-    pretty_name.or(plain_name).unwrap_or_default()
+    short_os_name_from_fields(id.as_deref(), version_id.as_deref(), pretty_name.or(plain_name).as_deref())
 }
 
 /// The user's login shell's bare filename (e.g. `zsh`, not `/usr/bin/zsh`),
@@ -304,5 +345,20 @@ mod tests {
     fn unquote_strips_surrounding_quotes() {
         assert_eq!(unquote("\"Fedora Linux\""), "Fedora Linux");
         assert_eq!(unquote("plain"), "plain");
+    }
+
+    #[test]
+    fn short_os_name_combines_capitalized_id_and_version() {
+        assert_eq!(short_os_name_from_fields(Some("fedora"), Some("44"), None), "Fedora 44");
+    }
+
+    #[test]
+    fn short_os_name_drops_version_when_absent() {
+        assert_eq!(short_os_name_from_fields(Some("arch"), None, None), "Arch");
+    }
+
+    #[test]
+    fn short_os_name_falls_back_to_pretty_name_without_id() {
+        assert_eq!(short_os_name_from_fields(None, None, Some("Fedora Linux 44")), "Fedora Linux 44");
     }
 }

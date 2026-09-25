@@ -10,15 +10,23 @@
 //! Structurally this mirrors `network_sq.rs`: a header row, then content
 //! filling the rest of the card, all built with plain GTK boxes/labels plus
 //! a couple of small `gtk::DrawingArea`s painted with Cairo for the gauges -
-//! no new widget-drawing technique introduced here. Unlike `network_sq.rs`
-//! and `temp_gauge.rs`, this first version has no appearance customization
-//! beyond the generic popover (no content-scale slider, no color pickers) -
-//! the three gauge colors are fixed constants matching this app's existing
-//! defaults (`CPU_COLOR`/`MEM_COLOR` reuse `network_sq.rs`'s down/up rate
-//! blue and coral so the palette reads as one family across cards). The
-//! only functional setting is which mount point the disk gauge reads,
-//! since `/` isn't always the partition a user cares about (a separate
-//! `/home`, a data drive...).
+//! no new widget-drawing technique introduced here. The only functional
+//! setting is which mount point the disk gauge reads, since `/` isn't
+//! always the partition a user cares about (a separate `/home`, a data
+//! drive...).
+//!
+//! Appearance customization, per the user's own follow-up request: a single
+//! `content_scale` slider (mirrors `temp_gauge.rs`/`network_sq.rs`'s own)
+//! that grows/shrinks every gauge's label/value text and the footer lines -
+//! deliberately *not* the hostname or OS badge, which the user asked to
+//! keep at their fixed size since they already read fine and scaling them
+//! too would risk the header row overflowing the card - plus three
+//! independent color pickers, one per gauge, so CPU/memory/disk can each be
+//! recolored without needing to match `network_sq.rs`'s down/up palette.
+//! The scaled font sizes are applied the same way `network_sq.rs`'s
+//! `NAME_CSS`/`apply_content_scale` do: a per-instance CSS class (`FONT_CSS`
+//! below) scoping a `font-size` rule to just this card, since a plain
+//! shared class can't hold a different pixel size per instance.
 //!
 //! CPU load needs two `/proc/stat` samples to turn into a percentage (see
 //! `system_info::CpuTimes::usage_percent_since`), so this widget keeps the
@@ -32,13 +40,16 @@
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
 
+use crate::appearance_css::CssRuleRegistry;
+use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::WidgetInstance;
 use crate::widgets::system_info::{
     read_cpu_model, read_cpu_times, read_disk_usage, read_hostname, read_kernel_release, read_memory,
-    read_os_pretty_name, read_shell_name, read_uptime_seconds, CpuTimes,
+    read_os_short_name, read_shell_name, read_uptime_seconds, CpuTimes,
 };
 
 /// Slower than `cpu_temp.rs`/`network.rs`'s 2s - this widget touches more
@@ -53,22 +64,35 @@ const REFRESH_INTERVAL_SECONDS: u32 = 5;
 const DEFAULT_DISK_PATH: &str = "/";
 
 /// Same blue as `network_sq.rs`'s default down-rate/trace color
-/// (`DEFAULT_DOWN_COLOR_HEX`) so the two cards read as one palette.
-const CPU_COLOR: (f64, f64, f64) = (0x5d as f64 / 255.0, 0xa9 as f64 / 255.0, 0xe8 as f64 / 255.0);
+/// (`DEFAULT_DOWN_COLOR_HEX`) so the two cards read as one palette by
+/// default - still just a starting point now that all three are
+/// user-editable (see `SystemSqState::cpu_color`).
+const DEFAULT_CPU_COLOR_HEX: &str = "#5da9e8";
 /// Same coral as `network_sq.rs`'s default up-rate/trace color
 /// (`DEFAULT_UP_COLOR_HEX`).
-const MEM_COLOR: (f64, f64, f64) = (0xe8 as f64 / 255.0, 0x87 as f64 / 255.0, 0x5d as f64 / 255.0);
+const DEFAULT_MEM_COLOR_HEX: &str = "#e8875d";
 /// A third color not already used by a neighbouring widget, picked to read
 /// clearly against the same dark card background.
-const DISK_COLOR: (f64, f64, f64) = (0x8f as f64 / 255.0, 0xd3 as f64 / 255.0, 0xc7 as f64 / 255.0);
+const DEFAULT_DISK_COLOR_HEX: &str = "#8fd3c7";
 
+/// Fixed - deliberately excluded from `content_scale` (see the module doc
+/// comment).
 const HOSTNAME_FONT_PX: i32 = 20;
+/// Fixed, same reason as `HOSTNAME_FONT_PX`.
 const OS_BADGE_FONT_PX: i32 = 11;
-const GAUGE_LABEL_FONT_PX: i32 = 14;
-const GAUGE_VALUE_FONT_PX: i32 = 15;
-const FOOTER_FONT_PX: i32 = 12;
+/// Base sizes at `content_scale == 1.0` (100%) for the text that *is*
+/// resizable - the three gauges' labels/values and the four footer lines.
+/// Same "BASE_* times content_scale" technique as `temp_gauge.rs`.
+const BASE_GAUGE_LABEL_FONT_PX: f64 = 14.0;
+const BASE_GAUGE_VALUE_FONT_PX: f64 = 15.0;
+const BASE_FOOTER_FONT_PX: f64 = 12.0;
+const MIN_CONTENT_SCALE: f64 = 0.5;
+const MAX_CONTENT_SCALE: f64 = 2.0;
+const DEFAULT_CONTENT_SCALE: f64 = 1.0;
 /// Height of each gauge's `DrawingArea`, in pixels - also doubles as the
-/// bar's stroke thickness (see `draw_bar`), matching the mockup's 10px bars.
+/// bar's stroke thickness (see `draw_bar`), matching the mockup's 10px
+/// bars. Not scaled by `content_scale`: the user asked to resize text, and
+/// growing the bars too would risk three gauges no longer fitting the card.
 const GAUGE_BAR_HEIGHT_PX: i32 = 10;
 
 static INSTALL_CSS: Once = Once::new();
@@ -77,18 +101,29 @@ fn ensure_css_installed() {
     INSTALL_CSS.call_once(|| {
         let Some(display) = gtk::gdk::Display::default() else { return };
         let css = gtk::CssProvider::new();
+        // Color only for the three resizable classes below - their
+        // `font-size` comes from each instance's own `FONT_CSS` rule
+        // instead (see `SystemSqState::apply_content_scale`), since a
+        // single shared class can't hold a different pixel size per card.
         css.load_from_string(&format!(
             ".xeneon-sysinfo-hostname {{ font-size: {HOSTNAME_FONT_PX}px; font-weight: 500; color: #ffffff; }}\n\
              .xeneon-sysinfo-os-badge {{ background-color: rgba(255, 255, 255, 0.08); \
              border-radius: 10px; padding: 3px 10px; }}\n\
              .xeneon-sysinfo-os-badge-label {{ font-size: {OS_BADGE_FONT_PX}px; color: rgba(255, 255, 255, 0.7); }}\n\
-             .xeneon-sysinfo-gauge-label {{ font-size: {GAUGE_LABEL_FONT_PX}px; color: rgba(255, 255, 255, 0.78); }}\n\
-             .xeneon-sysinfo-gauge-value {{ font-size: {GAUGE_VALUE_FONT_PX}px; font-weight: 500; color: #ffffff; }}\n\
-             .xeneon-sysinfo-footer {{ font-size: {FOOTER_FONT_PX}px; color: rgba(255, 255, 255, 0.55); }}\n\
+             .xeneon-sysinfo-gauge-label {{ color: rgba(255, 255, 255, 0.78); }}\n\
+             .xeneon-sysinfo-gauge-value {{ font-weight: 500; color: #ffffff; }}\n\
+             .xeneon-sysinfo-footer {{ color: rgba(255, 255, 255, 0.55); }}\n\
              .xeneon-sysinfo-divider {{ background-color: rgba(255, 255, 255, 0.08); }}"
         ));
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     });
+}
+
+// Per-instance scaled font-size rule for the resizable text, keyed by each
+// instance's own unique CSS class - one card's content scale never bleeds
+// into another's. Same registry/pattern as `network_sq.rs`'s `NAME_CSS`.
+thread_local! {
+    static FONT_CSS: CssRuleRegistry = CssRuleRegistry::new(gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 }
 
 /// A thin full-width rule, styled by `.xeneon-sysinfo-divider` above -
@@ -131,6 +166,13 @@ fn build_metric_row() -> (gtk::Box, gtk::Label, gtk::Label, gtk::DrawingArea) {
     row.append(&bar);
 
     (row, label, value, bar)
+}
+
+/// Pulls the plain `(r, g, b)` floats `draw_bar` wants out of a
+/// `gtk::gdk::RGBA` - its components are `f32`, hence the cast, same as
+/// `temp_gauge.rs::draw_gauge` does inline for its own bar color.
+fn rgba_components(rgba: &gtk::gdk::RGBA) -> (f64, f64, f64) {
+    (rgba.red() as f64, rgba.green() as f64, rgba.blue() as f64)
 }
 
 /// Paints one gauge bar: a faint full-width track, then a colored fill over
@@ -205,6 +247,8 @@ fn format_uptime(total_seconds: f64) -> String {
 /// (via `Rc`) between its content and its settings panel, same overall
 /// shape as `CpuTempState`/`NetworkState`.
 struct SystemSqState {
+    css_class: String,
+
     hostname_label: gtk::Label,
     os_badge_label: gtk::Label,
 
@@ -231,6 +275,11 @@ struct SystemSqState {
     cpu_fraction: Cell<f64>,
     mem_fraction: Cell<f64>,
     disk_fraction: Cell<f64>,
+
+    content_scale: Cell<f64>,
+    cpu_color: RefCell<gtk::gdk::RGBA>,
+    mem_color: RefCell<gtk::gdk::RGBA>,
+    disk_color: RefCell<gtk::gdk::RGBA>,
 }
 
 impl SystemSqState {
@@ -241,13 +290,70 @@ impl SystemSqState {
         self.refresh();
     }
 
+    fn set_content_scale(&self, scale: f64) {
+        self.content_scale.set(scale.clamp(MIN_CONTENT_SCALE, MAX_CONTENT_SCALE));
+        self.apply_content_scale();
+    }
+
+    /// Rebuilds this instance's scaled-text CSS rule from `content_scale` -
+    /// called from `set_content_scale` and once up front in `build_content`.
+    /// Mirrors `network_sq.rs::apply_content_scale`, minus the icon
+    /// re-tinting this widget has no icon to redo.
+    fn apply_content_scale(&self) {
+        let scale = self.content_scale.get();
+        let rule = format!(
+            ".{class} .xeneon-sysinfo-gauge-label {{ font-size: {label}px; }}\n\
+             .{class} .xeneon-sysinfo-gauge-value {{ font-size: {value}px; }}\n\
+             .{class} .xeneon-sysinfo-footer {{ font-size: {footer}px; }}",
+            class = self.css_class,
+            label = (BASE_GAUGE_LABEL_FONT_PX * scale).round() as i32,
+            value = (BASE_GAUGE_VALUE_FONT_PX * scale).round() as i32,
+            footer = (BASE_FOOTER_FONT_PX * scale).round() as i32,
+        );
+        FONT_CSS.with(|registry| registry.set_rule(&self.css_class, rule));
+    }
+
+    fn set_cpu_color(&self, rgba: gtk::gdk::RGBA) {
+        *self.cpu_color.borrow_mut() = rgba;
+        self.cpu_bar.queue_draw();
+    }
+
+    fn set_mem_color(&self, rgba: gtk::gdk::RGBA) {
+        *self.mem_color.borrow_mut() = rgba;
+        self.mem_bar.queue_draw();
+    }
+
+    fn set_disk_color(&self, rgba: gtk::gdk::RGBA) {
+        *self.disk_color.borrow_mut() = rgba;
+        self.disk_bar.queue_draw();
+    }
+
+    /// Back to this widget's appearance defaults (content scale + the three
+    /// gauge colors) - goes through the normal setters, not a shortcut that
+    /// pokes fields directly, so the CSS rule and each bar's repaint happen
+    /// exactly like a manual edit would. Deliberately leaves `disk_path`
+    /// untouched: that's a functional setting (which mount point to read),
+    /// not an appearance one, the same way resetting `network_sq.rs`'s
+    /// appearance doesn't unpin a manually-chosen interface... except it
+    /// does - see that module's own `reset()`. This widget draws that line
+    /// differently on purpose: unlike a wrong interface pin, a wrong disk
+    /// path doesn't stop the gauge from showing *a* real, meaningful value,
+    /// so there's less reason for "reset appearance" to also silently
+    /// change what the widget is measuring.
+    fn reset(&self) {
+        self.set_content_scale(DEFAULT_CONTENT_SCALE);
+        self.set_cpu_color(hex_to_rgba(DEFAULT_CPU_COLOR_HEX));
+        self.set_mem_color(hex_to_rgba(DEFAULT_MEM_COLOR_HEX));
+        self.set_disk_color(hex_to_rgba(DEFAULT_DISK_COLOR_HEX));
+    }
+
     /// Re-reads every value and redraws all three gauges - called on every
     /// timer tick (see `build_content`) and immediately after the disk path
     /// setting changes, same "just re-poll everything, it's cheap enough"
     /// approach `cpu_temp.rs::refresh` documents for its own hwmon reads.
     fn refresh(&self) {
         self.hostname_label.set_label(&read_hostname());
-        self.os_badge_label.set_label(&read_os_pretty_name());
+        self.os_badge_label.set_label(&read_os_short_name());
 
         match read_cpu_times() {
             Some(current) => {
@@ -311,12 +417,33 @@ impl SystemSqState {
     }
 
     fn to_dict(&self) -> serde_json::Value {
-        serde_json::json!({ "disk_path": self.disk_path.borrow().clone() })
+        serde_json::json!({
+            "disk_path": self.disk_path.borrow().clone(),
+            "content_scale": self.content_scale.get(),
+            "cpu_color": rgba_to_hex(&self.cpu_color.borrow()),
+            "mem_color": rgba_to_hex(&self.mem_color.borrow()),
+            "disk_color": rgba_to_hex(&self.disk_color.borrow()),
+        })
     }
 
+    /// Only touches fields actually present, so a partial/older saved dict
+    /// (e.g. from before the color pickers/scale slider existed) still
+    /// applies cleanly - mirrors `CpuTempState::apply_dict`.
     fn apply_dict(&self, data: &serde_json::Value) {
         if let Some(path) = data.get("disk_path").and_then(|v| v.as_str()) {
             self.set_disk_path(path.to_string());
+        }
+        if let Some(scale) = data.get("content_scale").and_then(|v| v.as_f64()) {
+            self.set_content_scale(scale);
+        }
+        if let Some(hex) = data.get("cpu_color").and_then(|v| v.as_str()) {
+            self.set_cpu_color(hex_to_rgba(hex));
+        }
+        if let Some(hex) = data.get("mem_color").and_then(|v| v.as_str()) {
+            self.set_mem_color(hex_to_rgba(hex));
+        }
+        if let Some(hex) = data.get("disk_color").and_then(|v| v.as_str()) {
+            self.set_disk_color(hex_to_rgba(hex));
         }
     }
 }
@@ -328,7 +455,11 @@ impl SystemSqState {
 fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
     ensure_css_installed();
 
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    let css_class = format!("xeneon-sysinfo-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
+
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    root.add_css_class(&css_class);
     // Same margins as `network_sq.rs`'s SQ card, for a consistent inset
     // across every SQ-footprint widget in this app.
     root.set_margin_start(14);
@@ -392,6 +523,7 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
     root.append(&footer);
 
     let state = Rc::new(SystemSqState {
+        css_class,
         hostname_label,
         os_badge_label,
         cpu_value_label,
@@ -411,20 +543,32 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
         cpu_fraction: Cell::new(0.0),
         mem_fraction: Cell::new(0.0),
         disk_fraction: Cell::new(0.0),
+        content_scale: Cell::new(DEFAULT_CONTENT_SCALE),
+        cpu_color: RefCell::new(hex_to_rgba(DEFAULT_CPU_COLOR_HEX)),
+        mem_color: RefCell::new(hex_to_rgba(DEFAULT_MEM_COLOR_HEX)),
+        disk_color: RefCell::new(hex_to_rgba(DEFAULT_DISK_COLOR_HEX)),
     });
+    state.apply_content_scale();
 
     cpu_bar.set_draw_func({
         let state = state.clone();
-        move |_area, cr, width, height| draw_bar(cr, width as f64, height as f64, state.cpu_fraction.get(), CPU_COLOR)
+        move |_area, cr, width, height| {
+            let color = *state.cpu_color.borrow();
+            draw_bar(cr, width as f64, height as f64, state.cpu_fraction.get(), rgba_components(&color))
+        }
     });
     mem_bar.set_draw_func({
         let state = state.clone();
-        move |_area, cr, width, height| draw_bar(cr, width as f64, height as f64, state.mem_fraction.get(), MEM_COLOR)
+        move |_area, cr, width, height| {
+            let color = *state.mem_color.borrow();
+            draw_bar(cr, width as f64, height as f64, state.mem_fraction.get(), rgba_components(&color))
+        }
     });
     disk_bar.set_draw_func({
         let state = state.clone();
         move |_area, cr, width, height| {
-            draw_bar(cr, width as f64, height as f64, state.disk_fraction.get(), DISK_COLOR)
+            let color = *state.disk_color.borrow();
+            draw_bar(cr, width as f64, height as f64, state.disk_fraction.get(), rgba_components(&color))
         }
     });
 
@@ -453,10 +597,14 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
     (state, root.upcast())
 }
 
-/// Builds the settings panel: a single "mount point" text entry for the
-/// disk gauge - the only functional setting this widget has (see the
-/// module doc comment for why there's no appearance customization yet).
-fn build_settings(state: Rc<SystemSqState>) -> gtk::Widget {
+/// Builds the settings panel: the "mount point" text entry (the widget's
+/// one functional setting), then the content-scale slider and the three
+/// gauge color pickers. Returns the panel plus a `resync` closure that
+/// re-reads every control's displayed value from `state` - needed after
+/// `state.reset()` changes the model directly (see `spawn`/`restore`
+/// below), same reasoning and ordering-around-`RefCell`-reentrancy as
+/// `network_sq.rs::build_settings`'s own `resync`.
+fn build_settings(state: Rc<SystemSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.set_size_request(220, -1);
 
@@ -468,27 +616,123 @@ fn build_settings(state: Rc<SystemSqState>) -> gtk::Widget {
     disk_path_entry.set_text(&state.disk_path.borrow());
     root.append(&disk_path_entry);
 
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let scale_label = gtk::Label::new(Some(&i18n::t("widgets.system_info.settings.content_scale")));
+    scale_label.set_halign(gtk::Align::Start);
+    root.append(&scale_label);
+    let scale_slider =
+        gtk::Scale::with_range(gtk::Orientation::Horizontal, MIN_CONTENT_SCALE * 100.0, MAX_CONTENT_SCALE * 100.0, 1.0);
+    scale_slider.set_value(state.content_scale.get() * 100.0);
+    scale_slider.set_draw_value(true);
+    scale_slider.set_value_pos(gtk::PositionType::Right);
+    root.append(&scale_slider);
+
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let cpu_color_label = gtk::Label::new(Some(&i18n::t("widgets.system_info.settings.cpu_color")));
+    cpu_color_label.set_hexpand(true);
+    cpu_color_label.set_halign(gtk::Align::Start);
+    let cpu_color_button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+    cpu_color_button.set_rgba(&state.cpu_color.borrow());
+    root.append(&make_row(&[cpu_color_label.upcast_ref(), cpu_color_button.upcast_ref()]));
+
+    let mem_color_label = gtk::Label::new(Some(&i18n::t("widgets.system_info.settings.mem_color")));
+    mem_color_label.set_hexpand(true);
+    mem_color_label.set_halign(gtk::Align::Start);
+    let mem_color_button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+    mem_color_button.set_rgba(&state.mem_color.borrow());
+    root.append(&make_row(&[mem_color_label.upcast_ref(), mem_color_button.upcast_ref()]));
+
+    let disk_color_label = gtk::Label::new(Some(&i18n::t("widgets.system_info.settings.disk_color")));
+    disk_color_label.set_hexpand(true);
+    disk_color_label.set_halign(gtk::Align::Start);
+    let disk_color_button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+    disk_color_button.set_rgba(&state.disk_color.borrow());
+    root.append(&make_row(&[disk_color_label.upcast_ref(), disk_color_button.upcast_ref()]));
+
+    // --- signal wiring: controls push one-way into `state` ---
     disk_path_entry.connect_changed({
         let state = state.clone();
         move |entry| state.set_disk_path(entry.text().to_string())
     });
-
-    i18n::on_change({
-        let disk_path_label = disk_path_label.clone();
-        move || disk_path_label.set_label(&i18n::t("widgets.system_info.settings.disk_path"))
+    scale_slider.connect_value_changed({
+        let state = state.clone();
+        move |s| state.set_content_scale(s.value() / 100.0)
+    });
+    cpu_color_button.connect_rgba_notify({
+        let state = state.clone();
+        move |b| state.set_cpu_color(b.rgba())
+    });
+    mem_color_button.connect_rgba_notify({
+        let state = state.clone();
+        move |b| state.set_mem_color(b.rgba())
+    });
+    disk_color_button.connect_rgba_notify({
+        let state = state.clone();
+        move |b| state.set_disk_color(b.rgba())
     });
 
-    root.upcast()
+    // --- retranslation ---
+    i18n::on_change({
+        let disk_path_label = disk_path_label.clone();
+        let scale_label = scale_label.clone();
+        let cpu_color_label = cpu_color_label.clone();
+        let mem_color_label = mem_color_label.clone();
+        let disk_color_label = disk_color_label.clone();
+        move || {
+            disk_path_label.set_label(&i18n::t("widgets.system_info.settings.disk_path"));
+            scale_label.set_label(&i18n::t("widgets.system_info.settings.content_scale"));
+            cpu_color_label.set_label(&i18n::t("widgets.system_info.settings.cpu_color"));
+            mem_color_label.set_label(&i18n::t("widgets.system_info.settings.mem_color"));
+            disk_color_label.set_label(&i18n::t("widgets.system_info.settings.disk_color"));
+        }
+    });
+
+    let resync: Box<dyn Fn()> = Box::new({
+        let state = state.clone();
+        move || {
+            let content_scale = state.content_scale.get();
+            let cpu_color = *state.cpu_color.borrow();
+            let mem_color = *state.mem_color.borrow();
+            let disk_color = *state.disk_color.borrow();
+
+            scale_slider.set_value(content_scale * 100.0);
+            cpu_color_button.set_rgba(&cpu_color);
+            mem_color_button.set_rgba(&mem_color);
+            disk_color_button.set_rgba(&disk_color);
+        }
+    });
+
+    (root.upcast(), resync)
+}
+
+/// Lays out `widgets` in a single horizontal row - same tiny helper
+/// `network_sq.rs`/`temp_gauge.rs` each keep their own copy of, for a
+/// label-plus-control settings row.
+fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    for w in widgets {
+        row.append(*w);
+    }
+    row
 }
 
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }
@@ -496,12 +740,19 @@ pub fn spawn() -> WidgetInstance {
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content();
     state.apply_dict(data);
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }

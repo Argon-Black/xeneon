@@ -352,5 +352,9 @@
   "widgets.system_info.unit_hour": "小时",
   "widgets.system_info.unit_minute": "分钟",
   "widgets.system_info.uptime_label": "运行时间：{value}",
-  "widgets.system_info.settings.disk_path": "挂载点"
+  "widgets.system_info.settings.disk_path": "挂载点",
+  "widgets.system_info.settings.content_scale": "内容大小",
+  "widgets.system_info.settings.cpu_color": "CPU颜色",
+  "widgets.system_info.settings.mem_color": "内存颜色",
+  "widgets.system_info.settings.disk_color": "磁盘颜色"
 }
