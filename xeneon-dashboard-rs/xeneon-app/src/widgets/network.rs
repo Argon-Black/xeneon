@@ -217,6 +217,21 @@ impl Direction {
             Direction::Out => "↑",
         }
     }
+
+    /// Colors the arrow alone (via a Pango markup `<span>` around just that
+    /// character - see `NetworkState::refresh`), not the whole caption, so
+    /// the direction reads at a glance without competing with the
+    /// interface name/custom label's own neutral color. Same blue/coral
+    /// pairing as the mockup shown to the user before this widget was
+    /// built (download = blue, upload = coral) - arbitrary but consistent
+    /// with the "cool = incoming, warm = outgoing" convention most
+    /// bandwidth monitors already use.
+    fn color_hex(self) -> &'static str {
+        match self {
+            Direction::In => "#5da9e8",
+            Direction::Out => "#e8875d",
+        }
+    }
 }
 
 /// All of this widget's live state - one instance per placed widget.
@@ -295,18 +310,20 @@ impl NetworkState {
         self.refresh();
     }
 
-    /// The caption text for `effective_name` (the interface name freshly
-    /// computed by `refresh()` for this tick - passed in rather than
-    /// recomputed here since, unlike `CpuTempState::display_label`, it
-    /// depends on a live `/proc/net/route` read, not just already-stored
-    /// state), prefixed with the direction arrow (see `Direction::arrow`).
-    /// While pinned, a non-empty `custom_label` wins over the interface
-    /// name; otherwise (auto-picking, or pinned with no custom label set)
-    /// the real interface name is shown - this is also the answer to
-    /// "does Auto track whatever's actually in use": yes, and now it's
-    /// visible on the card instead of only in the tooltip. Falls back to
-    /// this widget's own generic title only when no interface name is
-    /// known at all (nothing plugged in / no route yet).
+    /// The caption's name portion for `effective_name` (the interface name
+    /// freshly computed by `refresh()` for this tick - passed in rather
+    /// than recomputed here since, unlike `CpuTempState::display_label`,
+    /// it depends on a live `/proc/net/route` read, not just already-
+    /// stored state). Just the name - the direction arrow is added
+    /// separately by `refresh()`, as its own colored markup span (see
+    /// `Direction::color_hex`), not part of this plain string. While
+    /// pinned, a non-empty `custom_label` wins over the interface name;
+    /// otherwise (auto-picking, or pinned with no custom label set) the
+    /// real interface name is shown - this is also the answer to "does
+    /// Auto track whatever's actually in use": yes, and now it's visible
+    /// on the card instead of only in the tooltip. Falls back to this
+    /// widget's own generic title only when no interface name is known at
+    /// all (nothing plugged in / no route yet).
     fn display_label(&self, effective_name: Option<&str>) -> String {
         let name = if self.interface_name.borrow().is_some() {
             self.custom_label
@@ -318,7 +335,7 @@ impl NetworkState {
         } else {
             effective_name.map(str::to_string)
         };
-        format!("{} {}", self.direction.get().arrow(), name.unwrap_or_else(|| i18n::t("widgets.network.title")))
+        name.unwrap_or_else(|| i18n::t("widgets.network.title"))
     }
 
     /// Re-reads every interface's counters, recomputes the rate for
@@ -332,7 +349,20 @@ impl NetworkState {
         *self.available_interfaces.borrow_mut() = interfaces.iter().map(|(name, _, _)| name.clone()).collect();
 
         let effective_name = self.effective_interface_name(&interfaces);
-        self.caption_label.set_text(&self.display_label(effective_name.as_deref()));
+        let direction = self.direction.get();
+        // Markup, not plain text: the arrow gets its own color (see
+        // `Direction::color_hex`) while the name stays the caption's
+        // ordinary muted color. The name is escaped since, unlike the
+        // interface names `/proc/net/dev` hands back, a user-typed custom
+        // label could contain `&`/`<`/`>` and would otherwise be parsed as
+        // (broken) markup instead of displayed literally.
+        let name = self.display_label(effective_name.as_deref());
+        self.caption_label.set_markup(&format!(
+            "<span color=\"{}\">{}</span> {}",
+            direction.color_hex(),
+            direction.arrow(),
+            gtk::glib::markup_escape_text(&name)
+        ));
 
         let counters = effective_name.as_ref().and_then(|name| interfaces.iter().find(|(n, _, _)| n == name));
 
@@ -358,7 +388,6 @@ impl NetworkState {
                 if self.logged_unavailable.replace(false) {
                     debug!("interface reading recovered: {name}");
                 }
-                let direction = self.direction.get();
                 let current_bytes = if direction == Direction::In { *rx_bytes } else { *tx_bytes };
                 let now = Instant::now();
 
