@@ -173,6 +173,10 @@
   "widgets.network.settings.direction": "方向",
   "widgets.network.settings.direction_in": "受信",
   "widgets.network.settings.direction_out": "送信",
+  "widgets.network.settings.name_color": "アイコンと名前の色",
+  "widgets.network.settings.content_scale": "アイコンと名前のサイズ",
+  "widgets.network.settings.down_color": "受信の色",
+  "widgets.network.settings.up_color": "送信の色",
 
   "widgets.agenda.title": "予定表",
   "widgets.agenda.date_full": "{year}年{month}",

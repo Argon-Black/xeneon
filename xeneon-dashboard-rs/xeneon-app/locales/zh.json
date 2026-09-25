@@ -173,6 +173,10 @@
   "widgets.network.settings.direction": "方向",
   "widgets.network.settings.direction_in": "下载",
   "widgets.network.settings.direction_out": "上传",
+  "widgets.network.settings.name_color": "图标和名称颜色",
+  "widgets.network.settings.content_scale": "图标和名称大小",
+  "widgets.network.settings.down_color": "下载颜色",
+  "widgets.network.settings.up_color": "上传颜色",
 
   "widgets.agenda.title": "日程",
   "widgets.agenda.date_full": "{year}年{month}",

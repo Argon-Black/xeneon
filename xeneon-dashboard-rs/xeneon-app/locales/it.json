@@ -173,6 +173,10 @@
   "widgets.network.settings.direction": "Direzione",
   "widgets.network.settings.direction_in": "Ricezione",
   "widgets.network.settings.direction_out": "Invio",
+  "widgets.network.settings.name_color": "Colore icona e nome",
+  "widgets.network.settings.content_scale": "Dimensione icona e nome",
+  "widgets.network.settings.down_color": "Colore ricezione",
+  "widgets.network.settings.up_color": "Colore invio",
 
   "widgets.agenda.title": "Agenda",
   "widgets.agenda.date_full": "{month} {year}",

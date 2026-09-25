@@ -173,6 +173,10 @@
   "widgets.network.settings.direction": "Richtung",
   "widgets.network.settings.direction_in": "Empfang",
   "widgets.network.settings.direction_out": "Senden",
+  "widgets.network.settings.name_color": "Farbe von Symbol und Name",
+  "widgets.network.settings.content_scale": "Größe von Symbol und Name",
+  "widgets.network.settings.down_color": "Farbe Empfang",
+  "widgets.network.settings.up_color": "Farbe Senden",
 
   "widgets.agenda.title": "Agenda",
   "widgets.agenda.date_full": "{month} {year}",

@@ -173,6 +173,10 @@
   "widgets.network.settings.direction": "Sentido",
   "widgets.network.settings.direction_in": "Descarga",
   "widgets.network.settings.direction_out": "Subida",
+  "widgets.network.settings.name_color": "Color del icono y el nombre",
+  "widgets.network.settings.content_scale": "Tamaño del icono y el nombre",
+  "widgets.network.settings.down_color": "Color de descarga",
+  "widgets.network.settings.up_color": "Color de subida",
 
   "widgets.agenda.title": "Agenda",
   "widgets.agenda.date_full": "{month} {year}",

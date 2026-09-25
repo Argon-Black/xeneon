@@ -173,6 +173,10 @@
   "widgets.network.settings.direction": "Direction",
   "widgets.network.settings.direction_in": "Download",
   "widgets.network.settings.direction_out": "Upload",
+  "widgets.network.settings.name_color": "Icon & name color",
+  "widgets.network.settings.content_scale": "Icon & name size",
+  "widgets.network.settings.down_color": "Download color",
+  "widgets.network.settings.up_color": "Upload color",
 
   "widgets.agenda.title": "Agenda",
   "widgets.agenda.date_full": "{month} {year}",

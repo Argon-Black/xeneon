@@ -173,6 +173,10 @@
   "widgets.network.settings.direction": "Sens",
   "widgets.network.settings.direction_in": "Réception",
   "widgets.network.settings.direction_out": "Émission",
+  "widgets.network.settings.name_color": "Couleur de l'icône et du nom",
+  "widgets.network.settings.content_scale": "Taille de l'icône et du nom",
+  "widgets.network.settings.down_color": "Couleur de réception",
+  "widgets.network.settings.up_color": "Couleur d'émission",
 
   "widgets.agenda.title": "Agenda",
   "widgets.agenda.date_full": "{month} {year}",
