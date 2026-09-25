@@ -499,6 +499,13 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
     root.append(&disk_row);
 
     let footer = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    // Takes up whatever vertical space the header + three gauges don't
+    // need, then centers its own (fixed-height) four lines within it -
+    // otherwise the footer just sits packed under the disk gauge, leaving
+    // a large dead gap at the bottom of the card on a typical machine
+    // where a smaller `content_scale` doesn't need the full height.
+    footer.set_vexpand(true);
+    footer.set_valign(gtk::Align::Center);
     let uptime_label = gtk::Label::new(None);
     uptime_label.add_css_class("xeneon-sysinfo-footer");
     uptime_label.set_halign(gtk::Align::Start);
