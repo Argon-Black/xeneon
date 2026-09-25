@@ -5,6 +5,7 @@ pub mod clock;
 pub mod cpu_temp;
 pub mod dummy;
 pub mod network;
+pub mod network_s;
 pub mod network_sx;
 pub mod registry;
 pub mod shortcuts;
