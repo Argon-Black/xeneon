@@ -293,6 +293,24 @@ impl NetworkSqState {
         self.refresh();
     }
 
+    /// Back to this widget's out-of-the-box defaults - goes through the
+    /// same setters as everything else (not a shortcut that pokes fields
+    /// directly), so every side effect - CSS rule, icon re-tint, markup,
+    /// graph repaint - happens exactly like a normal edit would. Mirrors
+    /// `ClockState::reset`; called from the appearance popover's reset
+    /// button via `WidgetInstance::on_reset`, wired up in `spawn`/`restore`
+    /// below - previously `on_reset` was left `None` here, which is why
+    /// resetting a card's appearance left its interface pin/custom label/
+    /// colors/size untouched.
+    fn reset(&self) {
+        self.set_interface(None);
+        self.set_custom_label(None);
+        self.set_name_color(hex_to_rgba(DEFAULT_NAME_COLOR_HEX));
+        self.set_down_color(hex_to_rgba(DEFAULT_DOWN_COLOR_HEX));
+        self.set_up_color(hex_to_rgba(DEFAULT_UP_COLOR_HEX));
+        self.set_content_scale(DEFAULT_CONTENT_SCALE);
+    }
+
     fn set_content_scale(&self, scale: f64) {
         self.content_scale.set(scale.clamp(MIN_CONTENT_SCALE, MAX_CONTENT_SCALE));
         self.apply_content_scale();
@@ -675,7 +693,7 @@ fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
 /// then the four appearance settings this card adds on top - icon+name
 /// color, icon+name size, download color, upload color - mirroring
 /// `temp_gauge.rs`'s own color-picker/scale-slider rows.
-fn build_settings(state: Rc<NetworkSqState>) -> gtk::Widget {
+fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.set_size_request(260, -1);
 
@@ -830,17 +848,62 @@ fn build_settings(state: Rc<NetworkSqState>) -> gtk::Widget {
         }
     });
 
-    root.upcast()
+    // Re-reads every control's displayed value from `state` - needed
+    // after `state.reset()` (called from the appearance popover's reset
+    // button, see `on_reset` in `spawn`/`restore` below) changes the
+    // model directly, since a control otherwise only pushes edits one-way
+    // and doesn't notice a programmatic change underneath it. Mirrors
+    // `clock.rs::build_settings`'s own `resync`, including its ordering:
+    // every value is read out of `state` into an owned local *before*
+    // touching any control, since each setter below fires that control's
+    // own "changed" signal synchronously, which calls back into
+    // `state.set_*` - a `borrow_mut()` on the very same `RefCell` a
+    // `.borrow()` here would still be holding as a live temporary, which
+    // panics.
+    let resync: Box<dyn Fn()> = Box::new({
+        let state = state.clone();
+        let custom_label_entry = custom_label_entry.clone();
+        let name_color_button = name_color_button.clone();
+        let scale_slider = scale_slider.clone();
+        let down_color_button = down_color_button.clone();
+        let up_color_button = up_color_button.clone();
+        let refresh_interface_model = refresh_interface_model.clone();
+        move || {
+            let custom_label = state.custom_label.borrow().clone();
+            let name_color = *state.name_color.borrow();
+            let down_color = *state.down_color.borrow();
+            let up_color = *state.up_color.borrow();
+            let content_scale = state.content_scale.get();
+
+            custom_label_entry.set_text(custom_label.as_deref().unwrap_or(""));
+            name_color_button.set_rgba(&name_color);
+            scale_slider.set_value(content_scale * 100.0);
+            down_color_button.set_rgba(&down_color);
+            up_color_button.set_rgba(&up_color);
+            // Also resyncs the interface dropdown's selection and the
+            // custom-label controls' sensitivity from `state.interface_name`.
+            refresh_interface_model();
+        }
+    });
+
+    (root.upcast(), resync)
 }
 
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }
@@ -848,12 +911,19 @@ pub fn spawn() -> WidgetInstance {
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content();
     state.apply_dict(data);
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }
