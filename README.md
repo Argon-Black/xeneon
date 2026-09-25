@@ -35,6 +35,10 @@ Le projet a démarré en Python/GTK (voir l'historique Git), puis a été **enti
 
 ![Widget Réseau](docs/screenshots/network.png)
 
+**Widget Infos système** — CPU, mémoire, disque, hostname, OS, uptime, kernel, shell et modèle de CPU, jauges et couleurs personnalisables :
+
+![Widget Infos système](docs/screenshots/infosys.png)
+
 **Réglages** — interface, pages, apparence par défaut des widgets, raccourcis clavier :
 
 ![Page de réglages](docs/screenshots/settings.png)
@@ -53,6 +57,7 @@ Le projet a démarré en Python/GTK (voir l'historique Git), puis a été **enti
 | 📺 **YouTube** | Un vrai mini-navigateur WebKitGTK pointé sur youtube.com — navigation libre, pas un widget figé sur une chaîne/vidéo unique. |
 | 🚀 **Raccourcis** | Grille de lancement (jusqu'à 5×5) pour les applications installées, avec réorganisation tactile des icônes. |
 | 🌐 **Réseau** | Débit ↓/↑ en direct par interface (lecture directe de `/proc/net/dev`/`/proc/net/route`, aucune dépendance), détection automatique Wi-Fi/Ethernet et VPN, historique en graphique et couleurs personnalisables sur les formats SQ/M. |
+| 🖥️ **Infos système** | CPU, mémoire, disque, hostname, OS, uptime, kernel, shell et modèle de CPU (lecture directe de `/proc`, `/sys` et `statvfs`, aucune dépendance hors `libc`), jauges et couleurs personnalisables (format SQ). |
 
 Chaque widget dispose de son propre panneau d'apparence (couleurs, polices, tailles de contenu) et se décline en un ou plusieurs formats fixes (S, M, L, SQ, SX...) qui se combinent pour remplir la grille de la page — pas de redimensionnement libre, uniquement des presets qui s'emboîtent proprement.
 

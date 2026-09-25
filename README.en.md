@@ -35,6 +35,10 @@ The project started in Python/GTK (see the Git history), then was **fully ported
 
 ![Network widget](docs/screenshots/network.png)
 
+**System info widget** — CPU, memory, disk, hostname, OS, uptime, kernel, shell and CPU model, customizable gauges and colors:
+
+![System info widget](docs/screenshots/infosys.png)
+
 **Settings** — interface, pages, default widget appearance, keyboard shortcuts:
 
 ![Settings page](docs/screenshots/settings.png)
@@ -53,6 +57,7 @@ The project started in Python/GTK (see the Git history), then was **fully ported
 | 📺 **YouTube** | A real WebKitGTK mini-browser pointed at youtube.com — free navigation, not a widget locked to a single channel/video. |
 | 🚀 **Shortcuts** | Launcher grid (up to 5×5) for installed applications, with touch-based icon reordering. |
 | 🌐 **Network** | Live ↓/↑ throughput per interface (direct `/proc/net/dev`/`/proc/net/route` reads, no dependency), automatic Wi-Fi/Ethernet and VPN detection, history graph and customizable colors on the SQ/M sizes. |
+| 🖥️ **System info** | CPU, memory, disk, hostname, OS, uptime, kernel, shell and CPU model (direct `/proc`, `/sys` and `statvfs` reads, no dependency beyond `libc`), customizable gauges and colors (SQ size). |
 
 Each widget has its own appearance panel (colors, fonts, content sizes) and comes in one or more fixed sizes (S, M, L, SQ, SX...) that combine to fill the page grid — no free resizing, only presets that snap together cleanly.
 
