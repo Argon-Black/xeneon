@@ -3,9 +3,9 @@
 //! (or "↑ ...") readout of one network interface's current in or out rate,
 //! ported to this project's own design after a quick visual mockup was
 //! agreed with the user. Same overall shape as `cpu_temp.rs`'s SSX widget
-//! (direction icon + caption + value, `Auto`/pinned choice in settings, a
-//! timer-driven `refresh()`) - see that module's doc comment for the
-//! general pattern this one reuses.
+//! (caption + value, `Auto`/pinned choice in settings, a timer-driven
+//! `refresh()`) - see that module's doc comment for the general pattern
+//! this one reuses.
 //!
 //! Unlike hwmon temperatures, there is no single kernel file that already
 //! reports "the current rate" - `/proc/net/dev` only exposes cumulative
@@ -67,7 +67,6 @@ const REFRESH_INTERVAL_SECONDS: u32 = 2;
 /// the same visual weight as its neighbours - installed once, display-wide,
 /// like every other SSX-footprint widget's CSS.
 const FONT_PX: i32 = 22;
-const ICON_PX: i32 = 20;
 
 static INSTALL_CSS: Once = Once::new();
 
@@ -76,8 +75,7 @@ fn ensure_css_installed() {
         let Some(display) = gtk::gdk::Display::default() else { return };
         let css = gtk::CssProvider::new();
         css.load_from_string(&format!(
-            ".xeneon-network-icon {{ color: rgba(255, 255, 255, 0.75); }}\n\
-             .xeneon-network-caption {{ font-size: {FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}\n\
+            ".xeneon-network-caption {{ font-size: {FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}\n\
              .xeneon-network-value {{ font-size: {FONT_PX}px; font-weight: 700; color: #ffffff; }}"
         ));
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -157,7 +155,7 @@ pub fn default_interface() -> Option<String> {
 /// one decimal place once past bytes/sec since a bare integer megabyte
 /// count is too coarse to see the rate actually moving tick to tick. No
 /// `/s` suffix (kept for the SX/S/SQ/M variants, where there's room) - this
-/// SSX card is narrow enough that the direction icon already implies "per
+/// SSX card is narrow enough that the direction arrow already implies "per
 /// second, right now".
 pub fn format_rate_compact(bytes_per_second: f64) -> String {
     let value = bytes_per_second.max(0.0);
@@ -204,25 +202,29 @@ impl Direction {
         }
     }
 
-    /// Standard freedesktop icon names (already used elsewhere in this
-    /// project - see `audio.rs`'s `media-playback-*-symbolic` buttons) -
-    /// no bundled asset needed, and they recolor automatically to match
-    /// the card's foreground like any other symbolic icon.
-    fn icon_name(self) -> &'static str {
+    /// A plain Unicode arrow, prefixed onto the caption text, instead of a
+    /// `gtk::Image::from_icon_name` (what this widget used at first) -
+    /// switched after the freedesktop `network-receive-symbolic`/
+    /// `network-transmit-symbolic` icons turned out not to render at all
+    /// under the user's own icon theme (a third-party theme whose
+    /// `-symbolic` SVGs GTK4's icon recoloring didn't like - a known class
+    /// of real-world breakage with non-Adwaita symbolic icon sets). A
+    /// character glyph, drawn by the same Label/Pango path already proven
+    /// to work for the rest of this card's text, has no such dependency.
+    fn arrow(self) -> &'static str {
         match self {
-            Direction::In => "network-receive-symbolic",
-            Direction::Out => "network-transmit-symbolic",
+            Direction::In => "↓",
+            Direction::Out => "↑",
         }
     }
 }
 
 /// All of this widget's live state - one instance per placed widget.
-/// Mirrors `CpuTempState` in shape: an icon/value pair for content, an
+/// Mirrors `CpuTempState` in shape: a caption/value pair for content, an
 /// `Auto`-or-pinned choice (here, network interface instead of hwmon
 /// sensor), and a snapshot of what's currently available for the settings
 /// dropdown to list.
 struct NetworkState {
-    icon: gtk::Image,
     caption_label: gtk::Label,
     value_label: gtk::Label,
 
@@ -290,7 +292,6 @@ impl NetworkState {
 
     fn set_direction(&self, direction: Direction) {
         self.direction.set(direction);
-        self.icon.set_icon_name(Some(direction.icon_name()));
         self.refresh();
     }
 
@@ -298,27 +299,31 @@ impl NetworkState {
     /// computed by `refresh()` for this tick - passed in rather than
     /// recomputed here since, unlike `CpuTempState::display_label`, it
     /// depends on a live `/proc/net/route` read, not just already-stored
-    /// state). While pinned, a non-empty `custom_label` wins; otherwise
-    /// (auto-picking, or pinned with no custom label set) the real
-    /// interface name is shown - this is also the answer to "does Auto
-    /// track whatever's actually in use": yes, and now it's visible on the
-    /// card instead of only in the tooltip. Falls back to this widget's
-    /// own generic title only when no interface name is known at all
-    /// (nothing plugged in / no route yet).
+    /// state), prefixed with the direction arrow (see `Direction::arrow`).
+    /// While pinned, a non-empty `custom_label` wins over the interface
+    /// name; otherwise (auto-picking, or pinned with no custom label set)
+    /// the real interface name is shown - this is also the answer to
+    /// "does Auto track whatever's actually in use": yes, and now it's
+    /// visible on the card instead of only in the tooltip. Falls back to
+    /// this widget's own generic title only when no interface name is
+    /// known at all (nothing plugged in / no route yet).
     fn display_label(&self, effective_name: Option<&str>) -> String {
-        if self.interface_name.borrow().is_some() {
-            if let Some(custom) = self.custom_label.borrow().as_ref() {
-                if !custom.is_empty() {
-                    return custom.clone();
-                }
-            }
-        }
-        effective_name.map(str::to_string).unwrap_or_else(|| i18n::t("widgets.network.title"))
+        let name = if self.interface_name.borrow().is_some() {
+            self.custom_label
+                .borrow()
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .or_else(|| effective_name.map(str::to_string))
+        } else {
+            effective_name.map(str::to_string)
+        };
+        format!("{} {}", self.direction.get().arrow(), name.unwrap_or_else(|| i18n::t("widgets.network.title")))
     }
 
     /// Re-reads every interface's counters, recomputes the rate for
     /// whichever interface/direction is currently effective, and redraws
-    /// the icon + value. Called on every tick (see `build_content`'s
+    /// the caption + value. Called on every tick (see `build_content`'s
     /// timer), on every setter above, and on a language change (for the
     /// tooltip's translated text) - same call sites as `CpuTempState::
     /// refresh`.
@@ -422,24 +427,19 @@ fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
     row
 }
 
-/// Builds the widget's whole on-card display: a direction icon, the
-/// interface name (or custom label) and the rate, side by side and
-/// centered - the same caption+value shape as `cpu_temp.rs`'s
-/// `build_content`, with a small direction icon added in front since
-/// "↓"/"↑" reads faster than the word "in"/"out" would at this size.
+/// Builds the widget's whole on-card display: the direction arrow +
+/// interface name (or custom label) as one caption, and the rate next to
+/// it, centered - the same caption+value shape as `cpu_temp.rs`'s
+/// `build_content`. The direction is a character glyph baked into the
+/// caption text (see `Direction::arrow`), not a separate icon widget -
+/// see that method's doc comment for why a real `gtk::Image` icon was
+/// dropped.
 fn build_content() -> (Rc<NetworkState>, gtk::Widget) {
     ensure_css_installed();
 
     let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     root.set_halign(gtk::Align::Center);
     root.set_valign(gtk::Align::Center);
-
-    let icon = gtk::Image::from_icon_name(Direction::In.icon_name());
-    icon.add_css_class("xeneon-network-icon");
-    icon.set_pixel_size(ICON_PX);
-    icon.set_halign(gtk::Align::Center);
-    icon.set_valign(gtk::Align::Center);
-    root.append(&icon);
 
     let caption_label = gtk::Label::new(None);
     caption_label.add_css_class("xeneon-network-caption");
@@ -452,10 +452,11 @@ fn build_content() -> (Rc<NetworkState>, gtk::Widget) {
     // an overflowing label pushes the whole row wider than the card, and
     // `root`'s centering then centers that oversized, partly-clipped row
     // instead of the visible content - reading as "off-center" even though
-    // the box math is correct. Capping the caption's width keeps the row's
-    // natural size within the card, so centering always looks right.
+    // the box math is correct. Capping the caption's width (the arrow +
+    // space take up 2 of these characters) keeps the row's natural size
+    // within the card, so centering always looks right.
     caption_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    caption_label.set_max_width_chars(6);
+    caption_label.set_max_width_chars(8);
     root.append(&caption_label);
 
     let value_label = gtk::Label::new(None);
@@ -465,7 +466,6 @@ fn build_content() -> (Rc<NetworkState>, gtk::Widget) {
     root.append(&value_label);
 
     let state = Rc::new(NetworkState {
-        icon,
         caption_label,
         value_label,
         interface_name: RefCell::new(None),
