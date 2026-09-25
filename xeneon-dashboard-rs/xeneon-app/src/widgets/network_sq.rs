@@ -132,8 +132,8 @@ const ICON_RASTER_PX: i32 = 96;
 /// Bigger than the header's own Wi-Fi/Ethernet icon (`BASE_HEADER_ICON_PX`
 /// at 100% scale) - a pill badge with a label reads as a unit even at
 /// this size, where a bare small icon didn't.
-const VPN_BADGE_ICON_PX: i32 = 15;
-const VPN_BADGE_FONT_PX: i32 = 12;
+const VPN_BADGE_ICON_PX: i32 = 20;
+const VPN_BADGE_FONT_PX: i32 = 15;
 const VPN_COLOR_HEX: &str = "#5DCAA5";
 
 thread_local! {
@@ -207,7 +207,7 @@ fn ensure_css_installed() {
         css.load_from_string(&format!(
             ".xeneon-network-sq-values {{ font-size: {VALUES_FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}\n\
              .xeneon-network-sq-vpn-badge {{ background-color: rgba(93, 202, 165, 0.15); \
-             border-radius: 10px; padding: 3px 9px; }}\n\
+             border-radius: 13px; padding: 5px 12px; }}\n\
              .xeneon-network-sq-vpn-badge-label {{ font-size: {VPN_BADGE_FONT_PX}px; font-weight: 700; \
              color: {VPN_COLOR_HEX}; }}"
         ));
@@ -619,7 +619,7 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
     // A pill (icon + "VPN" label), not a bare icon - a small icon on its
     // own didn't read clearly at this size; the label makes it
     // unambiguous at a glance, matching the mockup shown to the user.
-    let vpn_badge = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let vpn_badge = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     vpn_badge.add_css_class("xeneon-network-sq-vpn-badge");
     vpn_badge.set_valign(gtk::Align::Center);
     let vpn_badge_icon = gtk::Image::new();
