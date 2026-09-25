@@ -29,14 +29,18 @@
 //! what the currently-effective interface actually is (`network::
 //! is_wireless`, a `/sys/class/net/<name>/{wireless,phy80211}` check), and
 //! a small green shield badge appears at the header's far right whenever
-//! that interface looks like a VPN tunnel (`network::is_vpn_like`, a name-
-//! prefix heuristic - `wg`/`tun`/`tap`/`ppp`). The badge is tied to
-//! *this card's own displayed interface* being a VPN, not "is some VPN
-//! active anywhere on the machine" - in `Auto` mode those usually end up
-//! meaning the same thing anyway, since a connected VPN typically takes
-//! over the default route (which is exactly what `Auto` follows), but a
-//! card pinned to a specific physical interface won't light up just
-//! because an unrelated VPN happens to be up elsewhere. The badge's own
+//! *any* interface on the machine looks like a VPN tunnel (`network::
+//! vpn_active`, scanning every interface's name for the `wg`/`tun`/`tap`/
+//! `ppp` prefix heuristic - see that function's own doc comment). This
+//! used to check only the card's own displayed interface, on the
+//! assumption that `Auto` mode tracking the default route would already
+//! catch a connected VPN, since one typically takes it over - true for a
+//! full-tunnel VPN, but a real split-tunnel OpenVPN test proved it wrong:
+//! `tun0` was up and passing traffic while the default route stayed on
+//! the physical interface, so `Auto` kept showing that one and the badge
+//! never lit up. Scanning every interface instead means the badge now
+//! answers "is a VPN active on this machine", independent of which
+//! interface this particular card happens to be showing. The badge's own
 //! green is fixed, not user-customizable - it's a status color (VPN
 //! on/off), not part of this card's decorative palette.
 //!
@@ -75,7 +79,7 @@ use std::time::Instant;
 
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
-use crate::widgets::network::{default_interface, format_rate_fixed, is_vpn_like, is_wireless, read_interfaces, InterfaceCounters};
+use crate::widgets::network::{default_interface, format_rate_fixed, is_wireless, read_interfaces, vpn_active, InterfaceCounters};
 use crate::widgets::registry::WidgetInstance;
 
 const REFRESH_INTERVAL_SECONDS: u32 = 2;
@@ -373,18 +377,21 @@ impl NetworkSqState {
         let effective_name = self.effective_interface_name(&interfaces);
         self.name_label.set_text(&self.display_label(effective_name.as_deref()));
 
-        // Wi-Fi vs Ethernet icon, and the VPN badge - both derived from
-        // whichever interface is currently effective, re-checked every
-        // tick since `Auto` mode can switch to a different interface (or
-        // a VPN can come up/go down) without any setting changing. `None`
-        // (no interface at all) falls back to the Ethernet icon and no
-        // VPN badge, same as `is_wireless`/`is_vpn_like` would answer for
-        // an interface that doesn't exist.
+        // Wi-Fi vs Ethernet icon - derived from whichever interface is
+        // currently effective, re-checked every tick since `Auto` mode
+        // can switch interfaces without any setting changing. `None` (no
+        // interface at all) falls back to the Ethernet icon, same as
+        // `is_wireless` would answer for an interface that doesn't exist.
         let wireless = effective_name.as_deref().is_some_and(is_wireless);
-        let vpn = effective_name.as_deref().is_some_and(is_vpn_like);
         self.current_wireless.set(wireless);
         self.apply_icon(wireless);
-        self.vpn_badge.set_visible(vpn);
+        // The VPN badge, on the other hand, checks *every* interface, not
+        // just the effective one - see `network::vpn_active`'s doc
+        // comment for why: a split-tunnel VPN can be up and passing
+        // traffic without ever taking over the default route, in which
+        // case `Auto` keeps displaying the physical interface and this
+        // card would otherwise never show the badge at all.
+        self.vpn_badge.set_visible(vpn_active(&interfaces));
 
         let counters = effective_name.as_ref().and_then(|name| interfaces.iter().find(|(n, _, _)| n == name));
 

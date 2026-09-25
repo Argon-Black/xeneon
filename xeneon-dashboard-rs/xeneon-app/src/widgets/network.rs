@@ -185,6 +185,30 @@ pub fn is_vpn_like(name: &str) -> bool {
     VPN_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
 }
 
+/// True if *any* currently-listed interface looks like a VPN tunnel -
+/// system-wide, not tied to whichever interface a card happens to be
+/// displaying. `interfaces` is passed in (the same `read_interfaces()`
+/// snapshot a caller's `refresh()` already read) rather than re-read here,
+/// so checking this doesn't cost a second `/proc/net/dev` read.
+///
+/// This is what the SQ/M cards' VPN badge actually checks now - it used
+/// to test only the card's own effective interface, which looked right in
+/// `Auto` mode (a connected VPN usually takes over the default route,
+/// which `Auto` follows) until a real split-tunnel VPN proved that
+/// assumption wrong: `tun0` was up and passing traffic, but the default
+/// route stayed on the physical interface, so `Auto` kept displaying that
+/// one and the badge never lit up even though a VPN plainly was active.
+/// NetworkManager's own D-Bus API (`ActiveConnection.Vpn`) was considered
+/// as a more "authoritative" alternative and rejected: it only knows
+/// about connections NetworkManager itself manages, so a VPN started by a
+/// standalone `openvpn`/`wg-quick` invocation or a plain systemd unit -
+/// exactly how this was tested - is invisible to it too. The name
+/// heuristic has a real blind spot of its own (see `is_vpn_like`'s own
+/// doc comment) but it's the one that actually saw this case.
+pub fn vpn_active(interfaces: &[InterfaceCounters]) -> bool {
+    interfaces.iter().any(|(name, _, _)| is_vpn_like(name))
+}
+
 /// Human-readable rate, e.g. `12.4M`, `512K`, `48B` - binary units (1024,
 /// not 1000) to match what `free`/`df`/GNOME System Monitor already show,
 /// one decimal place once past bytes/sec since a bare integer megabyte
