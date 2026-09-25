@@ -8,7 +8,7 @@
 //! `restore` - each owns its own interface pin/custom-label/sample state
 //! rather than sharing one - but both read through the same free functions
 //! in `network.rs` (`read_interfaces`, `default_interface`,
-//! `format_rate_compact`), so the actual `/proc/net/dev`/`/proc/net/route`
+//! `format_rate_fixed`), so the actual `/proc/net/dev`/`/proc/net/route`
 //! parsing and rate formatting only exist once. The interface-picker *UI*
 //! (dropdown + custom-label entry) is small enough that it's duplicated
 //! here rather than factored into a shared widget - same call as
@@ -39,7 +39,7 @@ use std::sync::Once;
 use std::time::Instant;
 
 use crate::i18n_runtime as i18n;
-use crate::widgets::network::{default_interface, format_rate_compact, read_interfaces, InterfaceCounters};
+use crate::widgets::network::{default_interface, format_rate_fixed, read_interfaces, InterfaceCounters};
 use crate::widgets::registry::WidgetInstance;
 
 const REFRESH_INTERVAL_SECONDS: u32 = 2;
@@ -196,18 +196,28 @@ impl NetworkSxState {
                 *last_sample = Some((name.clone(), *rx_bytes, *tx_bytes, now));
                 drop(last_sample);
 
+                // Fixed-width, monospace - without this, "6.1K" becoming
+                // "12.4M" a couple of seconds later changes this label's
+                // total natural width, and since it's centered as a whole,
+                // the entire line visibly shifts even though only one
+                // number changed (a real complaint from watching this
+                // widget update live). See `format_rate_fixed`'s own doc
+                // comment.
                 let (down_text, up_text) = match rates {
-                    Some((down, up)) => (format_rate_compact(down), format_rate_compact(up)),
-                    None => ("…".to_string(), "…".to_string()),
+                    Some((down, up)) => (format_rate_fixed(down), format_rate_fixed(up)),
+                    None => (format!("{:>6}", "…"), format!("{:>6}", "…")),
                 };
                 // Same markup approach as `network::NetworkState::refresh`:
-                // the name stays the label's ordinary muted color, each
-                // arrow+rate pair gets its own colored/bold span. The name
-                // is escaped since a user-typed custom label isn't
-                // guaranteed markup-safe.
+                // the name stays the label's ordinary muted, proportional-
+                // font color; each arrow+rate pair gets its own colored,
+                // bold, monospace span (monospace so the space-padding
+                // above actually reserves constant pixel width - a
+                // proportional font's digits aren't guaranteed as wide as
+                // a plain space). The name is escaped since a user-typed
+                // custom label isn't guaranteed markup-safe.
                 self.label.set_markup(&format!(
-                    "{}  <span color=\"{DOWN_COLOR_HEX}\" weight=\"bold\">↓ {}</span>  \
-                     <span color=\"{UP_COLOR_HEX}\" weight=\"bold\">↑ {}</span>",
+                    "{}  <span color=\"{DOWN_COLOR_HEX}\" weight=\"bold\" font_family=\"monospace\">↓ {}</span>  \
+                     <span color=\"{UP_COLOR_HEX}\" weight=\"bold\" font_family=\"monospace\">↑ {}</span>",
                     gtk::glib::markup_escape_text(&name_text),
                     gtk::glib::markup_escape_text(&down_text),
                     gtk::glib::markup_escape_text(&up_text),

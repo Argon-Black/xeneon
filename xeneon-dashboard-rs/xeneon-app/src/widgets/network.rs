@@ -76,7 +76,8 @@ fn ensure_css_installed() {
         let css = gtk::CssProvider::new();
         css.load_from_string(&format!(
             ".xeneon-network-caption {{ font-size: {FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}\n\
-             .xeneon-network-value {{ font-size: {FONT_PX}px; font-weight: 700; color: #ffffff; }}"
+             .xeneon-network-value {{ font-size: {FONT_PX}px; font-weight: 700; color: #ffffff; \
+             font-family: monospace; }}"
         ));
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     });
@@ -171,6 +172,23 @@ pub fn format_rate_compact(bytes_per_second: f64) -> String {
     } else {
         format!("{:.1}G", value / GIB)
     }
+}
+
+/// `format_rate_compact`, right-padded with leading spaces to a fixed
+/// 6-character width (enough for up to `999.9M`, comfortably past what a
+/// home network pushes) - meant for a value sitting inside an otherwise
+/// static, centered line (the SSX card's value, or one of SX's two
+/// side-by-side rates). Without this, "6.1K" becoming "12.4M" a couple of
+/// seconds later changes the line's total width, and since the line is
+/// centered as a whole, *everything* on it visibly shifts even though only
+/// the number itself actually changed - a real complaint from watching
+/// this widget update live, not a hypothetical. Padding alone isn't
+/// enough on a proportional font (digit widths can still differ from a
+/// plain space's), so callers must also render this in a monospace font -
+/// see `network.rs`'s `.xeneon-network-value` CSS rule and `network_sx.rs`'s
+/// `font_family="monospace"` markup spans.
+pub fn format_rate_fixed(bytes_per_second: f64) -> String {
+    format!("{:>6}", format_rate_compact(bytes_per_second))
 }
 
 /// Which byte counter to track - received (`In`, the download direction)
@@ -409,7 +427,11 @@ impl NetworkState {
                 *last_sample = Some((name.clone(), direction, current_bytes, now));
                 drop(last_sample);
 
-                self.value_label.set_text(&rate.map(format_rate_compact).unwrap_or_else(|| "…".to_string()));
+                // "…" (one tick after a pin/direction change or a counter
+                // reset, before there's a second sample to diff) is also
+                // padded to the same width - otherwise that one tick would
+                // itself cause the shift this padding exists to prevent.
+                self.value_label.set_text(&rate.map(format_rate_fixed).unwrap_or_else(|| format!("{:>6}", "…")));
                 self.value_label.set_tooltip_text(Some(name));
             }
         }
