@@ -11,6 +11,7 @@ pub mod network_sq;
 pub mod network_sx;
 pub mod registry;
 pub mod shortcuts;
+pub mod system_info;
 pub mod temp_gauge;
 pub mod weather;
 pub mod youtube;

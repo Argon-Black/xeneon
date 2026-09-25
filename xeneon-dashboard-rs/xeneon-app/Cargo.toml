@@ -9,6 +9,7 @@ chrono = "0.4.45"
 chrono-tz = "0.10.4"
 gtk = { version = "0.11.4", package = "gtk4", features = ["v4_12"] }
 ksni = { version = "0.3.6", features = ["blocking"] }
+libc = "0.2.189"
 log = { version = "0.4", features = ["std"] }
 relm4 = { version = "0.11.0", default-features = false, features = ["libadwaita", "gnome_47", "macros", "css"] }
 rrule = "0.14.0"

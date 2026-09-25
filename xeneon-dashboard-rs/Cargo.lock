@@ -1875,6 +1875,7 @@ dependencies = [
  "gtk4",
  "ksni",
  "libadwaita",
+ "libc",
  "log",
  "relm4",
  "rrule",
