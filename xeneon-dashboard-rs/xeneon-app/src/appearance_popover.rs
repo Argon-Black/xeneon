@@ -292,7 +292,7 @@ pub fn build(
         let square_button = square_button.clone();
         move |_| {
             // Re-reads every control's displayed value from `appearance`
-            // after resetting it - needed since reset() changes the model
+            // after resetting it - needed since replacing the model
             // directly and these controls otherwise only push edits
             // one-way. Extracted into owned locals *before* touching any
             // control: each set_value/set_active below fires that
@@ -303,9 +303,20 @@ pub fn build(
             // this reentrancy is harmless there; matches its
             // _sync_controls() re-pushing the same reset values through
             // each control's normal change handler too).
+            //
+            // Resets to the user's configured global default appearance
+            // (Settings > Appearance), not `WidgetAppearance::default()`'s
+            // hardcoded factory look - matches what a newly-spawned widget
+            // already gets (see `WidgetPage::add_widget` in
+            // grid_widget.rs), so "reset" actually puts a widget back in
+            // line with the rest of the page instead of to an unrelated
+            // fixed color the user never chose. `a.reset()` (still used by
+            // the tests in xeneon-core/appearance.rs to mean "untouched,
+            // plain-card state") is a different, narrower operation than
+            // what this button is meant to do.
             let (opacity, bg_color, border_enabled, border_width, border_color, rounded) = {
                 let mut a = appearance.borrow_mut();
-                a.reset();
+                *a = WidgetAppearance::from_config_default(&crate::config_store::get().default_widget_appearance);
                 appearance_css::apply(&css_class, &a);
                 (a.opacity, a.bg_color.clone(), a.border_enabled, a.border_width, a.border_color.clone(), a.rounded)
             };
