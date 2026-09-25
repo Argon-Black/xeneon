@@ -31,6 +31,10 @@ Le projet a démarré en Python/GTK (voir l'historique Git), puis a été **enti
 
 ![Widget YouTube](docs/screenshots/youtube.png)
 
+**Widget Réseau** — débit ↓/↑ par interface, détection Wi-Fi/Ethernet/VPN, graphique d'historique (formats SSX, SX, S, SQ, M) :
+
+![Widget Réseau](docs/screenshots/network.png)
+
 **Réglages** — interface, pages, apparence par défaut des widgets, raccourcis clavier :
 
 ![Page de réglages](docs/screenshots/settings.png)
@@ -48,6 +52,7 @@ Le projet a démarré en Python/GTK (voir l'historique Git), puis a été **enti
 | 🌡️ **Température** | Lecture directe des capteurs `hwmon` du noyau (CPU, GPU, carte mère...), en jauge circulaire ou en texte compact, avec sélection automatique ou manuelle du capteur. |
 | 📺 **YouTube** | Un vrai mini-navigateur WebKitGTK pointé sur youtube.com — navigation libre, pas un widget figé sur une chaîne/vidéo unique. |
 | 🚀 **Raccourcis** | Grille de lancement (jusqu'à 5×5) pour les applications installées, avec réorganisation tactile des icônes. |
+| 🌐 **Réseau** | Débit ↓/↑ en direct par interface (lecture directe de `/proc/net/dev`/`/proc/net/route`, aucune dépendance), détection automatique Wi-Fi/Ethernet et VPN, historique en graphique et couleurs personnalisables sur les formats SQ/M. |
 
 Chaque widget dispose de son propre panneau d'apparence (couleurs, polices, tailles de contenu) et se décline en un ou plusieurs formats fixes (S, M, L, SQ, SX...) qui se combinent pour remplir la grille de la page — pas de redimensionnement libre, uniquement des presets qui s'emboîtent proprement.
 
