@@ -15,18 +15,25 @@
 //! always the partition a user cares about (a separate `/home`, a data
 //! drive...).
 //!
-//! Appearance customization, per the user's own follow-up request: a single
-//! `content_scale` slider (mirrors `temp_gauge.rs`/`network_sq.rs`'s own)
-//! that grows/shrinks every gauge's label/value text and the footer lines -
-//! deliberately *not* the hostname or OS badge, which the user asked to
-//! keep at their fixed size since they already read fine and scaling them
-//! too would risk the header row overflowing the card - plus three
-//! independent color pickers, one per gauge, so CPU/memory/disk can each be
-//! recolored without needing to match `network_sq.rs`'s down/up palette.
-//! The scaled font sizes are applied the same way `network_sq.rs`'s
-//! `NAME_CSS`/`apply_content_scale` do: a per-instance CSS class (`FONT_CSS`
-//! below) scoping a `font-size` rule to just this card, since a plain
-//! shared class can't hold a different pixel size per instance.
+//! Appearance customization, per the user's own follow-up requests: a
+//! single `content_scale` slider (mirrors `temp_gauge.rs`/`network_sq.rs`'s
+//! own, defaulting to 130% here) that grows/shrinks the hostname and every
+//! gauge's label/value text and the footer lines, plus three independent
+//! color pickers, one per gauge, so CPU/memory/disk can each be recolored
+//! without needing to match `network_sq.rs`'s down/up palette. The scaled
+//! font sizes are applied the same way `network_sq.rs`'s `NAME_CSS`/
+//! `apply_content_scale` do: a per-instance CSS class (`FONT_CSS` below)
+//! scoping a `font-size` rule to just this card, since a plain shared class
+//! can't hold a different pixel size per instance.
+//!
+//! The hostname's base size (`BASE_HOSTNAME_FONT_PX`) and the OS badge's
+//! fixed size (`OS_BADGE_FONT_PX`) deliberately match `network_sq.rs`'s own
+//! `BASE_NAME_FONT_PX`/`VPN_BADGE_FONT_PX` - after comparing both cards
+//! side by side, the user asked for "LAN"/"Aorus" and the VPN/OS badges to
+//! read at the same size across both widgets rather than each picking its
+//! own. The OS badge, like `network_sq.rs`'s VPN badge, stays a fixed size
+//! rather than joining `content_scale`: neither badge grows with the rest
+//! of its card's text.
 //!
 //! CPU load needs two `/proc/stat` samples to turn into a percentage (see
 //! `system_info::CpuTimes::usage_percent_since`), so this widget keeps the
@@ -75,20 +82,25 @@ const DEFAULT_MEM_COLOR_HEX: &str = "#e8875d";
 /// clearly against the same dark card background.
 const DEFAULT_DISK_COLOR_HEX: &str = "#8fd3c7";
 
-/// Fixed - deliberately excluded from `content_scale` (see the module doc
-/// comment).
-const HOSTNAME_FONT_PX: i32 = 20;
-/// Fixed, same reason as `HOSTNAME_FONT_PX`.
-const OS_BADGE_FONT_PX: i32 = 11;
-/// Base sizes at `content_scale == 1.0` (100%) for the text that *is*
-/// resizable - the three gauges' labels/values and the four footer lines.
-/// Same "BASE_* times content_scale" technique as `temp_gauge.rs`.
+/// Fixed - same value as `network_sq.rs`'s `VPN_BADGE_FONT_PX`, and not
+/// part of `content_scale` for the same reason that badge isn't either
+/// (see the module doc comment).
+const OS_BADGE_FONT_PX: i32 = 15;
+/// Base sizes at `content_scale == 1.0` (100%) for every bit of text that
+/// *is* resizable - the hostname, the three gauges' labels/values, and the
+/// four footer lines. Same "BASE_* times content_scale" technique as
+/// `temp_gauge.rs`. `BASE_HOSTNAME_FONT_PX` matches `network_sq.rs`'s
+/// `BASE_NAME_FONT_PX` (see the module doc comment).
+const BASE_HOSTNAME_FONT_PX: f64 = 17.0;
 const BASE_GAUGE_LABEL_FONT_PX: f64 = 14.0;
 const BASE_GAUGE_VALUE_FONT_PX: f64 = 15.0;
 const BASE_FOOTER_FONT_PX: f64 = 12.0;
 const MIN_CONTENT_SCALE: f64 = 0.5;
 const MAX_CONTENT_SCALE: f64 = 2.0;
-const DEFAULT_CONTENT_SCALE: f64 = 1.0;
+/// Higher than `network_sq.rs`'s own 125% default - chosen by the user
+/// directly rather than derived from anything, after comparing both cards
+/// side by side.
+const DEFAULT_CONTENT_SCALE: f64 = 1.3;
 /// Height of each gauge's `DrawingArea`, in pixels - also doubles as the
 /// bar's stroke thickness (see `draw_bar`), matching the mockup's 10px
 /// bars. Not scaled by `content_scale`: the user asked to resize text, and
@@ -101,19 +113,19 @@ fn ensure_css_installed() {
     INSTALL_CSS.call_once(|| {
         let Some(display) = gtk::gdk::Display::default() else { return };
         let css = gtk::CssProvider::new();
-        // Color only for the three resizable classes below - their
-        // `font-size` comes from each instance's own `FONT_CSS` rule
-        // instead (see `SystemSqState::apply_content_scale`), since a
-        // single shared class can't hold a different pixel size per card.
+        // Color only for the resizable classes below - their `font-size`
+        // comes from each instance's own `FONT_CSS` rule instead (see
+        // `SystemSqState::apply_content_scale`), since a single shared
+        // class can't hold a different pixel size per card. The OS badge
+        // stays fixed-size here, same as `network_sq.rs`'s VPN badge.
         css.load_from_string(&format!(
-            ".xeneon-sysinfo-hostname {{ font-size: {HOSTNAME_FONT_PX}px; font-weight: 500; color: #ffffff; }}\n\
+            ".xeneon-sysinfo-hostname {{ font-weight: 500; color: #ffffff; }}\n\
              .xeneon-sysinfo-os-badge {{ background-color: rgba(255, 255, 255, 0.08); \
              border-radius: 10px; padding: 3px 10px; }}\n\
              .xeneon-sysinfo-os-badge-label {{ font-size: {OS_BADGE_FONT_PX}px; color: rgba(255, 255, 255, 0.7); }}\n\
              .xeneon-sysinfo-gauge-label {{ color: rgba(255, 255, 255, 0.78); }}\n\
              .xeneon-sysinfo-gauge-value {{ font-weight: 500; color: #ffffff; }}\n\
-             .xeneon-sysinfo-footer {{ color: rgba(255, 255, 255, 0.55); }}\n\
-             .xeneon-sysinfo-divider {{ background-color: rgba(255, 255, 255, 0.08); }}"
+             .xeneon-sysinfo-footer {{ color: rgba(255, 255, 255, 0.55); }}"
         ));
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     });
@@ -124,17 +136,6 @@ fn ensure_css_installed() {
 // into another's. Same registry/pattern as `network_sq.rs`'s `NAME_CSS`.
 thread_local! {
     static FONT_CSS: CssRuleRegistry = CssRuleRegistry::new(gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-}
-
-/// A thin full-width rule, styled by `.xeneon-sysinfo-divider` above -
-/// simpler and more predictable across GTK themes than relying on
-/// `gtk::Separator`'s own theme-dependent look for what the mockup drew as
-/// a plain 1px line.
-fn divider() -> gtk::Box {
-    let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    line.set_size_request(-1, 1);
-    line.add_css_class("xeneon-sysinfo-divider");
-    line
 }
 
 /// One metric row: a label/value line above a thin gauge bar. Returns the
@@ -302,10 +303,12 @@ impl SystemSqState {
     fn apply_content_scale(&self) {
         let scale = self.content_scale.get();
         let rule = format!(
-            ".{class} .xeneon-sysinfo-gauge-label {{ font-size: {label}px; }}\n\
+            ".{class} .xeneon-sysinfo-hostname {{ font-size: {hostname}px; }}\n\
+             .{class} .xeneon-sysinfo-gauge-label {{ font-size: {label}px; }}\n\
              .{class} .xeneon-sysinfo-gauge-value {{ font-size: {value}px; }}\n\
              .{class} .xeneon-sysinfo-footer {{ font-size: {footer}px; }}",
             class = self.css_class,
+            hostname = (BASE_HOSTNAME_FONT_PX * scale).round() as i32,
             label = (BASE_GAUGE_LABEL_FONT_PX * scale).round() as i32,
             value = (BASE_GAUGE_VALUE_FONT_PX * scale).round() as i32,
             footer = (BASE_FOOTER_FONT_PX * scale).round() as i32,
@@ -485,8 +488,6 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
     header.append(&os_badge);
     root.append(&header);
 
-    root.append(&divider());
-
     let (cpu_row, cpu_label, cpu_value_label, cpu_bar) = build_metric_row();
     cpu_label.set_label(&i18n::t("widgets.system_info.cpu_label"));
     root.append(&cpu_row);
@@ -496,8 +497,6 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
 
     let (disk_row, disk_label, disk_value_label, disk_bar) = build_metric_row();
     root.append(&disk_row);
-
-    root.append(&divider());
 
     let footer = gtk::Box::new(gtk::Orientation::Vertical, 2);
     let uptime_label = gtk::Label::new(None);
