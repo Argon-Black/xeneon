@@ -52,12 +52,16 @@ const FONT_PX: i32 = 20;
 const DOWN_COLOR_HEX: &str = "#5da9e8";
 const UP_COLOR_HEX: &str = "#e8875d";
 
-/// Generous compared to SSX's 6-character cap - this card is more than
-/// twice as wide, and unlike SSX the name isn't the only thing on the
-/// line, so it still needs to leave room for both rates. Only matters for
-/// an unusually long custom label; real interface names are always well
-/// under this.
-const MAX_NAME_WIDTH_CHARS: i32 = 14;
+/// Unlike SSX's cap (which bounds only its own separate caption widget),
+/// this one bounds Pango's layout of the *entire* line - name, both
+/// arrows and both rates together, since it's all one `gtk::Label` (see
+/// this module's doc comment). Sized for the longest line real content
+/// ever produces (`enp0s31f6  ↓ 999.9M  ↑ 999.9M` is 29 characters) plus
+/// a little slack, so it only ever kicks in for an unusually long custom
+/// label - a first version of this cap was mistakenly sized for the name
+/// alone (14 chars) and ended up ellipsizing the upload rate off of every
+/// normal-length line.
+const MAX_LINE_WIDTH_CHARS: i32 = 34;
 
 static INSTALL_CSS: Once = Once::new();
 
@@ -246,7 +250,7 @@ fn build_content() -> (Rc<NetworkSxState>, gtk::Widget) {
     label.set_halign(gtk::Align::Center);
     label.set_valign(gtk::Align::Center);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    label.set_max_width_chars(MAX_NAME_WIDTH_CHARS);
+    label.set_max_width_chars(MAX_LINE_WIDTH_CHARS);
 
     let state = Rc::new(NetworkSxState {
         label: label.clone(),
