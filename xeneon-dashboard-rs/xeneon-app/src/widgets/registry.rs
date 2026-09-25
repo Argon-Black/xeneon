@@ -218,6 +218,16 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         preview: None,
         singleton: false,
     },
+    WidgetDescriptor {
+        kind: "system_sq",
+        title_key: "widgets.system_info.title",
+        card_title_key: "widgets.system_info.title",
+        size: SIZE_SQ,
+        spawn: crate::widgets::system_sq::spawn,
+        restore: crate::widgets::system_sq::restore,
+        preview: None,
+        singleton: false,
+    },
     // Empty card_title_key: the shortcuts grid puts its own hover-revealed
     // "+" button in that same top-left corner instead of a title label -
     // see WidgetDescriptor::card_title_key's own doc comment.

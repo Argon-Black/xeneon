@@ -342,5 +342,15 @@
   "widgets.appearance.corner_square": "直角",
 
   "widgets.youtube.title": "YouTube",
-  "widgets.youtube.settings.resume_last_page": "启动时恢复上次的页面"
+  "widgets.youtube.settings.resume_last_page": "启动时恢复上次的页面",
+
+  "widgets.system_info.title": "系统信息",
+  "widgets.system_info.cpu_label": "CPU",
+  "widgets.system_info.mem_label": "内存",
+  "widgets.system_info.disk_label": "磁盘",
+  "widgets.system_info.unit_day": "天",
+  "widgets.system_info.unit_hour": "小时",
+  "widgets.system_info.unit_minute": "分钟",
+  "widgets.system_info.uptime_label": "运行时间：{value}",
+  "widgets.system_info.settings.disk_path": "挂载点"
 }

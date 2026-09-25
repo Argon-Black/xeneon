@@ -159,6 +159,14 @@ pub fn read_memory() -> Option<MemoryInfo> {
     Some(MemoryInfo { total_kib: total_kib?, available_kib: available_kib? })
 }
 
+/// Seconds since boot - `/proc/uptime`'s first field (the second, summed
+/// idle time across all cores, isn't used here). `None` if the file can't
+/// be read or its first field doesn't parse as a number.
+pub fn read_uptime_seconds() -> Option<f64> {
+    let content = std::fs::read_to_string(UPTIME_PATH).ok()?;
+    content.split_whitespace().next()?.parse().ok()
+}
+
 /// Bytes total/used on the filesystem holding `path`, straight from
 /// `statvfs(2)` - the same syscall `df`/coreutils use, just called directly
 /// instead of spawning `df` and parsing its text output. `used` mirrors

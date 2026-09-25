@@ -342,5 +342,15 @@
   "widgets.appearance.corner_square": "直角",
 
   "widgets.youtube.title": "YouTube",
-  "widgets.youtube.settings.resume_last_page": "起動時に最後のページを再開"
+  "widgets.youtube.settings.resume_last_page": "起動時に最後のページを再開",
+
+  "widgets.system_info.title": "システム情報",
+  "widgets.system_info.cpu_label": "CPU",
+  "widgets.system_info.mem_label": "メモリ",
+  "widgets.system_info.disk_label": "ディスク",
+  "widgets.system_info.unit_day": "日",
+  "widgets.system_info.unit_hour": "時間",
+  "widgets.system_info.unit_minute": "分",
+  "widgets.system_info.uptime_label": "稼働時間: {value}",
+  "widgets.system_info.settings.disk_path": "マウントポイント"
 }

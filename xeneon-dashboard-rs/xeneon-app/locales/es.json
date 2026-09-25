@@ -342,5 +342,15 @@
   "widgets.appearance.corner_square": "Cuadradas",
 
   "widgets.youtube.title": "YouTube",
-  "widgets.youtube.settings.resume_last_page": "Reanudar la última página al iniciar"
+  "widgets.youtube.settings.resume_last_page": "Reanudar la última página al iniciar",
+
+  "widgets.system_info.title": "Información del sistema",
+  "widgets.system_info.cpu_label": "CPU",
+  "widgets.system_info.mem_label": "Memoria",
+  "widgets.system_info.disk_label": "Disco",
+  "widgets.system_info.unit_day": "d",
+  "widgets.system_info.unit_hour": "h",
+  "widgets.system_info.unit_minute": "min",
+  "widgets.system_info.uptime_label": "En funcionamiento desde hace {value}",
+  "widgets.system_info.settings.disk_path": "Punto de montaje"
 }
