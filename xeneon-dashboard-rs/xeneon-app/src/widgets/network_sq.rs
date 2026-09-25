@@ -1,23 +1,45 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Network throughput widget (SQ footprint): interface name on top, then
-//! the down and up rates stacked below it - unlike SSX/SX/S's single-line
-//! layouts, this card is taller than it is wide, so the natural fit is a
-//! vertical stack rather than a wider row. Sized/positioned per the
-//! mockup agreed with the user; this is the fourth of the SSX/SX/S/SQ/M
-//! variants planned there - the mockup's mini graph and VPN badge are
-//! still follow-up steps (same "text first, iterate" scope every size so
-//! far has used).
+//! Network throughput widget (SQ footprint): a small network icon and the
+//! interface name in the top-left corner, the down/up rates on their own
+//! line below that, and a scrolling in/out history graph filling the rest
+//! of the card - matching the mockup shown to the user before this widget
+//! was built (SSX/SX/S shipped a "text first" version of their own
+//! layouts and iterated from there; this is that iteration for SQ).
 //!
-//! Same interface Auto/pin + rename-only settings as SX/S, and the same
-//! single-`gtk::Label`-with-markup design (see `network_sx.rs`'s doc
-//! comment for why) - just with `\n`-separated lines instead of one line,
-//! and `gtk::Justification::Center` so each line centers on its own
-//! rather than only the whole block centering. Reuses `network.rs`'s
-//! `read_interfaces`/`default_interface`/`format_rate_fixed`.
+//! Same interface Auto/pin + rename-only settings as SX/S/SQ's earlier
+//! text-only version. The rate line still uses the single-`gtk::Label`-
+//! with-markup approach `network_sx.rs`'s doc comment explains (colored/
+//! bold/monospace spans for the arrows, fixed-width via `format_rate_fixed`
+//! so digit-width changes don't shift anything) - only the interface name
+//! moved out to its own header row, since the mockup put it in a corner
+//! rather than centered.
+//!
+//! The network icon is a small bundled SVG (`assets/network-icon.svg`),
+//! rasterized once and cached, loaded the same way `audio.rs` loads its
+//! empty-state illustration - deliberately *not* a
+//! `gtk::Image::from_icon_name` freedesktop icon. `network.rs`'s SSX card
+//! originally tried that (`network-receive-symbolic`) and it silently
+//! failed to render: the user's active icon theme turned out to ship
+//! KDE/Breeze-style symbolic SVGs (`currentColor` + a `ColorScheme-Text`
+//! CSS class) rather than the GNOME/Adwaita convention GTK4's symbolic-
+//! icon recoloring expects, so nothing painted. A bundled SVG with its
+//! fill color baked in at source and rendered as a plain raster texture
+//! sidesteps that whole pipeline - same reasoning as switching SSX's own
+//! direction icon to a Unicode arrow, just with a real (small,
+//! monochrome) icon this time instead of a character glyph, since the
+//! user specifically asked for one here.
+//!
+//! The graph is a `gtk::DrawingArea` painted with Cairo (already pulled in
+//! by `gtk4`, no new crate) - two auto-scaled line+fill traces over the
+//! last `MAX_HISTORY_SAMPLES` rate samples, blue for down and coral for
+//! up, matching the rest of this widget's color convention. Samples are
+//! only recorded when a real rate was computed (not on a "…"/unavailable
+//! tick), so a momentary hiccup doesn't draw a fake dip to zero.
 
 use gtk::prelude::*;
 use log::{debug, warn};
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Once;
 use std::time::Instant;
@@ -27,25 +49,60 @@ use crate::widgets::network::{default_interface, format_rate_fixed, read_interfa
 use crate::widgets::registry::WidgetInstance;
 
 const REFRESH_INTERVAL_SECONDS: u32 = 2;
-/// One size for the whole label (name included) - deliberately not a
-/// bigger size for the rate lines than the name line. Pango's markup
-/// `size` attribute could do that, but its units (1024ths of a point,
-/// resolved through the display's DPI) aren't something to get right
-/// without being able to see the result, and the uniform-size look this
-/// avoids risking is exactly what SX/S already shipped and the user
-/// confirmed looked right.
-const FONT_PX: i32 = 26;
+const NAME_FONT_PX: i32 = 17;
+const VALUES_FONT_PX: i32 = 22;
 
 /// Same blue/coral pairing as `network.rs`'s SSX card and `network_sx.rs`'s
 /// SX card (see `network::Direction::color_hex`).
 const DOWN_COLOR_HEX: &str = "#5da9e8";
 const UP_COLOR_HEX: &str = "#e8875d";
+const DOWN_COLOR_RGB: (f64, f64, f64) = (0.365, 0.663, 0.910);
+const UP_COLOR_RGB: (f64, f64, f64) = (0.910, 0.529, 0.365);
 
-/// Bounds each individual line's width (Pango applies max-width-chars/
-/// ellipsize per line, not to the whole multi-line block) - the two rate
-/// lines are always short and fixed-width, so in practice this only ever
-/// guards against an unusually long custom label on the name line.
-const MAX_LINE_WIDTH_CHARS: i32 = 22;
+/// Bounds the rate line's width - it no longer includes the interface name
+/// (moved to its own header row), so unlike the earlier text-only version
+/// of this widget, a long custom label can't affect it at all; this only
+/// guards the fixed-width `↓ 999.9M/s  ↑ 999.9M/s` content itself.
+const MAX_VALUES_WIDTH_CHARS: i32 = 24;
+
+/// Two minutes of history at the refresh interval - long enough to see a
+/// trend, short enough that the graph still redraws cheaply every tick
+/// (a plain Vec-backed deque of two `f64`s per sample, nothing fancier).
+const MAX_HISTORY_SAMPLES: usize = 60;
+
+const NETWORK_ICON_PATH: &str = "assets/network-icon.svg";
+/// Rasterized well above the ~18px this icon actually displays at, so it
+/// stays crisp rather than looking like an upscaled bitmap - same
+/// reasoning as `audio.rs`'s `EMPTY_STATE_ICON_RASTER_PX`, just a much
+/// smaller target size since this is a small corner icon, not hero art.
+const NETWORK_ICON_RASTER_PX: i32 = 96;
+const NETWORK_ICON_DISPLAY_PX: i32 = 18;
+
+thread_local! {
+    // Loaded once and reused by every instance of this widget, same
+    // caching shape as `audio.rs`'s `EMPTY_STATE_TEXTURE` - the icon never
+    // changes, and a failed load is cached too so a missing/corrupt file
+    // doesn't get retried on every single widget construction.
+    static NETWORK_ICON_TEXTURE: RefCell<Option<Option<gtk::gdk::Texture>>> = RefCell::new(None);
+}
+
+/// The small network glyph shown in the header - `None` if the bundled SVG
+/// failed to load, in which case the header just shows the name with no
+/// icon rather than a broken image.
+fn network_icon_texture() -> Option<gtk::gdk::Texture> {
+    NETWORK_ICON_TEXTURE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none() {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(NETWORK_ICON_PATH);
+            let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&path, NETWORK_ICON_RASTER_PX, NETWORK_ICON_RASTER_PX)
+                .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
+                .inspect_err(|err| warn!("failed to load {}: {err}", path.display()))
+                .ok();
+            *cell = Some(texture);
+        }
+        cell.clone().unwrap()
+    })
+}
 
 static INSTALL_CSS: Once = Once::new();
 
@@ -53,21 +110,31 @@ fn ensure_css_installed() {
     INSTALL_CSS.call_once(|| {
         let Some(display) = gtk::gdk::Display::default() else { return };
         let css = gtk::CssProvider::new();
-        css.load_from_string(&format!(".xeneon-network-sq-label {{ font-size: {FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}"));
+        css.load_from_string(&format!(
+            ".xeneon-network-sq-name {{ font-size: {NAME_FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}\n\
+             .xeneon-network-sq-values {{ font-size: {VALUES_FONT_PX}px; color: rgba(255, 255, 255, 0.75); }}"
+        ));
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     });
 }
 
-/// All of this widget's live state - one instance per placed widget. Same
-/// shape as `network_sx::NetworkSxState`/`network_s::NetworkSState` - see
-/// those structs' doc comments.
+/// All of this widget's live state - one instance per placed widget.
+/// Interface pin/custom-label/sample fields mirror `network_sx::
+/// NetworkSxState` exactly; `history` and `graph_area` are what's new here.
 struct NetworkSqState {
-    label: gtk::Label,
+    name_label: gtk::Label,
+    values_label: gtk::Label,
+    graph_area: gtk::DrawingArea,
 
     interface_name: RefCell<Option<String>>,
     custom_label: RefCell<Option<String>>,
     available_interfaces: RefCell<Vec<String>>,
     last_sample: RefCell<Option<(String, u64, u64, Instant)>>,
+    /// `(down bytes/sec, up bytes/sec)`, oldest first, capped at
+    /// `MAX_HISTORY_SAMPLES` - only ever pushed to on a tick that produced
+    /// a real rate (see `refresh`), so a momentary "no second sample yet"
+    /// tick doesn't draw a fake dip to zero on the graph.
+    history: RefCell<VecDeque<(f64, f64)>>,
     logged_unavailable: Cell<bool>,
 }
 
@@ -91,6 +158,10 @@ impl NetworkSqState {
             None => debug!("interface set back to auto-pick"),
         }
         *self.interface_name.borrow_mut() = name;
+        // A different interface means a different traffic history -
+        // starting the graph over avoids a misleading jump between two
+        // unrelated interfaces' rates on the same trace.
+        self.history.borrow_mut().clear();
         self.refresh();
     }
 
@@ -115,14 +186,17 @@ impl NetworkSqState {
     }
 
     /// Re-reads every interface's counters, recomputes both rates for
-    /// whichever interface is currently effective, and redraws the label -
-    /// same call sites and reasoning as `network_sx::NetworkSxState::refresh`.
+    /// whichever interface is currently effective, updates the header/
+    /// values labels, records a history sample, and queues a graph
+    /// repaint. Called on every tick, every setter above, and a language
+    /// change - same call sites as `network_sx::NetworkSxState::refresh`.
     fn refresh(&self) {
         let interfaces = read_interfaces();
         *self.available_interfaces.borrow_mut() = interfaces.iter().map(|(name, _, _)| name.clone()).collect();
 
         let effective_name = self.effective_interface_name(&interfaces);
-        let name_text = self.display_label(effective_name.as_deref());
+        self.name_label.set_text(&self.display_label(effective_name.as_deref()));
+
         let counters = effective_name.as_ref().and_then(|name| interfaces.iter().find(|(n, _, _)| n == name));
 
         match counters {
@@ -135,8 +209,8 @@ impl NetworkSqState {
                     );
                 }
                 *self.last_sample.borrow_mut() = None;
-                self.label.set_markup(&gtk::glib::markup_escape_text(&format!("{name_text}\n--")));
-                self.label.set_tooltip_text(Some(&i18n::t("widgets.network.unavailable")));
+                self.values_label.set_text("--");
+                self.values_label.set_tooltip_text(Some(&i18n::t("widgets.network.unavailable")));
             }
             Some((name, rx_bytes, tx_bytes)) => {
                 if self.logged_unavailable.replace(false) {
@@ -159,25 +233,32 @@ impl NetworkSqState {
                 *last_sample = Some((name.clone(), *rx_bytes, *tx_bytes, now));
                 drop(last_sample);
 
+                if let Some((down, up)) = rates {
+                    let mut history = self.history.borrow_mut();
+                    history.push_back((down, up));
+                    while history.len() > MAX_HISTORY_SAMPLES {
+                        history.pop_front();
+                    }
+                }
+
                 // Fixed-width, monospace - same stability reasoning as
                 // `network_sx.rs`/`network_s.rs` (see `format_rate_fixed`'s
-                // doc comment): without it, the rate lines' own width
-                // changing digit to digit would shift them sideways within
-                // the centered, justified block.
+                // doc comment).
                 let (down_text, up_text) = match rates {
                     Some((down, up)) => (format!("{}/s", format_rate_fixed(down)), format!("{}/s", format_rate_fixed(up))),
                     None => (format!("{:>6}/s", "…"), format!("{:>6}/s", "…")),
                 };
-                self.label.set_markup(&format!(
-                    "{}\n<span color=\"{DOWN_COLOR_HEX}\" weight=\"bold\" font_family=\"monospace\">↓ {}</span>\n\
+                self.values_label.set_markup(&format!(
+                    "<span color=\"{DOWN_COLOR_HEX}\" weight=\"bold\" font_family=\"monospace\">↓ {}</span>   \
                      <span color=\"{UP_COLOR_HEX}\" weight=\"bold\" font_family=\"monospace\">↑ {}</span>",
-                    gtk::glib::markup_escape_text(&name_text),
                     gtk::glib::markup_escape_text(&down_text),
                     gtk::glib::markup_escape_text(&up_text),
                 ));
-                self.label.set_tooltip_text(Some(name));
+                self.values_label.set_tooltip_text(Some(name));
             }
         }
+
+        self.graph_area.queue_draw();
     }
 
     fn to_dict(&self) -> serde_json::Value {
@@ -205,25 +286,129 @@ fn is_manual(entries: &[Option<String>], index: usize) -> bool {
     entries.get(index).map(|entry| entry.is_some()).unwrap_or(false)
 }
 
+/// Paints one trace (line + a faint fill below it) for `samples`, scaled
+/// so its own peak sits at `top_fraction` of the drawing area's height -
+/// called twice per repaint, once for down and once for up, each against
+/// its own peak (not a shared one), so a quiet upload doesn't flatten
+/// into a barely-visible line just because download is far busier, or
+/// vice versa.
+fn draw_trace(cr: &gtk::cairo::Context, width: f64, height: f64, samples: &[f64], color: (f64, f64, f64), top_fraction: f64) {
+    let peak = samples.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+    let n = samples.len();
+    if n < 2 {
+        return;
+    }
+    let step_x = width / (n - 1) as f64;
+    let point = |i: usize, value: f64| {
+        let x = step_x * i as f64;
+        let y = height - (value / peak) * height * top_fraction;
+        (x, y)
+    };
+
+    let (r, g, b) = color;
+
+    // Fill: the line's path, then straight down to the baseline and back
+    // along it to the start - a classic area-chart fill, drawn first so
+    // the stroked line sits on top of it.
+    cr.new_path();
+    let (x0, y0) = point(0, samples[0]);
+    cr.move_to(x0, y0);
+    for (i, value) in samples.iter().enumerate().skip(1) {
+        let (x, y) = point(i, *value);
+        cr.line_to(x, y);
+    }
+    let (x_last, _) = point(n - 1, 0.0);
+    cr.line_to(x_last, height);
+    cr.line_to(x0, height);
+    cr.close_path();
+    cr.set_source_rgba(r, g, b, 0.18);
+    let _ = cr.fill();
+
+    cr.new_path();
+    cr.move_to(x0, y0);
+    for (i, value) in samples.iter().enumerate().skip(1) {
+        let (x, y) = point(i, *value);
+        cr.line_to(x, y);
+    }
+    cr.set_line_width(2.0);
+    cr.set_line_join(gtk::cairo::LineJoin::Round);
+    cr.set_source_rgba(r, g, b, 0.95);
+    let _ = cr.stroke();
+}
+
+/// Draws both traces over the whole `DrawingArea` - down on top of up
+/// (drawn second, so its typically-smaller fill doesn't get buried under
+/// down's), each independently auto-scaled by `draw_trace`. Blank (no
+/// traces at all) until there are at least two history samples, since a
+/// single point has no line to draw.
+fn draw_graph(state: &NetworkSqState, cr: &gtk::cairo::Context, width: i32, height: i32) {
+    let history = state.history.borrow();
+    if history.len() < 2 {
+        return;
+    }
+    let down: Vec<f64> = history.iter().map(|(d, _)| *d).collect();
+    let up: Vec<f64> = history.iter().map(|(_, u)| *u).collect();
+    drop(history);
+
+    // Leaves a little headroom at the top so a peak doesn't touch the
+    // card's edge.
+    const TOP_FRACTION: f64 = 0.85;
+    draw_trace(cr, width as f64, height as f64, &up, UP_COLOR_RGB, TOP_FRACTION);
+    draw_trace(cr, width as f64, height as f64, &down, DOWN_COLOR_RGB, TOP_FRACTION);
+}
+
 fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
     ensure_css_installed();
 
-    let label = gtk::Label::new(None);
-    label.add_css_class("xeneon-network-sq-label");
-    label.set_halign(gtk::Align::Center);
-    label.set_valign(gtk::Align::Center);
-    label.set_justify(gtk::Justification::Center);
-    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    label.set_max_width_chars(MAX_LINE_WIDTH_CHARS);
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    root.set_margin_start(14);
+    root.set_margin_end(14);
+    root.set_margin_top(12);
+    root.set_margin_bottom(10);
+
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    header.set_halign(gtk::Align::Start);
+    if let Some(texture) = network_icon_texture() {
+        let icon = gtk::Image::from_paintable(Some(&texture));
+        icon.set_pixel_size(NETWORK_ICON_DISPLAY_PX);
+        header.append(&icon);
+    }
+    let name_label = gtk::Label::new(None);
+    name_label.add_css_class("xeneon-network-sq-name");
+    name_label.set_halign(gtk::Align::Start);
+    header.append(&name_label);
+    root.append(&header);
+
+    let values_label = gtk::Label::new(None);
+    values_label.add_css_class("xeneon-network-sq-values");
+    values_label.set_halign(gtk::Align::Start);
+    values_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    values_label.set_max_width_chars(MAX_VALUES_WIDTH_CHARS);
+    root.append(&values_label);
+
+    let graph_area = gtk::DrawingArea::new();
+    graph_area.set_hexpand(true);
+    graph_area.set_vexpand(true);
+    graph_area.set_margin_top(6);
+    root.append(&graph_area);
 
     let state = Rc::new(NetworkSqState {
-        label: label.clone(),
+        name_label,
+        values_label,
+        graph_area: graph_area.clone(),
         interface_name: RefCell::new(None),
         custom_label: RefCell::new(None),
         available_interfaces: RefCell::new(Vec::new()),
         last_sample: RefCell::new(None),
+        history: RefCell::new(VecDeque::with_capacity(MAX_HISTORY_SAMPLES)),
         logged_unavailable: Cell::new(false),
     });
+
+    graph_area.set_draw_func({
+        let state = state.clone();
+        move |_area, cr, width, height| draw_graph(&state, cr, width, height)
+    });
+
     state.refresh();
 
     let timeout_id = gtk::glib::timeout_add_seconds_local(REFRESH_INTERVAL_SECONDS, {
@@ -233,7 +418,7 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
             gtk::glib::ControlFlow::Continue
         }
     });
-    label.connect_destroy({
+    root.connect_destroy({
         let timeout_id = RefCell::new(Some(timeout_id));
         move |_| {
             if let Some(id) = timeout_id.borrow_mut().take() {
@@ -246,7 +431,7 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
         move || state.refresh()
     });
 
-    (state, label.upcast())
+    (state, root.upcast())
 }
 
 /// Builds the settings panel: which interface drives the display, and the
