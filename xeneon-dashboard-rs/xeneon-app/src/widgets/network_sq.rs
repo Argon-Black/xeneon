@@ -93,21 +93,30 @@ const DEFAULT_NAME_COLOR_HEX: &str = "#ffffff";
 const DEFAULT_DOWN_COLOR_HEX: &str = "#5da9e8";
 const DEFAULT_UP_COLOR_HEX: &str = "#e8875d";
 
-/// Icon+name size, at `content_scale == 1.0` (100%) - everything scales
-/// together off the settings panel's slider, same technique as
-/// `temp_gauge.rs`'s `BASE_*`/`content_scale`. Deliberately doesn't touch
-/// the rate line, the graph, or the VPN badge - the user asked for the
-/// icon and interface label to be resizable, not the whole card.
+/// Icon size at `content_scale == 1.0` (100%) - still resizable off the
+/// settings panel's slider, same technique as `temp_gauge.rs`'s
+/// `BASE_*`/`content_scale`. Deliberately doesn't touch the rate line, the
+/// graph, or the VPN badge - the user asked for the icon (specifically,
+/// not the interface label alongside it - see `NAME_FONT_PX` below) to be
+/// resizable, not the whole card.
 const BASE_HEADER_ICON_PX: f64 = 18.0;
-const BASE_NAME_FONT_PX: f64 = 17.0;
+/// Fixed, *not* part of `content_scale` - matches `hue.rs`'s
+/// `.xeneon-hue-title`/`system_sq.rs`'s `HOSTNAME_FONT_PX` at their own
+/// fixed size. Used to scale together with the icon (see
+/// `BASE_HEADER_ICON_PX`'s own doc comment for that older behavior); split
+/// out once the user asked for the card's *title* (the interface name
+/// text) to read at a fixed size matching the other two cards' headers,
+/// separately from "the global size increase" the content-scale slider
+/// still gives the icon.
+const NAME_FONT_PX: i32 = 17;
 const MIN_CONTENT_SCALE: f64 = 0.5;
 const MAX_CONTENT_SCALE: f64 = 2.0;
 /// 100% - dropped from an earlier 125% so a freshly-placed card's icon
-/// (18px) and name (17px) read at the same size as `hue.rs`'s own fixed
-/// header icon/title by default, per the user's own side-by-side
-/// comparison once the Hue widget existed. Still a starting point, not a
-/// floor or ceiling - the slider still reaches up to `MAX_CONTENT_SCALE`
-/// for anyone who wants it bigger again.
+/// reads at the same size as `hue.rs`'s own fixed header icon by default,
+/// per the user's own side-by-side comparison once the Hue widget
+/// existed. Still a starting point, not a floor or ceiling - the slider
+/// still reaches up to `MAX_CONTENT_SCALE` for anyone who wants the icon
+/// bigger again.
 const DEFAULT_CONTENT_SCALE: f64 = 1.0;
 
 /// Bounds the rate line's width - it no longer includes the interface name
@@ -335,18 +344,19 @@ impl NetworkSqState {
         self.apply_content_scale();
     }
 
-    /// Rebuilds this instance's name-label CSS rule (font size + color)
-    /// from `content_scale`/`name_color`, and re-renders the header icon
-    /// at the matching size/color - mirrors `TempGaugeState::
-    /// apply_content_scale`. Called from every setter that touches either
-    /// of those two settings, not just `set_content_scale` itself.
+    /// Rebuilds this instance's name-label CSS rule (fixed font size, but
+    /// still a per-instance rule since `color` isn't fixed - see
+    /// `NAME_FONT_PX`'s own doc comment on why size and color parted ways
+    /// here), and re-renders the header icon at `content_scale`'s own
+    /// size/matching color - mirrors `TempGaugeState::apply_content_scale`.
+    /// Called from every setter that touches either of those two settings,
+    /// not just `set_content_scale` itself.
     fn apply_content_scale(&self) {
         let scale = self.content_scale.get();
         let name_hex = rgba_to_hex(&self.name_color.borrow());
         let rule = format!(
-            ".{class} .xeneon-network-sq-name {{ font-size: {size}px; color: {name_hex}; }}",
+            ".{class} .xeneon-network-sq-name {{ font-size: {NAME_FONT_PX}px; color: {name_hex}; }}",
             class = self.css_class,
-            size = (BASE_NAME_FONT_PX * scale).round() as i32,
         );
         NAME_CSS.with(|registry| registry.set_rule(&self.css_class, rule));
         self.icon_image.set_pixel_size((BASE_HEADER_ICON_PX * scale).round() as i32);
