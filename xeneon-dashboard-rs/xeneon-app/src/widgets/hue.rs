@@ -31,28 +31,28 @@
 //! update rather than going blank.
 //!
 //! Step 4 adds the color/color-temperature popover on tapping a light's
-//! name - `open_color_popover`, branching on `BulbType`, both cases built
-//! on the same `build_gradient_strip` picker (a Cairo-painted "nuancier"
-//! bar + drag, same tap-or-drag mechanics as the on-card brightness bar):
-//! a full-saturation rainbow strip for `Color` (picked hue converted to
-//! the bridge's CIE xy via `hue_bridge::rgb_to_xy`), a warm-to-cool strip
-//! for `ColorTemperature` (picked position converted to mirek), and a
-//! no-op for `Dimmable` (no color data to edit at all) - matching the
-//! design discussion's "nothing to open for a plain white bulb" decision.
-//! The first cut of this popover used a `gtk::ColorDialogButton` (color)
-//! and a plain Kelvin `gtk::Scale` (temperature); the user asked for both
-//! to be direct instead - a color dialog needs an extra tap just to see
-//! any colors at all, and a bare Kelvin number means nothing without
-//! already knowing what e.g. 2700K looks like - hence the gradient strips,
-//! which show the actual colors and react on the same tap/drag as the
-//! rest of this card. Both strips debounce their network PUT
-//! (`GRADIENT_STRIP_DEBOUNCE` after the last drag tick) since they fire on
-//! every tick for an instant local preview, and the bridge rate-limits
-//! rapid requests. A room row's status/icon still doesn't aggregate its
-//! member lights' actual colors (see `room_to_entry`) - it always renders
-//! as a plain dimmable accent-colored entry, so the popover never opens
-//! for a room row either, a deliberate simplification since color
-//! aggregation across a whole room is its own small design question,
+//! name - `open_color_popover`, branching on `BulbType`: a
+//! saturation/value square plus a hue strip below it for `Color` (picked
+//! color converted to the bridge's CIE xy via `hue_bridge::rgb_to_xy`),
+//! a warm-to-cool `build_gradient_strip` for `ColorTemperature` (picked
+//! position converted to mirek), and a no-op for `Dimmable` (no color data
+//! to edit at all) - matching the design discussion's "nothing to open
+//! for a plain white bulb" decision. This popover went through three
+//! cuts on real hands-on feedback: a `gtk::ColorDialogButton` (color) and
+//! a plain Kelvin `gtk::Scale` (temperature) first, then both replaced
+//! with direct gradient strips (a color dialog needs an extra tap just to
+//! see any colors at all, and a bare Kelvin number means nothing without
+//! already knowing what e.g. 2700K looks like), then the color strip
+//! itself grew into a full SV square (a single hue strip could only pick
+//! a fully-saturated color, never a pastel or near-white). Every picker
+//! here debounces its network PUT (`GRADIENT_STRIP_DEBOUNCE` after the
+//! last drag tick) since they all fire on every tick for an instant local
+//! preview, and the bridge rate-limits rapid requests. A room row's
+//! status/icon still doesn't aggregate its member lights' actual colors
+//! (see `room_to_entry`) - it always renders as a plain dimmable
+//! accent-colored entry, so the popover never opens for a room row
+//! either, a deliberate simplification since color aggregation across a
+//! whole room is its own small design question,
 //! separate from this step's picker mechanics.
 //!
 //! Bulb-type detection (`hue_bridge::BulbType`) drives the status line's
@@ -124,9 +124,13 @@ const BAR_HEIGHT_PX: i32 = 36;
 /// consistent look between the two.
 const GRADIENT_STRIP_WIDTH_PX: i32 = 220;
 const GRADIENT_STRIP_HEIGHT_PX: i32 = 36;
-/// How long a gradient strip waits after the last drag tick before
-/// actually sending its PUT - see `open_color_popover`'s own doc comment
-/// on why this needs debouncing at all.
+/// The color popover's saturation/value square - same width as the strip
+/// below it (`GRADIENT_STRIP_WIDTH_PX`) so the two line up.
+const SV_SQUARE_WIDTH_PX: i32 = 220;
+const SV_SQUARE_HEIGHT_PX: i32 = 170;
+/// How long a gradient strip (or the SV square) waits after the last drag
+/// tick before actually sending its PUT - see `open_color_popover`'s own
+/// doc comment on why this needs debouncing at all.
 const GRADIENT_STRIP_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
 
 thread_local! {
@@ -877,56 +881,50 @@ fn preview_color(row: &Rc<LightRow>, hex: &str) {
     row.bar_area.queue_draw();
 }
 
-/// Converts an HSL color (`h` in degrees, `s`/`l` 0.0-1.0) to sRGB
-/// 0.0-1.0 components - the standard algorithm, used only to paint the
-/// color popover's rainbow gradient (see `open_color_popover`) at full
-/// saturation and mid lightness. Purely a rendering helper - the value
-/// actually sent to the bridge goes through `hue_bridge::rgb_to_xy`
-/// afterward, same as a real `gtk::ColorDialogButton` pick would.
-fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
-    if s <= 0.0 {
-        return (l, l, l);
-    }
-    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
-    let p = 2.0 * l - q;
-    let hue_to_rgb = |t: f64| {
-        let t = t.rem_euclid(1.0);
-        if t < 1.0 / 6.0 {
-            p + (q - p) * 6.0 * t
-        } else if t < 1.0 / 2.0 {
-            q
-        } else if t < 2.0 / 3.0 {
-            p + (q - p) * (2.0 / 3.0 - t) * 6.0
-        } else {
-            p
-        }
+/// Converts an HSV color (`h` degrees, `s`/`v` 0.0-1.0) to sRGB 0.0-1.0
+/// components - the SV-square picker's own color math (see
+/// `open_color_popover`'s `BulbType::Color` branch): the square's x/y axes
+/// are saturation/value at a fixed hue, and this is what turns a marker
+/// position back into an actual color to preview and send.
+fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (f64, f64, f64) {
+    let c = v * s;
+    let h_prime = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h_prime as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
     };
-    let h = h / 360.0;
-    (hue_to_rgb(h + 1.0 / 3.0), hue_to_rgb(h), hue_to_rgb(h - 1.0 / 3.0))
+    let m = v - c;
+    (r1 + m, g1 + m, b1 + m)
 }
 
-/// The inverse of `hsl_to_rgb`'s hue component (0.0-1.0, not degrees) -
-/// used once, to position the color popover's marker on whatever hue the
-/// light's current `display_color_hex` is already closest to when the
-/// popover opens, rather than always starting the marker at the left
-/// edge. An exact roundtrip isn't the goal (this widget's colors are
-/// already an approximation - see `hue_bridge::xy_to_hex`'s own doc
-/// comment), just a reasonable starting position.
-fn rgb_hue_fraction((r, g, b): (f64, f64, f64)) -> f64 {
+/// The inverse of `hsv_to_rgb` - used once, to position the color
+/// popover's square marker (and the hue strip's own marker, via its `h`
+/// component) on whatever color the light's current `display_color_hex`
+/// is already closest to when the popover opens, rather than always
+/// starting at a fixed default. An exact roundtrip isn't the goal (this
+/// widget's colors are already an approximation - see
+/// `hue_bridge::xy_to_hex`'s own doc comment), just a reasonable starting
+/// position.
+fn rgb_to_hsv((r, g, b): (f64, f64, f64)) -> (f64, f64, f64) {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let delta = max - min;
-    if delta <= 0.0001 {
-        return 0.0;
-    }
-    let hue = if max == r {
+    let hue = if delta <= 0.0001 {
+        0.0
+    } else if max == r {
         60.0 * (((g - b) / delta).rem_euclid(6.0))
     } else if max == g {
         60.0 * ((b - r) / delta + 2.0)
     } else {
         60.0 * ((r - g) / delta + 4.0)
     };
-    hue.rem_euclid(360.0) / 360.0
+    let saturation = if max <= 0.0 { 0.0 } else { delta / max };
+    (hue.rem_euclid(360.0), saturation, max)
 }
 
 /// Builds a horizontal gradient "nuancier" strip - a `DrawingArea` picker
@@ -1044,25 +1042,38 @@ fn open_color_popover(row: &Rc<LightRow>, state: &Rc<HueState>) {
             label.set_halign(gtk::Align::Start);
             content.append(&label);
 
-            // A 6-stop rainbow (red/yellow/green/cyan/blue/magenta/red, at
-            // full saturation and mid lightness) - direct, no dialog to
-            // open first, per the user's own feedback on the first cut of
-            // this popover (a `ColorDialogButton` needed an extra tap to
-            // even see any colors at all). Only picks a hue, not a full
-            // saturation/lightness plane - a deliberate simplification
-            // (see the module doc comment) over a real 2D color wheel,
-            // which this strip's own drag mechanics don't attempt.
-            let stops: Vec<(f64, (f64, f64, f64))> = (0..=6).map(|i| (i as f64 / 6.0, hsl_to_rgb(i as f64 * 60.0, 1.0, 0.5))).collect();
-            let initial_fraction = rgb_hue_fraction(row.rgb.get());
+            // A saturation/value square (fixed hue - white to the left,
+            // black at the bottom, the pure hue at the top right) plus a
+            // hue strip below it to change which hue the square itself is
+            // built from - the standard "SV square + hue bar" picker
+            // layout, direct and no dialog to open first, per the user's
+            // own feedback on the first two cuts of this popover (a
+            // `ColorDialogButton` needed an extra tap to see any colors at
+            // all; a hue-only strip couldn't reach pastels or near-white
+            // at all). `hue`/`saturation_value` are shared, mutable state
+            // between the square and the strip below it - each one both
+            // reads and writes into them, since picking a new hue on the
+            // strip has to repaint the square (same saturation/value, new
+            // base color) and dragging the square has to keep whatever hue
+            // the strip last picked.
+            let (h0, s0, v0) = rgb_to_hsv(row.rgb.get());
+            let hue = Rc::new(Cell::new(h0));
+            let saturation_value = Rc::new(Cell::new((s0, v0)));
 
-            let generation: Rc<Cell<u64>> = Rc::new(Cell::new(0));
-            let strip = build_gradient_strip(GRADIENT_STRIP_WIDTH_PX, GRADIENT_STRIP_HEIGHT_PX, stops, initial_fraction, {
+            // Shared by the square and the strip - both just update
+            // `hue`/`saturation_value` and call this, rather than each
+            // separately re-deriving the resulting color, debouncing, and
+            // sending its own PUT.
+            let commit: Rc<dyn Fn()> = {
                 let row = row.clone();
                 let state = state.clone();
                 let target = target.clone();
-                let generation = generation.clone();
-                move |fraction| {
-                    let (r, g, b) = hsl_to_rgb(fraction * 360.0, 1.0, 0.5);
+                let hue = hue.clone();
+                let saturation_value = saturation_value.clone();
+                let generation: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+                Rc::new(move || {
+                    let (s, v) = saturation_value.get();
+                    let (r, g, b) = hsv_to_rgb(hue.get(), s, v);
                     preview_color(&row, &hex_from_rgb((r, g, b)));
 
                     let this_generation = generation.get() + 1;
@@ -1085,6 +1096,107 @@ fn open_color_popover(row: &Rc<LightRow>, state: &Rc<HueState>) {
                         }
                         state.refresh();
                     });
+                })
+            };
+
+            let square = gtk::DrawingArea::new();
+            square.set_size_request(SV_SQUARE_WIDTH_PX, SV_SQUARE_HEIGHT_PX);
+            square.set_draw_func({
+                let hue = hue.clone();
+                let saturation_value = saturation_value.clone();
+                move |_area, cr, width, height| {
+                    let (width, height) = (width as f64, height as f64);
+
+                    let (base_r, base_g, base_b) = hsv_to_rgb(hue.get(), 1.0, 1.0);
+                    cr.set_source_rgb(base_r, base_g, base_b);
+                    cr.rectangle(0.0, 0.0, width, height);
+                    let _ = cr.fill();
+
+                    // Saturation axis (x): opaque white fading to
+                    // transparent, left to right.
+                    let white = gtk::cairo::LinearGradient::new(0.0, 0.0, width, 0.0);
+                    white.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 1.0);
+                    white.add_color_stop_rgba(1.0, 1.0, 1.0, 1.0, 0.0);
+                    let _ = cr.set_source(&white);
+                    cr.rectangle(0.0, 0.0, width, height);
+                    let _ = cr.fill();
+
+                    // Value axis (y): transparent fading to opaque black,
+                    // top to bottom.
+                    let black = gtk::cairo::LinearGradient::new(0.0, 0.0, 0.0, height);
+                    black.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 0.0);
+                    black.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 1.0);
+                    let _ = cr.set_source(&black);
+                    cr.rectangle(0.0, 0.0, width, height);
+                    let _ = cr.fill();
+
+                    let (s, v) = saturation_value.get();
+                    let marker_x = s * width;
+                    let marker_y = (1.0 - v) * height;
+                    let marker_radius = 7.0;
+                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+                    cr.arc(marker_x, marker_y, marker_radius, 0.0, std::f64::consts::TAU);
+                    let _ = cr.fill();
+                    cr.set_source_rgba(0.0, 0.0, 0.0, 0.35);
+                    cr.set_line_width(1.5);
+                    cr.arc(marker_x, marker_y, marker_radius, 0.0, std::f64::consts::TAU);
+                    let _ = cr.stroke();
+                }
+            });
+
+            let square_drag_start: Rc<Cell<(f64, f64)>> = Rc::new(Cell::new((0.0, 0.0)));
+            let handle_square_move: Rc<dyn Fn(f64, f64)> = Rc::new({
+                let square = square.clone();
+                let saturation_value = saturation_value.clone();
+                let square_drag_start = square_drag_start.clone();
+                let commit = commit.clone();
+                move |offset_x: f64, offset_y: f64| {
+                    let width = square.width() as f64;
+                    let height = square.height() as f64;
+                    if width <= 0.0 || height <= 0.0 {
+                        return;
+                    }
+                    let (start_x, start_y) = square_drag_start.get();
+                    let x = (start_x + offset_x).clamp(0.0, width);
+                    let y = (start_y + offset_y).clamp(0.0, height);
+                    saturation_value.set((x / width, 1.0 - y / height));
+                    square.queue_draw();
+                    commit();
+                }
+            });
+            let square_drag = gtk::GestureDrag::new();
+            square_drag.connect_drag_begin({
+                let square_drag_start = square_drag_start.clone();
+                move |gesture, x, y| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    square_drag_start.set((x, y));
+                }
+            });
+            square_drag.connect_drag_update({
+                let handle_square_move = handle_square_move.clone();
+                move |_gesture, offset_x, offset_y| handle_square_move(offset_x, offset_y)
+            });
+            square_drag.connect_drag_end({
+                let handle_square_move = handle_square_move.clone();
+                move |_gesture, offset_x, offset_y| handle_square_move(offset_x, offset_y)
+            });
+            square.add_controller(square_drag);
+            content.append(&square);
+
+            // A 6-stop rainbow (red/yellow/green/cyan/blue/magenta/red) at
+            // full saturation and value - picking a point on it only ever
+            // changes `hue`, so it repaints the square (new base color,
+            // same marker position) rather than moving the square's own
+            // marker.
+            let stops: Vec<(f64, (f64, f64, f64))> = (0..=6).map(|i| (i as f64 / 6.0, hsv_to_rgb(i as f64 * 60.0, 1.0, 1.0))).collect();
+            let strip = build_gradient_strip(GRADIENT_STRIP_WIDTH_PX, GRADIENT_STRIP_HEIGHT_PX, stops, h0 / 360.0, {
+                let hue = hue.clone();
+                let square = square.clone();
+                let commit = commit.clone();
+                move |fraction| {
+                    hue.set(fraction * 360.0);
+                    square.queue_draw();
+                    commit();
                 }
             });
             content.append(&strip);
@@ -1416,23 +1528,27 @@ mod tests {
     }
 
     #[test]
-    fn hsl_primaries_match_expected_rgb() {
-        assert_eq!(hsl_to_rgb(0.0, 1.0, 0.5), (1.0, 0.0, 0.0));
-        assert_eq!(hsl_to_rgb(120.0, 1.0, 0.5), (0.0, 1.0, 0.0));
-        assert_eq!(hsl_to_rgb(240.0, 1.0, 0.5), (0.0, 0.0, 1.0));
+    fn hsv_primaries_match_expected_rgb() {
+        assert_eq!(hsv_to_rgb(0.0, 1.0, 1.0), (1.0, 0.0, 0.0));
+        assert_eq!(hsv_to_rgb(120.0, 1.0, 1.0), (0.0, 1.0, 0.0));
+        assert_eq!(hsv_to_rgb(240.0, 1.0, 1.0), (0.0, 0.0, 1.0));
     }
 
     #[test]
-    fn rgb_hue_fraction_round_trips_through_hsl_to_rgb() {
-        for degrees in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
-            let rgb = hsl_to_rgb(degrees, 1.0, 0.5);
-            let fraction = rgb_hue_fraction(rgb);
-            assert!((fraction - degrees / 360.0).abs() < 0.01, "expected ~{}, got {fraction}", degrees / 360.0);
+    fn rgb_to_hsv_round_trips_through_hsv_to_rgb() {
+        for (h, s, v) in [(0.0, 1.0, 1.0), (60.0, 0.6, 0.8), (180.0, 1.0, 0.5), (300.0, 0.3, 1.0)] {
+            let rgb = hsv_to_rgb(h, s, v);
+            let (h2, s2, v2) = rgb_to_hsv(rgb);
+            assert!((h2 - h).abs() < 0.01, "hue: expected ~{h}, got {h2}");
+            assert!((s2 - s).abs() < 0.01, "saturation: expected ~{s}, got {s2}");
+            assert!((v2 - v).abs() < 0.01, "value: expected ~{v}, got {v2}");
         }
     }
 
     #[test]
-    fn rgb_hue_fraction_is_zero_for_a_neutral_gray() {
-        assert_eq!(rgb_hue_fraction((0.5, 0.5, 0.5)), 0.0);
+    fn rgb_to_hsv_reports_zero_saturation_for_a_neutral_gray() {
+        let (_, s, v) = rgb_to_hsv((0.5, 0.5, 0.5));
+        assert_eq!(s, 0.0);
+        assert_eq!(v, 0.5);
     }
 }
