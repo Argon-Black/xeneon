@@ -68,9 +68,14 @@
 //! `str::replace` of the source fill color, not GTK's symbolic-icon
 //! recoloring (see that module's own doc comment on why: a freedesktop
 //! `-symbolic` icon silently failed to render under this machine's actual
-//! icon theme). The "on" icon is tinted to each light's own
-//! `display_color_hex`; the "off" icon is a fixed, untinted asset (a faint
-//! bulb with a slash through it).
+//! icon theme). The "on" icon is tinted a fixed white
+//! (`ICON_GLYPH_COLOR_HEX`) and the "off" icon is a fixed, untinted asset
+//! (a faint bulb with a slash through it) - neither follows the light's
+//! own color, unlike the icon-circle background and brightness bar behind
+//! them (`ICON_CIRCLE_FILL_ALPHA`/`BAR_FILL_ALPHA`, both solid fills in
+//! the light's `display_color_hex`): a same-color glyph on a same-color
+//! circle would have no contrast once that circle stopped being a soft,
+//! low-opacity tint (see those constants' own doc comment for why it did).
 //!
 //! The brightness bar is a `gtk::DrawingArea` painted with Cairo (a track
 //! plus a colored fill, both pill-shaped) driven by a `gtk::GestureDrag` -
@@ -228,18 +233,24 @@ const SV_SQUARE_HEIGHT_PX: i32 = 170;
 /// tick before actually sending its PUT - see `open_color_popover`'s own
 /// doc comment on why this needs debouncing at all.
 const GRADIENT_STRIP_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
-/// How strongly a light's own color shows up in its row's icon-circle
-/// background and brightness-bar fill - raised from an original 0.18/0.35
-/// (a deliberately soft, barely-tinted look, agreed in the very first
-/// mockup) after real hands-on use: against this card's dark background, a
-/// vivid picked color (a bright green, a warm amber) read as muted/grayish
-/// at that low an alpha, nowhere near the actual saturated color the
-/// status label shows at full strength right next to it. Still short of
-/// 1.0 - the icon-circle fill in particular needs to stay behind the
-/// glyph's own full-strength tint (see `load_on_icon`) rather than match
-/// it, or the glyph loses its contrast against the circle.
-const ICON_CIRCLE_FILL_ALPHA: f64 = 0.32;
-const BAR_FILL_ALPHA: f64 = 0.78;
+/// Solid (`1.0`) - the icon-circle background and brightness-bar fill both
+/// went through two rounds of alpha tuning (0.18/0.35, then 0.32/0.78)
+/// before the user asked for no transparency at all: any alpha at all,
+/// even a fairly high one, still reads as a muted/washed-out version of a
+/// vivid picked color next to the status label's own full-strength text.
+/// Solid fill means the icon glyph on top of the circle can no longer be
+/// tinted to the light's own color (it would vanish into a same-color
+/// background) - see `ICON_GLYPH_COLOR_HEX` below for how that's handled.
+const ICON_CIRCLE_FILL_ALPHA: f64 = 1.0;
+const BAR_FILL_ALPHA: f64 = 1.0;
+/// Fixed white - the "on" bulb glyph's own tint, now that the circle
+/// behind it (`ICON_CIRCLE_FILL_ALPHA`) is a solid fill in the light's own
+/// color rather than a soft tint: a same-hue glyph on a same-hue solid
+/// circle would have no contrast at all, so the glyph stays a plain white
+/// silhouette instead (the same role `load_off_icon`'s own fixed asset
+/// already plays for the off state, just recolored rather than a second
+/// bundled SVG).
+const ICON_GLYPH_COLOR_HEX: &str = "#ffffff";
 
 thread_local! {
     // The "off" icon never changes color, so it only ever needs one
@@ -747,7 +758,7 @@ fn apply_entry_to_row(row: &Rc<LightRow>, entry: &CardEntry) {
         gtk::glib::markup_escape_text(&status_text(entry))
     ));
 
-    let texture = if entry.on { load_on_icon(&entry.display_color_hex) } else { load_off_icon() };
+    let texture = if entry.on { load_on_icon(ICON_GLYPH_COLOR_HEX) } else { load_off_icon() };
     row.icon_image.set_paintable(texture.as_ref());
     row.icon_area.queue_draw();
     row.bar_area.queue_draw();
@@ -873,7 +884,7 @@ fn build_content(variant: CardVariant) -> (Rc<HueState>, gtk::Widget) {
                 // `on`/`fraction`/`rgb` cells being the single source the
                 // draw funcs read from.
                 row.on.set(new_on);
-                let texture = if new_on { load_on_icon(&hex_from_rgb(row.rgb.get())) } else { load_off_icon() };
+                let texture = if new_on { load_on_icon(ICON_GLYPH_COLOR_HEX) } else { load_off_icon() };
                 row.icon_image.set_paintable(texture.as_ref());
                 row.icon_area.queue_draw();
 
@@ -951,7 +962,7 @@ fn build_content(variant: CardVariant) -> (Rc<HueState>, gtk::Widget) {
                 // switches it on" requirement.
                 let new_on = true;
                 row.on.set(new_on);
-                let texture = load_on_icon(&hex_from_rgb(row.rgb.get()));
+                let texture = load_on_icon(ICON_GLYPH_COLOR_HEX);
                 row.icon_image.set_paintable(texture.as_ref());
                 row.icon_area.queue_draw();
 
@@ -1018,7 +1029,7 @@ fn target_kind_id(target: &CardTarget) -> (&'static str, String) {
 /// round-trip behind it.
 fn preview_color(row: &Rc<LightRow>, hex: &str) {
     row.rgb.set(hex_to_rgb(hex));
-    let texture = load_on_icon(hex);
+    let texture = load_on_icon(ICON_GLYPH_COLOR_HEX);
     row.icon_image.set_paintable(texture.as_ref());
     row.icon_area.queue_draw();
     row.bar_area.queue_draw();
