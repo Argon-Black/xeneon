@@ -111,6 +111,26 @@ pub struct Config {
     // URL is already known), same optional-until-configured shape as
     // `indicator_button_color` above.
     pub ha_page_url: Option<String>,
+    // Philips Hue bridge pairing, shared by every Hue widget instance
+    // rather than each card pairing on its own - matches how a real Hue
+    // account works (one bridge, one link-button press) and lets several
+    // cards on the dashboard (e.g. one per room, or a "favorites" card)
+    // reuse the same connection. `None` until the user runs discovery +
+    // pairing once from Settings (see xeneon-app's settings_page.rs).
+    // `hue_bridge_ip` alone (no username yet) can happen if pairing was
+    // started but never completed (link button not pressed in time) -
+    // callers should treat that the same as "not configured".
+    pub hue_bridge_ip: Option<String>,
+    // The Hue bridge's per-application username - the credential proving
+    // this app already pressed the link button once. Required on every
+    // `/clip/v2` call as the `hue-application-key` header.
+    pub hue_username: Option<String>,
+    // Returned alongside `hue_username` on a successful pairing
+    // (`generateclientkey: true`) - not used yet (only needed for the
+    // Entertainment/streaming API, which this app doesn't do), kept only
+    // so a full re-pair isn't needed if a future feature wants it.
+    pub hue_clientkey: Option<String>,
+
     // Which carousel page to actually open on at launch, independent of
     // carousel *order* (the Home Assistant page, when enabled, is always
     // the leftmost/first page regardless - see xeneon-app's ha_page.rs).
@@ -142,6 +162,9 @@ impl Default for Config {
             accent_follow_system: false,
             default_widget_appearance: DefaultWidgetAppearance::default(),
             app_background_image_path: None,
+            hue_bridge_ip: None,
+            hue_username: None,
+            hue_clientkey: None,
             ha_page_enabled: false,
             ha_page_url: None,
             default_page: None,

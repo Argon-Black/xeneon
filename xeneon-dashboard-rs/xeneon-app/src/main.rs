@@ -42,6 +42,7 @@ mod dashboard_widget;
 mod grid_widget;
 mod ha_page;
 mod help_overlay;
+mod hue_bridge;
 mod i18n_runtime;
 mod logging;
 mod page_indicator;
