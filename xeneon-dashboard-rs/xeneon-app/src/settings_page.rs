@@ -39,6 +39,7 @@ use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::config_store;
 use crate::grid_widget::WidgetGrid;
 use crate::ha_page;
+use crate::hue_bridge;
 use crate::i18n_runtime as i18n;
 use crate::page_indicator::PageIndicator;
 use crate::theme;
@@ -900,6 +901,247 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         }
     });
 
+    // --- Screen 2, block 2 (continued): Philips Hue bridge ---
+    // Discovery/pairing only - the connection is shared by every Hue
+    // widget instance (see `Config::hue_bridge_ip`'s own doc comment in
+    // xeneon-core for why that lives at the app level rather than per-
+    // widget). Kept to two rows on purpose: a block here is a fixed-size,
+    // non-scrolling slot (`new_column`'s `set_overflow(Hidden)` clips
+    // silently rather than growing the page), so the discovered-bridges
+    // list lives in a popover instead of a third row that could push this
+    // group past the block's bottom edge.
+    let hue_group = adw::PreferencesGroup::new();
+    hue_group.set_title(&i18n::t("settings.hue_group.title"));
+
+    let hue_ip_row = adw::EntryRow::new();
+    hue_ip_row.set_title(&i18n::t("settings.hue_group.ip_row.title"));
+    hue_ip_row.set_text(config.hue_bridge_ip.as_deref().unwrap_or(""));
+    hue_ip_row.set_show_apply_button(true);
+    if config.hue_bridge_ip.as_deref().is_some_and(|ip| !is_valid_ipv4(ip)) {
+        hue_ip_row.add_css_class("error");
+        hue_ip_row.set_tooltip_text(Some(&i18n::t("settings.hue_group.ip_row.invalid")));
+    }
+
+    // Shared by the manual "apply" (Enter/focus-out on the entry) and by
+    // picking a bridge from the discovery popover below, so both paths
+    // validate and persist exactly the same way - same reasoning as
+    // `ha_url_row.connect_apply` being the one place that ever touches
+    // `Config::ha_page_url`.
+    let apply_hue_ip: Rc<dyn Fn(&str)> = {
+        let hue_ip_row = hue_ip_row.clone();
+        Rc::new(move |text: &str| {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                hue_ip_row.remove_css_class("error");
+                hue_ip_row.set_tooltip_text(None);
+                config_store::update(|c| c.hue_bridge_ip = None);
+                return;
+            }
+            if !is_valid_ipv4(trimmed) {
+                hue_ip_row.add_css_class("error");
+                hue_ip_row.set_tooltip_text(Some(&i18n::t("settings.hue_group.ip_row.invalid")));
+                return;
+            }
+            hue_ip_row.remove_css_class("error");
+            hue_ip_row.set_tooltip_text(None);
+            config_store::update(|c| c.hue_bridge_ip = Some(trimmed.to_string()));
+        })
+    };
+    hue_ip_row.connect_apply({
+        let apply_hue_ip = apply_hue_ip.clone();
+        move |row| apply_hue_ip(&row.text())
+    });
+
+    let hue_discover_spinner = gtk::Spinner::new();
+    hue_discover_spinner.set_valign(gtk::Align::Center);
+    hue_discover_spinner.set_visible(false);
+    hue_ip_row.add_suffix(&hue_discover_spinner);
+
+    let hue_discover_button = gtk::Button::from_icon_name("system-search-symbolic");
+    hue_discover_button.add_css_class("flat");
+    hue_discover_button.set_valign(gtk::Align::Center);
+    hue_discover_button.set_tooltip_text(Some(&i18n::t("settings.hue_group.ip_row.discover_tooltip")));
+    hue_ip_row.add_suffix(&hue_discover_button);
+
+    let hue_discover_popover = gtk::Popover::new();
+    hue_discover_popover.set_parent(&hue_discover_button);
+
+    hue_discover_button.connect_clicked({
+        let hue_discover_spinner = hue_discover_spinner.clone();
+        let hue_discover_button = hue_discover_button.clone();
+        let hue_discover_popover = hue_discover_popover.clone();
+        let hue_ip_row = hue_ip_row.clone();
+        let apply_hue_ip = apply_hue_ip.clone();
+        move |_| {
+            hue_discover_button.set_sensitive(false);
+            hue_discover_spinner.set_visible(true);
+            hue_discover_spinner.set_spinning(true);
+
+            let hue_discover_spinner = hue_discover_spinner.clone();
+            let hue_discover_button = hue_discover_button.clone();
+            let hue_discover_popover = hue_discover_popover.clone();
+            let hue_ip_row = hue_ip_row.clone();
+            let apply_hue_ip = apply_hue_ip.clone();
+            glib::spawn_future_local(async move {
+                let bridges = gio::spawn_blocking(hue_bridge::discover_all).await.unwrap_or_default();
+
+                hue_discover_spinner.set_visible(false);
+                hue_discover_spinner.set_spinning(false);
+                hue_discover_button.set_sensitive(true);
+
+                let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                list.set_margin_top(8);
+                list.set_margin_bottom(8);
+                list.set_margin_start(8);
+                list.set_margin_end(8);
+
+                if bridges.is_empty() {
+                    let empty_label = gtk::Label::new(Some(&i18n::t("settings.hue_group.discover_popover.empty")));
+                    empty_label.add_css_class("dim-label");
+                    list.append(&empty_label);
+                } else {
+                    for bridge in bridges {
+                        let row_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                        let name_label = gtk::Label::new(Some(bridge.name.as_deref().unwrap_or(&bridge.ip)));
+                        name_label.set_halign(gtk::Align::Start);
+                        row_box.append(&name_label);
+                        if bridge.name.is_some() {
+                            let ip_label = gtk::Label::new(Some(&bridge.ip));
+                            ip_label.add_css_class("dim-label");
+                            ip_label.add_css_class("caption");
+                            ip_label.set_halign(gtk::Align::Start);
+                            row_box.append(&ip_label);
+                        }
+
+                        let row_button = gtk::Button::new();
+                        row_button.add_css_class("flat");
+                        row_button.set_child(Some(&row_box));
+
+                        row_button.connect_clicked({
+                            let hue_ip_row = hue_ip_row.clone();
+                            let hue_discover_popover = hue_discover_popover.clone();
+                            let apply_hue_ip = apply_hue_ip.clone();
+                            let ip = bridge.ip.clone();
+                            move |_| {
+                                hue_ip_row.set_text(&ip);
+                                apply_hue_ip(&ip);
+                                hue_discover_popover.popdown();
+                            }
+                        });
+                        list.append(&row_button);
+                    }
+                }
+
+                hue_discover_popover.set_child(Some(&list));
+                hue_discover_popover.popup();
+            });
+        }
+    });
+
+    hue_group.add(&hue_ip_row);
+
+    let hue_pair_row = adw::ActionRow::new();
+    hue_pair_row.set_title(&i18n::t("settings.hue_group.pair_row.title"));
+    hue_pair_row.set_subtitle(&hue_pair_status_text(&config));
+
+    let hue_pair_spinner = gtk::Spinner::new();
+    hue_pair_spinner.set_valign(gtk::Align::Center);
+    hue_pair_spinner.set_visible(false);
+    hue_pair_row.add_suffix(&hue_pair_spinner);
+
+    let hue_pair_button = gtk::Button::with_label(&i18n::t("settings.hue_group.pair_row.button"));
+    hue_pair_button.set_valign(gtk::Align::Center);
+    hue_pair_row.add_suffix(&hue_pair_button);
+
+    hue_group.add(&hue_pair_row);
+    screen2_block2.append(&hue_group);
+
+    // Bumped on every "Appairer" click, checked after every blocking
+    // pairing attempt and every retry wait - a click while a previous
+    // attempt is still retrying makes the old loop's next check see a
+    // mismatch and quietly stop, same staleness guard as `ha_ping_generation`
+    // above (comparing here instead of cancelling the in-flight
+    // `gio::spawn_blocking` call, which can't be cancelled once started).
+    let hue_pair_generation: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+
+    hue_pair_button.connect_clicked({
+        let hue_pair_generation = hue_pair_generation.clone();
+        let hue_pair_spinner = hue_pair_spinner.clone();
+        let hue_pair_row = hue_pair_row.clone();
+        move |_| {
+            let Some(ip) = config_store::get().hue_bridge_ip.filter(|ip| is_valid_ipv4(ip)) else {
+                hue_pair_row.set_subtitle(&i18n::t("settings.hue_group.pair_row.no_ip"));
+                return;
+            };
+
+            let generation = hue_pair_generation.get() + 1;
+            hue_pair_generation.set(generation);
+
+            hue_pair_spinner.set_visible(true);
+            hue_pair_spinner.set_spinning(true);
+            hue_pair_row.set_subtitle(&i18n::t("settings.hue_group.pair_row.waiting"));
+
+            let hue_pair_generation = hue_pair_generation.clone();
+            let hue_pair_spinner = hue_pair_spinner.clone();
+            let hue_pair_row = hue_pair_row.clone();
+            glib::spawn_future_local(async move {
+                // Hue's own link-button window is ~30s - `HUE_PAIR_MAX_ATTEMPTS`
+                // retries at `HUE_PAIR_RETRY_INTERVAL_SECONDS` apart covers
+                // that with a little margin either side.
+                const HUE_PAIR_MAX_ATTEMPTS: u32 = 16;
+                const HUE_PAIR_RETRY_INTERVAL_SECONDS: u32 = 2;
+
+                for _ in 0..HUE_PAIR_MAX_ATTEMPTS {
+                    if generation != hue_pair_generation.get() {
+                        return;
+                    }
+                    let ip_for_call = ip.clone();
+                    let result = gio::spawn_blocking(move || hue_bridge::pair(&ip_for_call)).await;
+                    if generation != hue_pair_generation.get() {
+                        return;
+                    }
+                    match result {
+                        Ok(Ok(paired)) => {
+                            config_store::update(|c| {
+                                c.hue_username = Some(paired.username);
+                                c.hue_clientkey = Some(paired.clientkey);
+                            });
+                            hue_pair_spinner.set_visible(false);
+                            hue_pair_spinner.set_spinning(false);
+                            hue_pair_row.set_subtitle(&hue_pair_status_text(&config_store::get()));
+                            return;
+                        }
+                        Ok(Err(hue_bridge::PairError::LinkButtonNotPressed)) => {
+                            glib::timeout_future_seconds(HUE_PAIR_RETRY_INTERVAL_SECONDS).await;
+                            continue;
+                        }
+                        Ok(Err(hue_bridge::PairError::Network(message))) => {
+                            warn!("Hue pairing failed: {message}");
+                            hue_pair_spinner.set_visible(false);
+                            hue_pair_spinner.set_spinning(false);
+                            hue_pair_row.set_subtitle(&i18n::t_args("settings.hue_group.pair_row.error", &[("error", &message)]));
+                            return;
+                        }
+                        Err(_) => {
+                            // The blocking task itself panicked/was dropped -
+                            // treat the same as a network failure rather
+                            // than silently retrying forever.
+                            hue_pair_spinner.set_visible(false);
+                            hue_pair_spinner.set_spinning(false);
+                            hue_pair_row.set_subtitle(&i18n::t("settings.hue_group.pair_row.timeout"));
+                            return;
+                        }
+                    }
+                }
+                if generation == hue_pair_generation.get() {
+                    hue_pair_spinner.set_visible(false);
+                    hue_pair_spinner.set_spinning(false);
+                    hue_pair_row.set_subtitle(&i18n::t("settings.hue_group.pair_row.timeout"));
+                }
+            });
+        }
+    });
+
     // --- Screen 2, block 3: Keyboard shortcuts + dev tools ---
     let shortcuts_group = adw::PreferencesGroup::new();
     shortcuts_group.set_title(&i18n::t("settings.shortcuts_group"));
@@ -1055,6 +1297,11 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let import_button = import_button.clone();
         let ha_row = ha_row.clone();
         let ha_url_row = ha_url_row.clone();
+        let hue_group = hue_group.clone();
+        let hue_ip_row = hue_ip_row.clone();
+        let hue_discover_button = hue_discover_button.clone();
+        let hue_pair_row = hue_pair_row.clone();
+        let hue_pair_button = hue_pair_button.clone();
         move || {
             title.set_label(&i18n::t("settings.title"));
             interface_group.set_title(&i18n::t("settings.interface_group"));
@@ -1115,6 +1362,17 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             import_button.set_label(&i18n::t("settings.backup_group.import_row.button"));
             ha_row.set_title(&i18n::t("settings.ha_group.title"));
             ha_url_row.set_title(&i18n::t("settings.ha_group.url_row.title"));
+            hue_group.set_title(&i18n::t("settings.hue_group.title"));
+            hue_ip_row.set_title(&i18n::t("settings.hue_group.ip_row.title"));
+            hue_discover_button.set_tooltip_text(Some(&i18n::t("settings.hue_group.ip_row.discover_tooltip")));
+            hue_pair_row.set_title(&i18n::t("settings.hue_group.pair_row.title"));
+            // Recomputed from `Config` rather than translated in place - a
+            // transient status ("waiting"/"error") gets overwritten back to
+            // the steady paired/not-paired text on a language switch, same
+            // trade-off `refresh_default_row`/`refresh_pages_group` already
+            // make for their own dynamic content just above.
+            hue_pair_row.set_subtitle(&hue_pair_status_text(&config_store::get()));
+            hue_pair_button.set_label(&i18n::t("settings.hue_group.pair_row.button"));
             if let Some((group, row)) = &dev_group {
                 group.set_title(&i18n::t("settings.dev_group.title"));
                 row.set_title(&i18n::t("settings.dev_group.restart_button"));
@@ -1171,6 +1429,26 @@ fn new_column() -> gtk::Box {
 fn is_http_url(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// A light dotted-quad check, not a full IP parser (same "no new
+/// dependency for this" reasoning as `is_http_url` above) - good enough to
+/// catch a typo in the Hue bridge IP field before it's saved, not meant to
+/// validate every edge case (e.g. this accepts "999.999.999.999").
+fn is_valid_ipv4(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('.').collect();
+    parts.len() == 4 && parts.iter().all(|part| part.parse::<u8>().is_ok())
+}
+
+/// The Hue pairing row's subtitle for the bridge currently on file -
+/// re-derived from `Config` rather than tracked as separate UI state, so
+/// it's trivially correct after a language switch (see the shared
+/// `i18n::on_change` block) and after a successful `pair()` alike.
+fn hue_pair_status_text(config: &xeneon_core::config::Config) -> String {
+    match (&config.hue_bridge_ip, &config.hue_username) {
+        (Some(ip), Some(_)) => i18n::t_args("settings.hue_group.pair_row.paired", &[("ip", ip)]),
+        _ => i18n::t("settings.hue_group.pair_row.not_paired"),
+    }
 }
 
 /// Blocking reachability probe for the Home Assistant URL - runs on GIO's
