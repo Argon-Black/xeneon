@@ -228,6 +228,18 @@ const SV_SQUARE_HEIGHT_PX: i32 = 170;
 /// tick before actually sending its PUT - see `open_color_popover`'s own
 /// doc comment on why this needs debouncing at all.
 const GRADIENT_STRIP_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+/// How strongly a light's own color shows up in its row's icon-circle
+/// background and brightness-bar fill - raised from an original 0.18/0.35
+/// (a deliberately soft, barely-tinted look, agreed in the very first
+/// mockup) after real hands-on use: against this card's dark background, a
+/// vivid picked color (a bright green, a warm amber) read as muted/grayish
+/// at that low an alpha, nowhere near the actual saturated color the
+/// status label shows at full strength right next to it. Still short of
+/// 1.0 - the icon-circle fill in particular needs to stay behind the
+/// glyph's own full-strength tint (see `load_on_icon`) rather than match
+/// it, or the glyph loses its contrast against the circle.
+const ICON_CIRCLE_FILL_ALPHA: f64 = 0.32;
+const BAR_FILL_ALPHA: f64 = 0.78;
 
 thread_local! {
     // The "off" icon never changes color, so it only ever needs one
@@ -304,7 +316,7 @@ fn draw_icon_circle(cr: &gtk::cairo::Context, width: f64, height: f64, on: bool,
     cr.arc(width / 2.0, height / 2.0, radius, 0.0, std::f64::consts::TAU);
     if on {
         let (r, g, b) = rgb;
-        cr.set_source_rgba(r, g, b, 0.18);
+        cr.set_source_rgba(r, g, b, ICON_CIRCLE_FILL_ALPHA);
     } else {
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.06);
     }
@@ -329,7 +341,7 @@ fn draw_bar(cr: &gtk::cairo::Context, width: f64, height: f64, fraction: f64, rg
     let fraction = fraction.clamp(0.0, 1.0);
     if fraction > 0.0 {
         let (r, g, b) = rgb;
-        cr.set_source_rgba(r, g, b, 0.35);
+        cr.set_source_rgba(r, g, b, BAR_FILL_ALPHA);
         let end_x = (radius + (width - 2.0 * radius) * fraction).max(radius);
         cr.move_to(radius, y);
         cr.line_to(end_x, y);
