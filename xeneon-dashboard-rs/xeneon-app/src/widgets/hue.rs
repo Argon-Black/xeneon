@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Philips Hue widget (SQ footprint): up to four lights, each shown as a
-//! rounded "chip" row - a soft-background icon button (tap toggles on/off),
-//! the light's name and a status line, and a full-width brightness bar
-//! (tap or drag sets the level, and turns the light on if it was off) -
-//! matching the mockup agreed with the user before this widget was built
-//! (see the design discussion in the memory system: a simple interrupteur
-//! row didn't leave room for a real brightness control, so the richer
-//! "chip" layout was chosen instead, at the cost of fitting only 4 rows
-//! per card instead of 5).
+//! Philips Hue widget, two footprints (see `CardVariant`): SQ shows up to
+//! four lights/rooms, each a rounded "chip" row - a soft-background icon
+//! button (tap toggles on/off), the light's name and a status line, and a
+//! full-width brightness bar (tap or drag sets the level, and turns the
+//! light on if it was off); SX is the same row design, exactly one of
+//! them, scaled up to fill its own wider/shorter card with no header -
+//! matching the mockups agreed with the user before each was built (see
+//! the design discussion in the memory system: a simple interrupteur row
+//! didn't leave room for a real brightness control, so the richer "chip"
+//! layout was chosen instead, at the cost of fitting only 4 rows per SQ
+//! card instead of 5; SX came later, once SQ had already shipped and been
+//! used hands-on for a while).
 //!
 //! Reads and writes go through `hue_bridge.rs`'s shared bridge connection
 //! (`Config::hue_bridge_ip`/`hue_username`, paired once from Settings -
@@ -15,10 +18,10 @@
 //! rather than per-widget) rather than anything this widget owns itself.
 //! An unconfigured bridge, or a bridge that's unreachable/paired-but-
 //! empty, shows a short message and a button that jumps straight to
-//! Settings (`hue_bridge::open_settings`) instead of the four rows.
+//! Settings (`hue_bridge::open_settings`) instead of the card's rows.
 //!
 //! Step 3 (this pass) adds the settings panel: a "par pièce"/"par lumière"
-//! mode toggle plus a checklist (capped at `MAX_ROWS`) of whichever the
+//! mode toggle plus a checklist (capped at `CardVariant::max_rows`) of whichever the
 //! bridge currently reports, persisted as `SelectionMode` + a list of ids
 //! (`hue_bridge::Light::id` in light mode, `hue_bridge::Room::id` in room
 //! mode - see `resolve_selection`). A room row addresses the room's
@@ -97,10 +100,6 @@ use crate::widgets::registry::WidgetInstance;
 /// someone just flipped with a physical switch should show up reasonably
 /// promptly.
 const REFRESH_INTERVAL_SECONDS: u32 = 4;
-/// How many rows fit in an SQ card with this row's height (see the module
-/// doc comment on why this design fits 4, not 5) - also the hard cap
-/// `pick_default_lights` and, later, step 3's settings panel both respect.
-const MAX_ROWS: usize = 4;
 /// Cap on the settings panel's scrollable checklist height - tall enough
 /// to show most households' room/light count without scrolling at all
 /// (the popover has the vertical room for it), a scrollbar only kicking in
@@ -116,15 +115,105 @@ const ICON_SOURCE_FILL: &str = "#ffffff";
 /// the on-screen size so the icon stays crisp rather than an upscaled
 /// bitmap.
 const ICON_RASTER_PX: i32 = 96;
-const ROW_ICON_PX: i32 = 20;
 const HEADER_ICON_PX: i32 = 18;
 /// Fixed - matches `network_sq.rs`/`system_sq.rs`'s own badge accent,
 /// used here for the header icon and the "N/N allumées" badge, neither of
 /// which is user-customizable yet (no settings panel at all in step 2).
 const ACCENT_COLOR_HEX: &str = "#f2a541";
-const ROW_HEIGHT_PX: i32 = 60;
-const ROW_ICON_CIRCLE_PX: i32 = 40;
-const BAR_HEIGHT_PX: i32 = 36;
+
+/// What differs between this widget's two footprints (SQ: up to 4 lights,
+/// header + badge; SX: exactly 1, no header, everything scaled up to fill
+/// the wider/shorter card) - everything else (the row's icon/name/status/
+/// bar widgets, the drag/click gestures, the color popover, the settings
+/// panel) is identical code, just fed a different `CardVariant`. Mirrors
+/// `audio.rs`'s own single-file, size-parameter approach to its L/M
+/// variants, rather than a second near-duplicate module
+/// (`network_sq.rs`/`network_sx.rs`'s own split): the difference here
+/// really is chrome and a row count, not independent enough logic per
+/// size to justify two files.
+#[derive(Clone, Copy)]
+struct CardVariant {
+    max_rows: usize,
+    show_header: bool,
+    /// Whether each row gets its own rounded "chip" background
+    /// (`.xeneon-hue-row`) - `true` for SQ, where several rows share one
+    /// card and need visual separation; `false` for SX, where the single
+    /// row already fills the whole (already-rounded) card, so a second
+    /// rounded rect behind it would just look like an inset border.
+    show_chip_background: bool,
+    /// Extra horizontal margin on top of the card's own - `0` for SX
+    /// (the card's own margin is the only inset needed), non-zero for SQ
+    /// (breathing room between each chip and the card's rounded corners).
+    row_inner_margin: i32,
+    /// Whether `rows_box` centers its (typically just one, for SX)
+    /// visible row vertically in whatever space `build_content` doesn't
+    /// give the header - left `false` for SQ, where multiple rows should
+    /// stack from the top like a list, not center as a block.
+    center_rows_vertically: bool,
+    /// `-1` means no fixed height - let the row size to its own content
+    /// (SX, which has just one row and more vertical room than SQ's four
+    /// packed rows need to share).
+    row_height_px: i32,
+    row_icon_circle_px: i32,
+    row_icon_px: i32,
+    bar_height_px: i32,
+    name_column_width_px: i32,
+    row_spacing: i32,
+    name_css_class: &'static str,
+    /// Pango markup `size` keyword for the status line - see
+    /// `apply_entry_to_row`.
+    status_size_keyword: &'static str,
+    card_margin_start: i32,
+    card_margin_end: i32,
+    card_margin_top: i32,
+    card_margin_bottom: i32,
+}
+
+const SQ_VARIANT: CardVariant = CardVariant {
+    max_rows: 4,
+    show_header: true,
+    show_chip_background: true,
+    row_inner_margin: 10,
+    center_rows_vertically: false,
+    row_height_px: 60,
+    row_icon_circle_px: 40,
+    row_icon_px: 20,
+    bar_height_px: 36,
+    name_column_width_px: 104,
+    row_spacing: 10,
+    name_css_class: "xeneon-hue-name",
+    status_size_keyword: "small",
+    card_margin_start: 14,
+    card_margin_end: 14,
+    card_margin_top: 12,
+    card_margin_bottom: 10,
+};
+
+/// A single light/room, full card width, no header - the mockup agreed
+/// with the user for this footprint (SX, built after the SQ card had
+/// already shipped): the same "chip" row design, just one of them, scaled
+/// up to fill the wider/shorter SX card on its own instead of sharing an
+/// SQ card with up to three others.
+const SX_VARIANT: CardVariant = CardVariant {
+    max_rows: 1,
+    show_header: false,
+    show_chip_background: false,
+    row_inner_margin: 0,
+    center_rows_vertically: true,
+    row_height_px: -1,
+    row_icon_circle_px: 58,
+    row_icon_px: 26,
+    bar_height_px: 44,
+    name_column_width_px: 118,
+    row_spacing: 14,
+    name_css_class: "xeneon-hue-name-lg",
+    status_size_keyword: "medium",
+    card_margin_start: 16,
+    card_margin_end: 16,
+    card_margin_top: 0,
+    card_margin_bottom: 0,
+};
+
 /// Size of the color/temperature popover's gradient "nuancier" strip (see
 /// `build_gradient_strip`) - roomy enough for a precise tap/drag on a
 /// touchscreen, same pill height as the on-card brightness bar for a
@@ -199,6 +288,7 @@ fn ensure_css_installed() {
              .xeneon-hue-badge-label {{ font-size: 14px; font-weight: 500; color: {ACCENT_COLOR_HEX}; }}\n\
              .xeneon-hue-row {{ background-color: rgba(255, 255, 255, 0.05); border-radius: 14px; }}\n\
              .xeneon-hue-name {{ font-size: 14px; font-weight: 500; color: #ffffff; }}\n\
+             .xeneon-hue-name-lg {{ font-size: 16px; font-weight: 500; color: #ffffff; }}\n\
              .xeneon-hue-empty-message {{ color: rgba(255, 255, 255, 0.6); font-size: 14px; }}"
         ));
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -207,7 +297,7 @@ fn ensure_css_installed() {
 
 /// Paints one row's icon-circle background: a soft, low-opacity fill in
 /// `rgb` when the light behind this row is on, a plain neutral gray when
-/// it's off or the row is unused (fewer than `MAX_ROWS` lights available) -
+/// it's off or the row is unused (fewer than `CardVariant::max_rows` lights available) -
 /// mirrors the mockup's "tinted circle behind a colored bulb glyph" look.
 fn draw_icon_circle(cr: &gtk::cairo::Context, width: f64, height: f64, on: bool, rgb: (f64, f64, f64)) {
     let radius = width.min(height) / 2.0;
@@ -286,16 +376,16 @@ fn status_text(entry: &CardEntry) -> String {
 }
 
 /// Picks which lights a card shows when its own selection is empty - the
-/// first `MAX_ROWS` lights, alphabetically, the same for every such card.
+/// first `max_rows` lights, alphabetically, the same for every such card.
 /// Used both as the very first cut's only behavior (step 2) and, now, as
 /// light-mode's fallback when nothing has been explicitly picked yet (a
 /// freshly spawned card, or one saved before step 3 existed) - see the
 /// module doc comment. Sorting by name (rather than bridge order, closer
 /// to "creation order" and not meaningful to a user) at least makes the
 /// arbitrary choice deterministic and easy to reason about while testing.
-fn pick_default_lights(mut lights: Vec<Light>) -> Vec<Light> {
+fn pick_default_lights(mut lights: Vec<Light>, max_rows: usize) -> Vec<Light> {
     lights.sort_by(|a, b| a.name.cmp(&b.name));
-    lights.truncate(MAX_ROWS);
+    lights.truncate(max_rows);
     lights
 }
 
@@ -367,40 +457,42 @@ fn room_to_entry(room: &Room) -> CardEntry {
 }
 
 /// Resolves the card's current settings (`mode` + `selected_ids`) against
-/// the bridge's latest data into the up-to-`MAX_ROWS` entries to actually
+/// the bridge's latest data into the up-to-`max_rows` entries to actually
 /// show - the one place `HueState::refresh` needs to call to go from "raw
 /// bridge data" to "what this specific card displays". An id in
 /// `selected_ids` naming a light/room that no longer exists (deleted or
 /// renamed on the bridge since this card was configured) is simply
 /// skipped, same "stale setting doesn't error, just quietly does less"
 /// tolerance `system_sq.rs`'s disk-path setting already has.
-fn resolve_selection(mode: SelectionMode, selected_ids: &[String], all_lights: &[Light], all_rooms: &[Room]) -> Vec<CardEntry> {
+fn resolve_selection(mode: SelectionMode, selected_ids: &[String], all_lights: &[Light], all_rooms: &[Room], max_rows: usize) -> Vec<CardEntry> {
     match mode {
-        SelectionMode::Light if selected_ids.is_empty() => pick_default_lights(all_lights.to_vec()).iter().map(light_to_entry).collect(),
+        SelectionMode::Light if selected_ids.is_empty() => {
+            pick_default_lights(all_lights.to_vec(), max_rows).iter().map(light_to_entry).collect()
+        }
         SelectionMode::Light => selected_ids
             .iter()
             .filter_map(|id| all_lights.iter().find(|light| &light.id == id))
-            .take(MAX_ROWS)
+            .take(max_rows)
             .map(light_to_entry)
             .collect(),
         SelectionMode::Room if selected_ids.is_empty() => {
             let mut rooms: Vec<&Room> = all_rooms.iter().collect();
             rooms.sort_by(|a, b| a.name.cmp(&b.name));
-            rooms.truncate(MAX_ROWS);
+            rooms.truncate(max_rows);
             rooms.iter().map(|room| room_to_entry(room)).collect()
         }
         SelectionMode::Room => selected_ids
             .iter()
             .filter_map(|id| all_rooms.iter().find(|room| &room.id == id))
-            .take(MAX_ROWS)
+            .take(max_rows)
             .map(room_to_entry)
             .collect(),
     }
 }
 
 /// One row's live widgets plus which light/room it currently shows -
-/// `None` while unused (fewer than `MAX_ROWS` entries selected) or before
-/// the first successful fetch, in which case the row stays hidden.
+/// `None` while unused (fewer than `variant.max_rows` entries selected) or
+/// before the first successful fetch, in which case the row stays hidden.
 struct LightRow {
     container: gtk::Box,
     icon_area: gtk::DrawingArea,
@@ -423,22 +515,29 @@ struct LightRow {
     /// show the right starting position, same reason `Light`/`CardEntry`
     /// themselves carry it.
     mirek: Cell<Option<f64>>,
+    /// This row's own copy of `CardVariant::status_size_keyword` - fixed
+    /// for the row's whole lifetime (a row never changes card variant), so
+    /// `apply_entry_to_row` doesn't need `variant` threaded all the way
+    /// down to it just for this one field.
+    status_size_keyword: &'static str,
 }
 
-fn build_row() -> LightRow {
-    let container = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    container.add_css_class("xeneon-hue-row");
-    container.set_size_request(-1, ROW_HEIGHT_PX);
-    container.set_margin_start(10);
-    container.set_margin_end(10);
+fn build_row(variant: &CardVariant) -> LightRow {
+    let container = gtk::Box::new(gtk::Orientation::Horizontal, variant.row_spacing);
+    if variant.show_chip_background {
+        container.add_css_class("xeneon-hue-row");
+    }
+    container.set_size_request(-1, variant.row_height_px);
+    container.set_margin_start(variant.row_inner_margin);
+    container.set_margin_end(variant.row_inner_margin);
 
     let icon_overlay = gtk::Overlay::new();
     icon_overlay.set_valign(gtk::Align::Center);
     let icon_area = gtk::DrawingArea::new();
-    icon_area.set_size_request(ROW_ICON_CIRCLE_PX, ROW_ICON_CIRCLE_PX);
+    icon_area.set_size_request(variant.row_icon_circle_px, variant.row_icon_circle_px);
     icon_overlay.set_child(Some(&icon_area));
     let icon_image = gtk::Image::new();
-    icon_image.set_pixel_size(ROW_ICON_PX);
+    icon_image.set_pixel_size(variant.row_icon_px);
     icon_image.set_halign(gtk::Align::Center);
     icon_image.set_valign(gtk::Align::Center);
     icon_image.set_can_target(false);
@@ -448,9 +547,9 @@ fn build_row() -> LightRow {
     let text_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     text_box.set_valign(gtk::Align::Center);
     text_box.set_hexpand(false);
-    text_box.set_size_request(104, -1);
+    text_box.set_size_request(variant.name_column_width_px, -1);
     let name_label = gtk::Label::new(None);
-    name_label.add_css_class("xeneon-hue-name");
+    name_label.add_css_class(variant.name_css_class);
     name_label.set_halign(gtk::Align::Start);
     name_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     text_box.append(&name_label);
@@ -461,7 +560,7 @@ fn build_row() -> LightRow {
 
     let bar_area = gtk::DrawingArea::new();
     bar_area.set_hexpand(true);
-    bar_area.set_size_request(-1, BAR_HEIGHT_PX);
+    bar_area.set_size_request(-1, variant.bar_height_px);
     bar_area.set_valign(gtk::Align::Center);
     container.append(&bar_area);
 
@@ -478,6 +577,7 @@ fn build_row() -> LightRow {
         rgb: Cell::new((0.6, 0.6, 0.6)),
         bulb_type: Cell::new(BulbType::Dimmable),
         mirek: Cell::new(None),
+        status_size_keyword: variant.status_size_keyword,
     }
 }
 
@@ -486,8 +586,9 @@ fn build_row() -> LightRow {
 /// `Config`/`hue_bridge.rs`, shared) - this struct remembers this card's
 /// own selection settings, the last full fetch (so the settings panel has
 /// something to build its checklist from without a fetch of its own - see
-/// `on_data_changed`), and the up-to-`MAX_ROWS` entries currently shown.
+/// `on_data_changed`), and the up-to-`CardVariant::max_rows` entries currently shown.
 struct HueState {
+    variant: CardVariant,
     badge_label: gtk::Label,
     rows_box: gtk::Box,
     empty_box: gtk::Box,
@@ -575,7 +676,7 @@ impl HueState {
                 Ok(Ok(resources)) => {
                     let lights = hue_bridge::parse_lights(&resources);
                     let rooms = hue_bridge::parse_rooms(&resources, &lights);
-                    let entries = resolve_selection(state.mode.get(), &state.selected_ids.borrow(), &lights, &rooms);
+                    let entries = resolve_selection(state.mode.get(), &state.selected_ids.borrow(), &lights, &rooms, state.variant.max_rows);
                     *state.all_lights.borrow_mut() = lights;
                     *state.all_rooms.borrow_mut() = rooms;
 
@@ -628,7 +729,8 @@ fn apply_entry_to_row(row: &Rc<LightRow>, entry: &CardEntry) {
     // alpha) is the off-state equivalent of the on-state's plain hex.
     let status_hex = if entry.on { entry.display_color_hex.clone() } else { "#ffffff66".to_string() };
     row.status_label.set_markup(&format!(
-        "<span size=\"small\" color=\"{}\">{}</span>",
+        "<span size=\"{}\" color=\"{}\">{}</span>",
+        row.status_size_keyword,
         gtk::glib::markup_escape_text(&status_hex),
         gtk::glib::markup_escape_text(&status_text(entry))
     ));
@@ -639,7 +741,7 @@ fn apply_entry_to_row(row: &Rc<LightRow>, entry: &CardEntry) {
     row.bar_area.queue_draw();
 }
 
-fn build_content() -> (Rc<HueState>, gtk::Widget) {
+fn build_content(variant: CardVariant) -> (Rc<HueState>, gtk::Widget) {
     ensure_css_installed();
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -647,35 +749,47 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
     root.add_css_class(&css_class);
-    root.set_margin_start(14);
-    root.set_margin_end(14);
-    root.set_margin_top(12);
-    root.set_margin_bottom(10);
+    root.set_margin_start(variant.card_margin_start);
+    root.set_margin_end(variant.card_margin_end);
+    root.set_margin_top(variant.card_margin_top);
+    root.set_margin_bottom(variant.card_margin_bottom);
 
-    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let header_icon = gtk::Image::new();
-    header_icon.set_pixel_size(HEADER_ICON_PX);
-    header_icon.set_paintable(load_on_icon(ACCENT_COLOR_HEX).as_ref());
-    header.append(&header_icon);
-    let title_label = gtk::Label::new(Some(&i18n::t("widgets.hue.title")));
-    title_label.add_css_class("xeneon-hue-title");
-    header.append(&title_label);
-    let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    header_spacer.set_hexpand(true);
-    header.append(&header_spacer);
-    let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    badge.add_css_class("xeneon-hue-badge");
+    // No header/badge on a variant with no room for one (SX) - a lone
+    // light's own name already says what this card is, and a "1/1
+    // allumées" badge would be a strange thing to read for a single
+    // light.
     let badge_label = gtk::Label::new(None);
-    badge_label.add_css_class("xeneon-hue-badge-label");
-    badge.append(&badge_label);
-    header.append(&badge);
-    root.append(&header);
+    if variant.show_header {
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let header_icon = gtk::Image::new();
+        header_icon.set_pixel_size(HEADER_ICON_PX);
+        header_icon.set_paintable(load_on_icon(ACCENT_COLOR_HEX).as_ref());
+        header.append(&header_icon);
+        let title_label = gtk::Label::new(Some(&i18n::t("widgets.hue.title")));
+        title_label.add_css_class("xeneon-hue-title");
+        header.append(&title_label);
+        let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        header_spacer.set_hexpand(true);
+        header.append(&header_spacer);
+        let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        badge.add_css_class("xeneon-hue-badge");
+        badge_label.add_css_class("xeneon-hue-badge-label");
+        badge.append(&badge_label);
+        header.append(&badge);
+        root.append(&header);
+    }
 
     let rows_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    rows_box.set_margin_top(4);
-    let mut rows = Vec::with_capacity(MAX_ROWS);
-    for _ in 0..MAX_ROWS {
-        let row = Rc::new(build_row());
+    if variant.show_header {
+        rows_box.set_margin_top(4);
+    }
+    if variant.center_rows_vertically {
+        rows_box.set_valign(gtk::Align::Center);
+        rows_box.set_vexpand(true);
+    }
+    let mut rows = Vec::with_capacity(variant.max_rows);
+    for _ in 0..variant.max_rows {
+        let row = Rc::new(build_row(&variant));
         row.container.set_visible(false);
         rows_box.append(&row.container);
         rows.push(row);
@@ -698,6 +812,7 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
     root.append(&empty_box);
 
     let state = Rc::new(HueState {
+        variant,
         badge_label,
         rows_box,
         empty_box,
@@ -1291,7 +1406,7 @@ fn hex_from_rgb((r, g, b): (f64, f64, f64)) -> String {
 
 /// Builds the settings panel: a "par pièce"/"par lumière" mode toggle,
 /// then a scrollable checklist of whichever the current mode offers -
-/// rooms or lights, up to `MAX_ROWS` checked at once (the rest disabled
+/// rooms or lights, up to `CardVariant::max_rows` checked at once (the rest disabled
 /// once that cap is reached, rather than showing an error). The list is
 /// rebuilt from `state.all_lights`/`all_rooms` both once up front (using
 /// whatever's already cached - empty on a card added seconds ago, whose
@@ -1430,7 +1545,7 @@ fn build_settings(state: Rc<HueState>) -> gtk::Widget {
                             } else {
                                 selected.retain(|existing| existing != &id);
                             }
-                            let at_cap = selected.len() >= MAX_ROWS;
+                            let at_cap = selected.len() >= state.variant.max_rows;
                             drop(selected);
 
                             // Disables every unchecked box once the cap is
@@ -1455,7 +1570,7 @@ fn build_settings(state: Rc<HueState>) -> gtk::Widget {
             // The cap may already be reached from a restored selection -
             // apply the same disabling pass once up front, not just from
             // inside a toggle handler.
-            let at_cap = state.selected_ids.borrow().len() >= MAX_ROWS;
+            let at_cap = state.selected_ids.borrow().len() >= state.variant.max_rows;
             if at_cap {
                 for check in check_buttons.borrow().iter() {
                     if !check.is_active() {
@@ -1501,8 +1616,12 @@ fn build_settings(state: Rc<HueState>) -> gtk::Widget {
     root.upcast()
 }
 
-pub fn spawn() -> WidgetInstance {
-    let (state, content) = build_content();
+/// Shared by every `spawn_*`/`restore_*` pair below - only `variant` and,
+/// for restore, the saved `data` differ between the SQ and SX registry
+/// entries (see the module doc comment on why both sizes live in this one
+/// file/`CardVariant` rather than a second near-duplicate module).
+fn spawn_variant(variant: CardVariant) -> WidgetInstance {
+    let (state, content) = build_content(variant);
     let settings = build_settings(state.clone());
     WidgetInstance {
         content,
@@ -1513,8 +1632,8 @@ pub fn spawn() -> WidgetInstance {
     }
 }
 
-pub fn restore(data: &serde_json::Value) -> WidgetInstance {
-    let (state, content) = build_content();
+fn restore_variant(variant: CardVariant, data: &serde_json::Value) -> WidgetInstance {
+    let (state, content) = build_content(variant);
     // Applied *before* `build_settings` (which reads `state.mode`/
     // `selected_ids` to set the toggle buttons' initial state) and before
     // `build_content`'s own first `refresh()` fetch can possibly have
@@ -1531,6 +1650,22 @@ pub fn restore(data: &serde_json::Value) -> WidgetInstance {
         on_reset: None,
         on_change_ready: None,
     }
+}
+
+pub fn spawn_sq() -> WidgetInstance {
+    spawn_variant(SQ_VARIANT)
+}
+
+pub fn restore_sq(data: &serde_json::Value) -> WidgetInstance {
+    restore_variant(SQ_VARIANT, data)
+}
+
+pub fn spawn_sx() -> WidgetInstance {
+    spawn_variant(SX_VARIANT)
+}
+
+pub fn restore_sx(data: &serde_json::Value) -> WidgetInstance {
+    restore_variant(SX_VARIANT, data)
 }
 
 #[cfg(test)]
@@ -1560,9 +1695,48 @@ mod tests {
             mirek: None,
         };
         let lights = vec![make("Zorro"), make("Alpha"), make("Mike"), make("Bravo"), make("Charlie")];
-        let picked = pick_default_lights(lights);
-        assert_eq!(picked.len(), MAX_ROWS);
+        let picked = pick_default_lights(lights, SQ_VARIANT.max_rows);
+        assert_eq!(picked.len(), SQ_VARIANT.max_rows);
         assert_eq!(picked.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["Alpha", "Bravo", "Charlie", "Mike"]);
+    }
+
+    #[test]
+    fn sx_variant_default_selection_is_a_single_light() {
+        let make = |name: &str| Light {
+            id: name.to_string(),
+            name: name.to_string(),
+            room_name: None,
+            on: false,
+            brightness_percent: 0.0,
+            bulb_type: BulbType::Dimmable,
+            display_color_hex: "#ffffff".to_string(),
+            mirek: None,
+        };
+        let lights = vec![make("Zorro"), make("Alpha")];
+        let picked = pick_default_lights(lights, SX_VARIANT.max_rows);
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].name, "Alpha");
+    }
+
+    #[test]
+    fn resolve_selection_respects_the_variant_cap_even_with_more_ids_selected() {
+        let make = |id: &str| Light {
+            id: id.to_string(),
+            name: id.to_string(),
+            room_name: None,
+            on: false,
+            brightness_percent: 0.0,
+            bulb_type: BulbType::Dimmable,
+            display_color_hex: "#ffffff".to_string(),
+            mirek: None,
+        };
+        let lights = vec![make("a"), make("b"), make("c")];
+        // A saved selection naming more ids than this card's variant
+        // allows (e.g. edited by hand, or left over from switching a card
+        // from SQ to SX) shouldn't show more rows than the variant has.
+        let selected = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let entries = resolve_selection(SelectionMode::Light, &selected, &lights, &[], SX_VARIANT.max_rows);
+        assert_eq!(entries.len(), 1);
     }
 
     #[test]

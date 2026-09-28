@@ -223,8 +223,22 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         title_key: "widgets.hue.title",
         card_title_key: "widgets.hue.title",
         size: SIZE_SQ,
-        spawn: crate::widgets::hue::spawn,
-        restore: crate::widgets::hue::restore,
+        spawn: crate::widgets::hue::spawn_sq,
+        restore: crate::widgets::hue::restore_sq,
+        preview: None,
+        singleton: false,
+    },
+    // Same widget module as `hue_sq`, just the SX-sized variant (one
+    // light/room, no header) - see `hue.rs`'s own `CardVariant` doc
+    // comment on why both sizes share one file/kind of code, same pattern
+    // `audio_l`/`audio_m` already use for `audio.rs`.
+    WidgetDescriptor {
+        kind: "hue_sx",
+        title_key: "widgets.hue.title",
+        card_title_key: "widgets.hue.title",
+        size: SIZE_SX,
+        spawn: crate::widgets::hue::spawn_sx,
+        restore: crate::widgets::hue::restore_sx,
         preview: None,
         singleton: false,
     },
