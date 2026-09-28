@@ -30,21 +30,28 @@
 //! existing placed widgets keep showing *something* sensible after this
 //! update rather than going blank.
 //!
-//! Step 4 (this pass) adds the color/color-temperature popover on tapping
-//! a light's name - `open_color_popover`, branching on `BulbType`: a
-//! `gtk::ColorDialogButton` for `Color` (converted to the bridge's CIE xy
-//! via `hue_bridge::rgb_to_xy`), a Kelvin-labeled `gtk::Scale` for
-//! `ColorTemperature` (converted to mirek), and a no-op for `Dimmable`
-//! (no color data to edit at all) - matching the design discussion's
-//! "nothing to open for a plain white bulb" decision. The temperature
-//! slider debounces its network PUT (~250ms after the last tick) since a
-//! `Scale` fires continuously while dragged and the bridge rate-limits
-//! rapid requests; the color dialog needs no such debouncing, since its
-//! own `rgba-notify` only fires once the dialog is confirmed, not per
-//! drag tick inside it. A room row's status/icon still doesn't aggregate
-//! its member lights' actual colors (see `room_to_entry`) - it always
-//! renders as a plain dimmable accent-colored entry, so the popover never
-//! opens for a room row either, a deliberate simplification since color
+//! Step 4 adds the color/color-temperature popover on tapping a light's
+//! name - `open_color_popover`, branching on `BulbType`, both cases built
+//! on the same `build_gradient_strip` picker (a Cairo-painted "nuancier"
+//! bar + drag, same tap-or-drag mechanics as the on-card brightness bar):
+//! a full-saturation rainbow strip for `Color` (picked hue converted to
+//! the bridge's CIE xy via `hue_bridge::rgb_to_xy`), a warm-to-cool strip
+//! for `ColorTemperature` (picked position converted to mirek), and a
+//! no-op for `Dimmable` (no color data to edit at all) - matching the
+//! design discussion's "nothing to open for a plain white bulb" decision.
+//! The first cut of this popover used a `gtk::ColorDialogButton` (color)
+//! and a plain Kelvin `gtk::Scale` (temperature); the user asked for both
+//! to be direct instead - a color dialog needs an extra tap just to see
+//! any colors at all, and a bare Kelvin number means nothing without
+//! already knowing what e.g. 2700K looks like - hence the gradient strips,
+//! which show the actual colors and react on the same tap/drag as the
+//! rest of this card. Both strips debounce their network PUT
+//! (`GRADIENT_STRIP_DEBOUNCE` after the last drag tick) since they fire on
+//! every tick for an instant local preview, and the bridge rate-limits
+//! rapid requests. A room row's status/icon still doesn't aggregate its
+//! member lights' actual colors (see `room_to_entry`) - it always renders
+//! as a plain dimmable accent-colored entry, so the popover never opens
+//! for a room row either, a deliberate simplification since color
 //! aggregation across a whole room is its own small design question,
 //! separate from this step's picker mechanics.
 //!
@@ -111,6 +118,16 @@ const ACCENT_COLOR_HEX: &str = "#f2a541";
 const ROW_HEIGHT_PX: i32 = 60;
 const ROW_ICON_CIRCLE_PX: i32 = 40;
 const BAR_HEIGHT_PX: i32 = 36;
+/// Size of the color/temperature popover's gradient "nuancier" strip (see
+/// `build_gradient_strip`) - roomy enough for a precise tap/drag on a
+/// touchscreen, same pill height as the on-card brightness bar for a
+/// consistent look between the two.
+const GRADIENT_STRIP_WIDTH_PX: i32 = 220;
+const GRADIENT_STRIP_HEIGHT_PX: i32 = 36;
+/// How long a gradient strip waits after the last drag tick before
+/// actually sending its PUT - see `open_color_popover`'s own doc comment
+/// on why this needs debouncing at all.
+const GRADIENT_STRIP_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
 
 thread_local! {
     // The "off" icon never changes color, so it only ever needs one
@@ -856,6 +873,146 @@ fn preview_color(row: &Rc<LightRow>, hex: &str) {
     row.bar_area.queue_draw();
 }
 
+/// Converts an HSL color (`h` in degrees, `s`/`l` 0.0-1.0) to sRGB
+/// 0.0-1.0 components - the standard algorithm, used only to paint the
+/// color popover's rainbow gradient (see `open_color_popover`) at full
+/// saturation and mid lightness. Purely a rendering helper - the value
+/// actually sent to the bridge goes through `hue_bridge::rgb_to_xy`
+/// afterward, same as a real `gtk::ColorDialogButton` pick would.
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
+    if s <= 0.0 {
+        return (l, l, l);
+    }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let hue_to_rgb = |t: f64| {
+        let t = t.rem_euclid(1.0);
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 1.0 / 2.0 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    let h = h / 360.0;
+    (hue_to_rgb(h + 1.0 / 3.0), hue_to_rgb(h), hue_to_rgb(h - 1.0 / 3.0))
+}
+
+/// The inverse of `hsl_to_rgb`'s hue component (0.0-1.0, not degrees) -
+/// used once, to position the color popover's marker on whatever hue the
+/// light's current `display_color_hex` is already closest to when the
+/// popover opens, rather than always starting the marker at the left
+/// edge. An exact roundtrip isn't the goal (this widget's colors are
+/// already an approximation - see `hue_bridge::xy_to_hex`'s own doc
+/// comment), just a reasonable starting position.
+fn rgb_hue_fraction((r, g, b): (f64, f64, f64)) -> f64 {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+    if delta <= 0.0001 {
+        return 0.0;
+    }
+    let hue = if max == r {
+        60.0 * (((g - b) / delta).rem_euclid(6.0))
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    hue.rem_euclid(360.0) / 360.0
+}
+
+/// Builds a horizontal gradient "nuancier" strip - a `DrawingArea` picker
+/// shared by both branches of `open_color_popover`: paints a smooth Cairo
+/// gradient through `stops` (each an `(offset, rgb)` pair, `offset` in
+/// 0.0-1.0) plus a small marker at the currently selected fraction, and
+/// reports every drag position - a tap included, same "a tap is a
+/// ~0-movement drag" technique the on-card brightness bar already uses -
+/// through `on_pick`. Purely mechanical (geometry, drawing, the drag
+/// gesture): `on_pick` is where a fraction actually turns into a color or
+/// a mirek value and, eventually, a PUT to the bridge.
+fn build_gradient_strip(width: i32, height: i32, stops: Vec<(f64, (f64, f64, f64))>, initial_fraction: f64, on_pick: impl Fn(f64) + 'static) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_size_request(width, height);
+    let fraction = Rc::new(Cell::new(initial_fraction.clamp(0.0, 1.0)));
+    let stops = Rc::new(stops);
+
+    area.set_draw_func({
+        let fraction = fraction.clone();
+        let stops = stops.clone();
+        move |_area, cr, width, height| {
+            let (width, height) = (width as f64, height as f64);
+            let radius = height / 2.0;
+            let left = radius;
+            let right = (width - radius).max(left);
+
+            let gradient = gtk::cairo::LinearGradient::new(left, 0.0, right, 0.0);
+            for (offset, (r, g, b)) in stops.iter() {
+                gradient.add_color_stop_rgb(*offset, *r, *g, *b);
+            }
+            let _ = cr.set_source(&gradient);
+            cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.set_line_width(height);
+            cr.move_to(left, height / 2.0);
+            cr.line_to(right, height / 2.0);
+            let _ = cr.stroke();
+
+            let marker_x = left + (right - left) * fraction.get();
+            let marker_radius = radius * 0.55;
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+            cr.arc(marker_x, height / 2.0, marker_radius, 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.35);
+            cr.set_line_width(1.5);
+            cr.arc(marker_x, height / 2.0, marker_radius, 0.0, std::f64::consts::TAU);
+            let _ = cr.stroke();
+        }
+    });
+
+    let on_pick: Rc<dyn Fn(f64)> = Rc::new(on_pick);
+    let drag_start_x: Rc<Cell<f64>> = Rc::new(Cell::new(0.0));
+    let handle_move: Rc<dyn Fn(f64)> = Rc::new({
+        let area = area.clone();
+        let fraction = fraction.clone();
+        let drag_start_x = drag_start_x.clone();
+        let on_pick = on_pick.clone();
+        move |offset_x: f64| {
+            let width = area.width() as f64;
+            if width <= 0.0 {
+                return;
+            }
+            let x = (drag_start_x.get() + offset_x).clamp(0.0, width);
+            let new_fraction = x / width;
+            fraction.set(new_fraction);
+            area.queue_draw();
+            on_pick(new_fraction);
+        }
+    });
+
+    let drag = gtk::GestureDrag::new();
+    drag.connect_drag_begin({
+        let drag_start_x = drag_start_x.clone();
+        move |gesture, x, _y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            drag_start_x.set(x);
+        }
+    });
+    drag.connect_drag_update({
+        let handle_move = handle_move.clone();
+        move |_gesture, offset_x, _offset_y| handle_move(offset_x)
+    });
+    drag.connect_drag_end({
+        let handle_move = handle_move.clone();
+        move |_gesture, offset_x, _offset_y| handle_move(offset_x)
+    });
+    area.add_controller(drag);
+
+    area
+}
+
 /// Opens the color or color-temperature popover for `row`'s current
 /// light/room - a no-op for `BulbType::Dimmable` (no color data to edit at
 /// all) and while no light/room is bound yet (an unused row). See the
@@ -883,70 +1040,78 @@ fn open_color_popover(row: &Rc<LightRow>, state: &Rc<HueState>) {
             label.set_halign(gtk::Align::Start);
             content.append(&label);
 
-            let (r, g, b) = row.rgb.get();
-            let color_button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
-            color_button.set_rgba(&gtk::gdk::RGBA::new(r as f32, g as f32, b as f32, 1.0));
-            content.append(&color_button);
+            // A 6-stop rainbow (red/yellow/green/cyan/blue/magenta/red, at
+            // full saturation and mid lightness) - direct, no dialog to
+            // open first, per the user's own feedback on the first cut of
+            // this popover (a `ColorDialogButton` needed an extra tap to
+            // even see any colors at all). Only picks a hue, not a full
+            // saturation/lightness plane - a deliberate simplification
+            // (see the module doc comment) over a real 2D color wheel,
+            // which this strip's own drag mechanics don't attempt.
+            let stops: Vec<(f64, (f64, f64, f64))> = (0..=6).map(|i| (i as f64 / 6.0, hsl_to_rgb(i as f64 * 60.0, 1.0, 0.5))).collect();
+            let initial_fraction = rgb_hue_fraction(row.rgb.get());
 
-            // Fires once the color dialog is confirmed, not per drag tick
-            // inside it - unlike the temperature slider below, this needs
-            // no debouncing of its own.
-            color_button.connect_rgba_notify({
+            let generation: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+            let strip = build_gradient_strip(GRADIENT_STRIP_WIDTH_PX, GRADIENT_STRIP_HEIGHT_PX, stops, initial_fraction, {
                 let row = row.clone();
                 let state = state.clone();
                 let target = target.clone();
-                move |button| {
-                    let rgba = button.rgba();
-                    let (r, g, b) = (rgba.red() as f64, rgba.green() as f64, rgba.blue() as f64);
-                    let hex = hex_from_rgb((r, g, b));
-                    preview_color(&row, &hex);
+                let generation = generation.clone();
+                move |fraction| {
+                    let (r, g, b) = hsl_to_rgb(fraction * 360.0, 1.0, 0.5);
+                    preview_color(&row, &hex_from_rgb((r, g, b)));
 
-                    let (x, y) = hue_bridge::rgb_to_xy(r, g, b);
+                    let this_generation = generation.get() + 1;
+                    generation.set(this_generation);
                     let config = config_store::get();
                     let (Some(ip), Some(username)) = (config.hue_bridge_ip, config.hue_username) else { return };
                     let (resource_kind, id) = target_kind_id(&target);
+                    let (x, y) = hue_bridge::rgb_to_xy(r, g, b);
                     let state = state.clone();
+                    let generation = generation.clone();
                     gtk::glib::spawn_future_local(async move {
+                        // Same debounce as the temperature strip below -
+                        // see its own doc comment for why.
+                        gtk::glib::timeout_future(GRADIENT_STRIP_DEBOUNCE).await;
+                        if generation.get() != this_generation {
+                            return;
+                        }
                         let _ = gtk::gio::spawn_blocking(move || hue_bridge::set_color_xy(&ip, &username, resource_kind, &id, x, y)).await;
                         state.refresh();
                     });
                 }
             });
+            content.append(&strip);
         }
         BulbType::ColorTemperature => {
             let label = gtk::Label::new(Some(&i18n::t("widgets.hue.color_popover.temperature")));
             label.set_halign(gtk::Align::Start);
             content.append(&label);
 
-            const MIN_KELVIN: f64 = 2000.0;
-            const MAX_KELVIN: f64 = 6500.0;
-            let current_mirek = row.mirek.get().unwrap_or(300.0);
-            let current_kelvin = (1_000_000.0 / current_mirek).clamp(MIN_KELVIN, MAX_KELVIN);
-            let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, MIN_KELVIN, MAX_KELVIN, 50.0);
-            scale.set_size_request(180, -1);
-            scale.set_value(current_kelvin);
-            scale.set_draw_value(true);
-            scale.set_value_pos(gtk::PositionType::Right);
-            content.append(&scale);
+            // Warm (left) to cool (right) - a "nuancier" the user can pick
+            // by eye rather than a bare Kelvin number (their own feedback
+            // on the first cut, a plain `gtk::Scale`: "je ne connais pas
+            // les valeurs"). Sampled straight from `mirek_to_hex` at each
+            // stop, so this strip always matches exactly what the on-card
+            // swatch would show for that same mirek value - no separate
+            // color math to keep in sync.
+            const MIN_MIREK: f64 = 153.0;
+            const MAX_MIREK: f64 = 500.0;
+            let mirek_at_fraction = |fraction: f64| MAX_MIREK + (MIN_MIREK - MAX_MIREK) * fraction;
+            let stops: Vec<(f64, (f64, f64, f64))> =
+                (0..=8).map(|i| { let f = i as f64 / 8.0; (f, hex_to_rgb(&hue_bridge::mirek_to_hex(mirek_at_fraction(f)))) }).collect();
 
-            // Debounced: the PUT only fires ~250ms after the slider stops
-            // moving, not on every tick of the drag - a `Scale` fires
-            // `value-changed` continuously while dragged, and the bridge
-            // rate-limits rapid requests (see `hue_bridge.rs`'s own doc
-            // comment on the reference extension's 429 handling). The
-            // local preview (`preview_color`) still updates instantly on
-            // every tick; only the network call waits. Same
-            // generation-counter debounce idiom as `settings_page.rs`'s
-            // `ha_ping_generation`/`hue_pair_generation`, just applied to
-            // a delay instead of an in-flight request.
+            let current_mirek = row.mirek.get().unwrap_or(300.0);
+            let initial_fraction = ((current_mirek - MAX_MIREK) / (MIN_MIREK - MAX_MIREK)).clamp(0.0, 1.0);
+
             let generation: Rc<Cell<u64>> = Rc::new(Cell::new(0));
-            scale.connect_value_changed({
+            let strip = build_gradient_strip(GRADIENT_STRIP_WIDTH_PX, GRADIENT_STRIP_HEIGHT_PX, stops, initial_fraction, {
                 let row = row.clone();
                 let state = state.clone();
                 let target = target.clone();
                 let generation = generation.clone();
-                move |scale| {
-                    let mirek = (1_000_000.0 / scale.value()).clamp(153.0, 500.0);
+                move |fraction| {
+                    let mirek = mirek_at_fraction(fraction).clamp(MIN_MIREK, MAX_MIREK);
                     row.mirek.set(Some(mirek));
                     preview_color(&row, &hue_bridge::mirek_to_hex(mirek));
 
@@ -958,7 +1123,17 @@ fn open_color_popover(row: &Rc<LightRow>, state: &Rc<HueState>) {
                     let state = state.clone();
                     let generation = generation.clone();
                     gtk::glib::spawn_future_local(async move {
-                        gtk::glib::timeout_future(std::time::Duration::from_millis(250)).await;
+                        // The PUT only fires once dragging pauses for
+                        // `GRADIENT_STRIP_DEBOUNCE` - the strip fires on
+                        // every drag tick (for an instant local preview),
+                        // and the bridge rate-limits rapid requests (see
+                        // `hue_bridge.rs`'s own doc comment on the
+                        // reference extension's 429 handling). Same
+                        // generation-counter debounce idiom as
+                        // `settings_page.rs`'s `ha_ping_generation`/
+                        // `hue_pair_generation`, applied to a delay
+                        // instead of an in-flight request.
+                        gtk::glib::timeout_future(GRADIENT_STRIP_DEBOUNCE).await;
                         if generation.get() != this_generation {
                             return; // superseded by a later tick - that one will send its own PUT
                         }
@@ -967,6 +1142,7 @@ fn open_color_popover(row: &Rc<LightRow>, state: &Rc<HueState>) {
                     });
                 }
             });
+            content.append(&strip);
         }
         BulbType::Dimmable => unreachable!("returned above"),
     }
@@ -1229,5 +1405,26 @@ mod tests {
         let picked = pick_default_lights(lights);
         assert_eq!(picked.len(), MAX_ROWS);
         assert_eq!(picked.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["Alpha", "Bravo", "Charlie", "Mike"]);
+    }
+
+    #[test]
+    fn hsl_primaries_match_expected_rgb() {
+        assert_eq!(hsl_to_rgb(0.0, 1.0, 0.5), (1.0, 0.0, 0.0));
+        assert_eq!(hsl_to_rgb(120.0, 1.0, 0.5), (0.0, 1.0, 0.0));
+        assert_eq!(hsl_to_rgb(240.0, 1.0, 0.5), (0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn rgb_hue_fraction_round_trips_through_hsl_to_rgb() {
+        for degrees in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
+            let rgb = hsl_to_rgb(degrees, 1.0, 0.5);
+            let fraction = rgb_hue_fraction(rgb);
+            assert!((fraction - degrees / 360.0).abs() < 0.01, "expected ~{}, got {fraction}", degrees / 360.0);
+        }
+    }
+
+    #[test]
+    fn rgb_hue_fraction_is_zero_for_a_neutral_gray() {
+        assert_eq!(rgb_hue_fraction((0.5, 0.5, 0.5)), 0.0);
     }
 }
