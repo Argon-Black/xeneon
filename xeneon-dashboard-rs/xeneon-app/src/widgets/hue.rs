@@ -735,7 +735,9 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
                 let brightness = row.fraction.get() * 100.0;
                 let state = state.clone();
                 gtk::glib::spawn_future_local(async move {
-                    let _ = gtk::gio::spawn_blocking(move || put_target(&ip, &username, &target, new_on, brightness)).await;
+                    if let Ok(Err(err)) = gtk::gio::spawn_blocking(move || put_target(&ip, &username, &target, new_on, brightness)).await {
+                        warn!("failed to set Hue on/brightness: {err}");
+                    }
                     state.refresh();
                 });
             }
@@ -810,7 +812,9 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
                 let (Some(ip), Some(username)) = (config.hue_bridge_ip, config.hue_username) else { return };
                 let state = state.clone();
                 gtk::glib::spawn_future_local(async move {
-                    let _ = gtk::gio::spawn_blocking(move || put_target(&ip, &username, &target, new_on, brightness)).await;
+                    if let Ok(Err(err)) = gtk::gio::spawn_blocking(move || put_target(&ip, &username, &target, new_on, brightness)).await {
+                        warn!("failed to set Hue on/brightness: {err}");
+                    }
                     state.refresh();
                 });
             }
@@ -1076,7 +1080,9 @@ fn open_color_popover(row: &Rc<LightRow>, state: &Rc<HueState>) {
                         if generation.get() != this_generation {
                             return;
                         }
-                        let _ = gtk::gio::spawn_blocking(move || hue_bridge::set_color_xy(&ip, &username, resource_kind, &id, x, y)).await;
+                        if let Ok(Err(err)) = gtk::gio::spawn_blocking(move || hue_bridge::set_color_xy(&ip, &username, resource_kind, &id, x, y)).await {
+                            warn!("failed to set Hue color: {err}");
+                        }
                         state.refresh();
                     });
                 }
@@ -1137,7 +1143,9 @@ fn open_color_popover(row: &Rc<LightRow>, state: &Rc<HueState>) {
                         if generation.get() != this_generation {
                             return; // superseded by a later tick - that one will send its own PUT
                         }
-                        let _ = gtk::gio::spawn_blocking(move || hue_bridge::set_color_temperature_mirek(&ip, &username, resource_kind, &id, mirek)).await;
+                        if let Ok(Err(err)) = gtk::gio::spawn_blocking(move || hue_bridge::set_color_temperature_mirek(&ip, &username, resource_kind, &id, mirek)).await {
+                            warn!("failed to set Hue color temperature: {err}");
+                        }
                         state.refresh();
                     });
                 }

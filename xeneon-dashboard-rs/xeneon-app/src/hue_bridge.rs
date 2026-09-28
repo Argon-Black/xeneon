@@ -617,9 +617,17 @@ pub fn set_color_xy(ip: &str, username: &str, resource_kind: &str, id: &str, x: 
 }
 
 /// Same shape as `set_color_xy`, for a color-temperature-only bulb
-/// (`resource_kind` still either `"light"` or `"grouped_light"`).
+/// (`resource_kind` still either `"light"` or `"grouped_light"`). Unlike
+/// `xy` (genuinely fractional in the CLIP v2 schema), `mirek` is declared
+/// as a JSON integer there - sent here as a real `u32`, not `mirek.round()`
+/// left as an `f64`, so the request body reads `366` rather than `366.0`.
+/// A JSON number with a trailing `.0` is still spec-legal where an integer
+/// is expected (no fractional part), but embedded firmware parsers don't
+/// always agree with the spec on that, and this costs nothing to just get
+/// exactly right rather than rely on the bridge being lenient about it.
 pub fn set_color_temperature_mirek(ip: &str, username: &str, resource_kind: &str, id: &str, mirek: f64) -> Result<(), String> {
-    let body = serde_json::json!({"color_temperature": {"mirek": mirek.round()}});
+    let mirek = mirek.round().clamp(1.0, u32::MAX as f64) as u32;
+    let body = serde_json::json!({"color_temperature": {"mirek": mirek}});
 
     ureq::put(format!("https://{ip}/clip/v2/resource/{resource_kind}/{id}"))
         .header("hue-application-key", username)
