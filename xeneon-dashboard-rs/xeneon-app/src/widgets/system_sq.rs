@@ -140,11 +140,16 @@ fn ensure_css_installed() {
         // comes from each instance's own `FONT_CSS` rule instead (see
         // `SystemSqState::apply_content_scale`), since a single shared
         // class can't hold a different pixel size per card. The OS badge
-        // stays fixed-size here, same as `network_sq.rs`'s VPN badge.
+        // stays fixed-size here, same as `network_sq.rs`'s VPN badge - its
+        // padding/border-radius were also brought in line with that badge
+        // (and `hue.rs`'s own header badge) after a side-by-side audit
+        // found this one alone using a shorter 3px/10px pill, throwing the
+        // whole header row's vertical alignment off against the other two
+        // cards.
         css.load_from_string(&format!(
             ".xeneon-sysinfo-hostname {{ font-size: {HOSTNAME_FONT_PX}px; font-weight: 500; color: #ffffff; }}\n\
              .xeneon-sysinfo-os-badge {{ background-color: rgba(255, 255, 255, 0.08); \
-             border-radius: 10px; padding: 3px 10px; }}\n\
+             border-radius: 13px; padding: 5px 12px; }}\n\
              .xeneon-sysinfo-os-badge-label {{ font-size: {OS_BADGE_FONT_PX}px; color: rgba(255, 255, 255, 0.7); }}\n\
              .xeneon-sysinfo-gauge-label {{ color: rgba(255, 255, 255, 0.78); }}\n\
              .xeneon-sysinfo-gauge-value {{ font-weight: 500; color: #ffffff; }}\n\
@@ -521,10 +526,17 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
     let header_icon = gtk::Image::new();
     header_icon.set_pixel_size(HEADER_ICON_PX);
     header_icon.set_paintable(load_header_icon().as_ref());
+    // Explicit on every header child (icon, title, badge - see the same
+    // fix in `network_sq.rs`/`hue.rs`) rather than relying on the row's
+    // own default `Fill` alignment: a bare-text label and a padded badge
+    // pill don't reliably end up centered the same way without it, which
+    // is exactly what an audit across the three SQ cards' headers found.
+    header_icon.set_valign(gtk::Align::Center);
     header.append(&header_icon);
     let hostname_label = gtk::Label::new(None);
     hostname_label.add_css_class("xeneon-sysinfo-hostname");
     hostname_label.set_halign(gtk::Align::Start);
+    hostname_label.set_valign(gtk::Align::Center);
     header.append(&hostname_label);
 
     let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -533,6 +545,7 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
 
     let os_badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     os_badge.add_css_class("xeneon-sysinfo-os-badge");
+    os_badge.set_valign(gtk::Align::Center);
     let os_badge_label = gtk::Label::new(None);
     os_badge_label.add_css_class("xeneon-sysinfo-os-badge-label");
     os_badge.append(&os_badge_label);

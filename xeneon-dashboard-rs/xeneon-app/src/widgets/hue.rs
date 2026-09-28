@@ -764,15 +764,24 @@ fn build_content(variant: CardVariant) -> (Rc<HueState>, gtk::Widget) {
         let header_icon = gtk::Image::new();
         header_icon.set_pixel_size(HEADER_ICON_PX);
         header_icon.set_paintable(load_on_icon(ACCENT_COLOR_HEX).as_ref());
+        // Explicit on every header child (icon, title, badge) rather than
+        // relying on the row's own default `Fill` alignment - an audit
+        // across this card's, `network_sq.rs`'s and `system_sq.rs`'s
+        // headers found them not reliably centering the same way without
+        // it, throwing the three cards' header rows out of vertical
+        // alignment with each other.
+        header_icon.set_valign(gtk::Align::Center);
         header.append(&header_icon);
         let title_label = gtk::Label::new(Some(&i18n::t("widgets.hue.title")));
         title_label.add_css_class("xeneon-hue-title");
+        title_label.set_valign(gtk::Align::Center);
         header.append(&title_label);
         let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header_spacer.set_hexpand(true);
         header.append(&header_spacer);
         let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         badge.add_css_class("xeneon-hue-badge");
+        badge.set_valign(gtk::Align::Center);
         badge_label.add_css_class("xeneon-hue-badge-label");
         badge.append(&badge_label);
         header.append(&badge);

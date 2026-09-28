@@ -548,11 +548,17 @@ fn build_content() -> (Rc<NetworkMState>, gtk::Widget) {
     // starts empty rather than defaulting to one or the other. Size is
     // set in `apply_content_scale`, called from the same first `refresh()`.
     let icon_image = gtk::Image::new();
+    // Explicit rather than relying on the row's default `Fill` alignment -
+    // same header-alignment audit/fix as `network_sq.rs`'s own icon/name
+    // (the vpn badge below already set this explicitly; the icon/name
+    // didn't).
+    icon_image.set_valign(gtk::Align::Center);
     header.append(&icon_image);
 
     let name_label = gtk::Label::new(None);
     name_label.add_css_class("xeneon-network-m-name");
     name_label.set_halign(gtk::Align::Start);
+    name_label.set_valign(gtk::Align::Center);
     header.append(&name_label);
 
     let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
