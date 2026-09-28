@@ -364,7 +364,7 @@ pub struct Room {
 /// Only used for `Light::display_color_hex`'s cosmetic dot/icon tint, not
 /// for anything sent back to the bridge, so the minor inaccuracy real
 /// color-management would fix here doesn't matter.
-fn xy_to_hex(x: f64, y: f64, brightness_percent: f64) -> String {
+pub fn xy_to_hex(x: f64, y: f64, brightness_percent: f64) -> String {
     let y_val = (brightness_percent / 100.0).clamp(0.01, 1.0);
     let z = 1.0 - x - y;
     let x_val = (y_val / y.max(0.0001)) * x;
@@ -390,7 +390,7 @@ fn xy_to_hex(x: f64, y: f64, brightness_percent: f64) -> String {
 /// `xy_to_hex`'s own doc comment on why cosmetic accuracy isn't the goal
 /// here), just enough to make a warm light look warm and a cool one look
 /// cool next to each other on the same card.
-fn mirek_to_hex(mirek: f64) -> String {
+pub fn mirek_to_hex(mirek: f64) -> String {
     const WARM: (f64, f64, f64) = (0xf2 as f64, 0xa5 as f64, 0x41 as f64); // network_sq/system_sq's own accent amber
     const COOL: (f64, f64, f64) = (0xbc as f64, 0xdc as f64, 0xff as f64);
     const MIN_MIREK: f64 = 153.0;
@@ -590,6 +590,70 @@ pub fn set_grouped_light(ip: &str, username: &str, grouped_light_id: &str, on: b
     Ok(())
 }
 
+/// A single-light PUT (`resource_kind = "light"`) or a whole-room one
+/// (`resource_kind = "grouped_light"`) touching only `color` - unlike
+/// `set_light`/`set_grouped_light`, deliberately doesn't also send
+/// `on`/`dimming`: the color/temperature popover (step 4) only opens for
+/// an already-on light (see `widgets/hue.rs`'s own gesture wiring), so
+/// there's nothing useful to also set there. One function for both
+/// resource kinds (rather than `set_light_color`/`set_grouped_light_color`
+/// pair, mirroring `set_light`/`set_grouped_light`'s own split) since the
+/// request bodies are now identical enough (both singleton `color` PUTs)
+/// that a `resource_kind: &str` parameter reads more clearly than two
+/// near-duplicate functions would.
+pub fn set_color_xy(ip: &str, username: &str, resource_kind: &str, id: &str, x: f64, y: f64) -> Result<(), String> {
+    let body = serde_json::json!({"color": {"xy": {"x": x, "y": y}}});
+
+    ureq::put(format!("https://{ip}/clip/v2/resource/{resource_kind}/{id}"))
+        .header("hue-application-key", username)
+        .config()
+        .tls_config(bridge_tls_config())
+        .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
+        .build()
+        .send_json(&body)
+        .map_err(|err| err.to_string())?;
+
+    Ok(())
+}
+
+/// Same shape as `set_color_xy`, for a color-temperature-only bulb
+/// (`resource_kind` still either `"light"` or `"grouped_light"`).
+pub fn set_color_temperature_mirek(ip: &str, username: &str, resource_kind: &str, id: &str, mirek: f64) -> Result<(), String> {
+    let body = serde_json::json!({"color_temperature": {"mirek": mirek.round()}});
+
+    ureq::put(format!("https://{ip}/clip/v2/resource/{resource_kind}/{id}"))
+        .header("hue-application-key", username)
+        .config()
+        .tls_config(bridge_tls_config())
+        .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
+        .build()
+        .send_json(&body)
+        .map_err(|err| err.to_string())?;
+
+    Ok(())
+}
+
+/// Converts an sRGB color (0.0-1.0 components, e.g. from a
+/// `gtk::ColorDialogButton`) to the CIE xy chromaticity the bridge's
+/// `color` field wants - the inverse of `xy_to_hex`'s own forward
+/// conversion, same Wide RGB D65 matrix (inverted) and gamma handling.
+/// Falls back to the D65 white point for a color at/near pure black,
+/// where the forward matrix has no meaningful direction to report.
+pub fn rgb_to_xy(r: f64, g: f64, b: f64) -> (f64, f64) {
+    let inverse_gamma = |c: f64| if c > 0.04045 { ((c + 0.055) / 1.055).powf(2.4) } else { c / 12.92 };
+    let (r, g, b) = (inverse_gamma(r), inverse_gamma(g), inverse_gamma(b));
+
+    let x = r * 0.664_511 + g * 0.154_324 + b * 0.162_028;
+    let y = r * 0.283_881 + g * 0.668_433 + b * 0.047_685;
+    let z = r * 0.000_088 + g * 0.072_310 + b * 0.986_039;
+
+    let sum = x + y + z;
+    if sum <= 0.0 {
+        return (0.3127, 0.3290); // CIE D65 white point
+    }
+    (x / sum, y / sum)
+}
+
 thread_local! {
     // Set once by main.rs right after `PageIndicator::new`, same pattern
     // (and same reason) as `ha_page.rs`'s own `REVEAL_INDICATOR` - lets a
@@ -737,6 +801,19 @@ mod tests {
     fn mirek_extremes_land_close_to_their_named_swatch() {
         assert_eq!(mirek_to_hex(500.0), "#f2a541");
         assert_eq!(mirek_to_hex(153.0), "#bcdcff");
+    }
+
+    #[test]
+    fn rgb_to_xy_lands_near_the_matching_named_primary() {
+        // Not an exact round trip with `xy_to_hex` (different color
+        // spaces, gamut clamping, rounding) - just checks a primary color
+        // resolves to chromaticity in roughly the right direction, since
+        // that's the only property the color popover (step 4) actually
+        // depends on.
+        let (x, y) = rgb_to_xy(1.0, 0.0, 0.0);
+        assert!(x > y, "pure red should skew toward the x (red) axis, got ({x}, {y})");
+        let (x, y) = rgb_to_xy(0.0, 0.0, 1.0);
+        assert!(x < 0.2 && y < 0.2, "pure blue should sit near the xy origin, got ({x}, {y})");
     }
 
     #[test]

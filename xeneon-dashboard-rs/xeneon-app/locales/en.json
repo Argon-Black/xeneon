@@ -385,5 +385,7 @@
   "widgets.hue.settings.mode.title": "Show by",
   "widgets.hue.settings.mode.room": "Room",
   "widgets.hue.settings.mode.light": "Light",
-  "widgets.hue.settings.loading": "Loading…"
+  "widgets.hue.settings.loading": "Loading…",
+  "widgets.hue.color_popover.color": "Color",
+  "widgets.hue.color_popover.temperature": "Temperature"
 }

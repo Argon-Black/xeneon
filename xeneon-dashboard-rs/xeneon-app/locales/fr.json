@@ -385,5 +385,7 @@
   "widgets.hue.settings.mode.title": "Afficher par",
   "widgets.hue.settings.mode.room": "Pièce",
   "widgets.hue.settings.mode.light": "Lumière",
-  "widgets.hue.settings.loading": "Chargement…"
+  "widgets.hue.settings.loading": "Chargement…",
+  "widgets.hue.color_popover.color": "Couleur",
+  "widgets.hue.color_popover.temperature": "Température"
 }

@@ -30,21 +30,27 @@
 //! existing placed widgets keep showing *something* sensible after this
 //! update rather than going blank.
 //!
-//! **Deliberately not built yet**: step 4 adds a color/color-temperature
-//! popover on tapping a light's name (currently a no-op) - not wired to
-//! anything here, since what it should open depends on `BulbType`, not yet
-//! decided in detail. A room row's status/icon also doesn't aggregate its
-//! member lights' actual colors (see `room_to_entry`) - it always renders
-//! as a plain dimmable accent-colored entry, a deliberate simplification
-//! since color aggregation across a whole room is its own small design
-//! question, not needed for the picker mechanics this step is about.
+//! Step 4 (this pass) adds the color/color-temperature popover on tapping
+//! a light's name - `open_color_popover`, branching on `BulbType`: a
+//! `gtk::ColorDialogButton` for `Color` (converted to the bridge's CIE xy
+//! via `hue_bridge::rgb_to_xy`), a Kelvin-labeled `gtk::Scale` for
+//! `ColorTemperature` (converted to mirek), and a no-op for `Dimmable`
+//! (no color data to edit at all) - matching the design discussion's
+//! "nothing to open for a plain white bulb" decision. The temperature
+//! slider debounces its network PUT (~250ms after the last tick) since a
+//! `Scale` fires continuously while dragged and the bridge rate-limits
+//! rapid requests; the color dialog needs no such debouncing, since its
+//! own `rgba-notify` only fires once the dialog is confirmed, not per
+//! drag tick inside it. A room row's status/icon still doesn't aggregate
+//! its member lights' actual colors (see `room_to_entry`) - it always
+//! renders as a plain dimmable accent-colored entry, so the popover never
+//! opens for a room row either, a deliberate simplification since color
+//! aggregation across a whole room is its own small design question,
+//! separate from this step's picker mechanics.
 //!
 //! Bulb-type detection (`hue_bridge::BulbType`) drives the status line's
-//! wording (`"72% · Couleur"` / `"100% · 2700K"` / `"45%"`) and, for a
-//! `Dimmable` bulb with no color data at all, nothing else changes yet -
-//! tapping its name will eventually need to do nothing (or show a brief
-//! "no color control" hint) rather than opening an empty popover, per the
-//! design discussion, once step 4 actually builds that popover.
+//! wording (`"72% · Couleur"` / `"100% · 2700K"` / `"45%"`) and, as of
+//! this step, the name-tap popover's own content.
 //!
 //! Icons are two bundled SVGs (`assets/hue-bulb-icon.svg`,
 //! `assets/hue-bulb-off-icon.svg`), rasterized and cached, loaded and
@@ -378,6 +384,17 @@ struct LightRow {
     on: Cell<bool>,
     fraction: Cell<f64>,
     rgb: Cell<(f64, f64, f64)>,
+    /// Read by the name-tap handler (see `build_content`) to decide what
+    /// kind of popover to open, if any - `BulbType::Dimmable`'s initial
+    /// value here is an arbitrary placeholder (no gesture fires before
+    /// `apply_entry_to_row` has run at least once, since the row stays
+    /// hidden until then), not a meaningful default.
+    bulb_type: Cell<BulbType>,
+    /// Only meaningful (`Some`) for a `ColorTemperature` entry - the
+    /// temperature popover's slider needs the light's *current* mirek to
+    /// show the right starting position, same reason `Light`/`CardEntry`
+    /// themselves carry it.
+    mirek: Cell<Option<f64>>,
 }
 
 fn build_row() -> LightRow {
@@ -431,6 +448,8 @@ fn build_row() -> LightRow {
         on: Cell::new(false),
         fraction: Cell::new(0.0),
         rgb: Cell::new((0.6, 0.6, 0.6)),
+        bulb_type: Cell::new(BulbType::Dimmable),
+        mirek: Cell::new(None),
     }
 }
 
@@ -572,6 +591,8 @@ fn apply_entry_to_row(row: &Rc<LightRow>, entry: &CardEntry) {
     row.on.set(entry.on);
     row.fraction.set((entry.brightness_percent / 100.0).clamp(0.0, 1.0));
     row.rgb.set(hex_to_rgb(&entry.display_color_hex));
+    row.bulb_type.set(entry.bulb_type);
+    row.mirek.set(entry.mirek);
 
     row.name_label.set_label(&entry.name);
     // Pango's `<span color="...">` only accepts `#rrggbb`/`#rrggbbaa` or a
@@ -704,6 +725,21 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
         });
         row.icon_area.add_controller(toggle_click);
 
+        // Name tap: opens the color/temperature popover, for whichever
+        // `BulbType` this row currently shows - a no-op for `Dimmable`
+        // (see `open_color_popover`'s own early return), matching the
+        // module doc comment's "not opening an empty popover" decision.
+        let name_click = gtk::GestureClick::new();
+        name_click.connect_released({
+            let row = row.clone();
+            let state = state.clone();
+            move |gesture, _n_press, _x, _y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                open_color_popover(&row, &state);
+            }
+        });
+        row.name_label.add_controller(name_click);
+
         // Brightness bar: a `GestureDrag` doubles as tap-to-set (a tap is
         // just a drag with ~0 movement) - see the module doc comment.
         let drag = gtk::GestureDrag::new();
@@ -795,6 +831,148 @@ fn put_target(ip: &str, username: &str, target: &CardTarget, on: bool, brightnes
         CardTarget::Light(id) => hue_bridge::set_light(ip, username, id, on, brightness_percent),
         CardTarget::Room(grouped_light_id) => hue_bridge::set_grouped_light(ip, username, grouped_light_id, on, brightness_percent),
     }
+}
+
+/// The `(resource_kind, id)` pair `hue_bridge::set_color_xy`/
+/// `set_color_temperature_mirek` want, for whichever kind of `target` this
+/// row is currently bound to.
+fn target_kind_id(target: &CardTarget) -> (&'static str, String) {
+    match target {
+        CardTarget::Light(id) => ("light", id.clone()),
+        CardTarget::Room(id) => ("grouped_light", id.clone()),
+    }
+}
+
+/// Updates a row's own display (icon/bar color) the moment the user picks
+/// a new color/temperature in its popover - before the PUT has even been
+/// sent, let alone reconciled by the next `refresh()`, so the on-card
+/// preview tracks the popover instantly rather than lagging a full
+/// round-trip behind it.
+fn preview_color(row: &Rc<LightRow>, hex: &str) {
+    row.rgb.set(hex_to_rgb(hex));
+    let texture = load_on_icon(hex);
+    row.icon_image.set_paintable(texture.as_ref());
+    row.icon_area.queue_draw();
+    row.bar_area.queue_draw();
+}
+
+/// Opens the color or color-temperature popover for `row`'s current
+/// light/room - a no-op for `BulbType::Dimmable` (no color data to edit at
+/// all) and while no light/room is bound yet (an unused row). See the
+/// module doc comment for what's deliberately *not* here: room entries
+/// always report `Dimmable` (see `room_to_entry`), so this never opens for
+/// a room row either, until room-level color aggregation is designed.
+fn open_color_popover(row: &Rc<LightRow>, state: &Rc<HueState>) {
+    let Some(target) = row.target.borrow().clone() else { return };
+    let bulb_type = row.bulb_type.get();
+    if bulb_type == BulbType::Dimmable {
+        return;
+    }
+
+    let popover = gtk::Popover::new();
+    popover.set_parent(&row.name_label);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.set_margin_top(10);
+    content.set_margin_bottom(10);
+    content.set_margin_start(10);
+    content.set_margin_end(10);
+
+    match bulb_type {
+        BulbType::Color => {
+            let label = gtk::Label::new(Some(&i18n::t("widgets.hue.color_popover.color")));
+            label.set_halign(gtk::Align::Start);
+            content.append(&label);
+
+            let (r, g, b) = row.rgb.get();
+            let color_button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
+            color_button.set_rgba(&gtk::gdk::RGBA::new(r as f32, g as f32, b as f32, 1.0));
+            content.append(&color_button);
+
+            // Fires once the color dialog is confirmed, not per drag tick
+            // inside it - unlike the temperature slider below, this needs
+            // no debouncing of its own.
+            color_button.connect_rgba_notify({
+                let row = row.clone();
+                let state = state.clone();
+                let target = target.clone();
+                move |button| {
+                    let rgba = button.rgba();
+                    let (r, g, b) = (rgba.red() as f64, rgba.green() as f64, rgba.blue() as f64);
+                    let hex = hex_from_rgb((r, g, b));
+                    preview_color(&row, &hex);
+
+                    let (x, y) = hue_bridge::rgb_to_xy(r, g, b);
+                    let config = config_store::get();
+                    let (Some(ip), Some(username)) = (config.hue_bridge_ip, config.hue_username) else { return };
+                    let (resource_kind, id) = target_kind_id(&target);
+                    let state = state.clone();
+                    gtk::glib::spawn_future_local(async move {
+                        let _ = gtk::gio::spawn_blocking(move || hue_bridge::set_color_xy(&ip, &username, resource_kind, &id, x, y)).await;
+                        state.refresh();
+                    });
+                }
+            });
+        }
+        BulbType::ColorTemperature => {
+            let label = gtk::Label::new(Some(&i18n::t("widgets.hue.color_popover.temperature")));
+            label.set_halign(gtk::Align::Start);
+            content.append(&label);
+
+            const MIN_KELVIN: f64 = 2000.0;
+            const MAX_KELVIN: f64 = 6500.0;
+            let current_mirek = row.mirek.get().unwrap_or(300.0);
+            let current_kelvin = (1_000_000.0 / current_mirek).clamp(MIN_KELVIN, MAX_KELVIN);
+            let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, MIN_KELVIN, MAX_KELVIN, 50.0);
+            scale.set_size_request(180, -1);
+            scale.set_value(current_kelvin);
+            scale.set_draw_value(true);
+            scale.set_value_pos(gtk::PositionType::Right);
+            content.append(&scale);
+
+            // Debounced: the PUT only fires ~250ms after the slider stops
+            // moving, not on every tick of the drag - a `Scale` fires
+            // `value-changed` continuously while dragged, and the bridge
+            // rate-limits rapid requests (see `hue_bridge.rs`'s own doc
+            // comment on the reference extension's 429 handling). The
+            // local preview (`preview_color`) still updates instantly on
+            // every tick; only the network call waits. Same
+            // generation-counter debounce idiom as `settings_page.rs`'s
+            // `ha_ping_generation`/`hue_pair_generation`, just applied to
+            // a delay instead of an in-flight request.
+            let generation: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+            scale.connect_value_changed({
+                let row = row.clone();
+                let state = state.clone();
+                let target = target.clone();
+                let generation = generation.clone();
+                move |scale| {
+                    let mirek = (1_000_000.0 / scale.value()).clamp(153.0, 500.0);
+                    row.mirek.set(Some(mirek));
+                    preview_color(&row, &hue_bridge::mirek_to_hex(mirek));
+
+                    let this_generation = generation.get() + 1;
+                    generation.set(this_generation);
+                    let config = config_store::get();
+                    let (Some(ip), Some(username)) = (config.hue_bridge_ip, config.hue_username) else { return };
+                    let (resource_kind, id) = target_kind_id(&target);
+                    let state = state.clone();
+                    let generation = generation.clone();
+                    gtk::glib::spawn_future_local(async move {
+                        gtk::glib::timeout_future(std::time::Duration::from_millis(250)).await;
+                        if generation.get() != this_generation {
+                            return; // superseded by a later tick - that one will send its own PUT
+                        }
+                        let _ = gtk::gio::spawn_blocking(move || hue_bridge::set_color_temperature_mirek(&ip, &username, resource_kind, &id, mirek)).await;
+                        state.refresh();
+                    });
+                }
+            });
+        }
+        BulbType::Dimmable => unreachable!("returned above"),
+    }
+
+    popover.set_child(Some(&content));
+    popover.popup();
 }
 
 /// Re-derives a `#rrggbb` string from the `(r, g, b)` 0.0-1.0 floats
