@@ -219,6 +219,16 @@ pub static CATALOG: &[WidgetDescriptor] = &[
         singleton: false,
     },
     WidgetDescriptor {
+        kind: "hue_sq",
+        title_key: "widgets.hue.title",
+        card_title_key: "widgets.hue.title",
+        size: SIZE_SQ,
+        spawn: crate::widgets::hue::spawn,
+        restore: crate::widgets::hue::restore,
+        preview: None,
+        singleton: false,
+    },
+    WidgetDescriptor {
         kind: "system_sq",
         title_key: "widgets.system_info.title",
         card_title_key: "widgets.system_info.title",

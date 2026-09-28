@@ -486,6 +486,16 @@ impl PageIndicator {
         self.inner.show();
     }
 
+    /// Jumps straight to the settings page and reveals the bar - the same
+    /// two calls the gear button's own `connect_clicked` makes above.
+    /// Exposed as a method so code with no carousel/settings-page access
+    /// of its own (a widget card's empty state, see `hue_bridge.rs`'s
+    /// `open_settings` hook) can trigger the same navigation.
+    pub fn go_to_settings(&self) {
+        self.inner.carousel.scroll_to(&self.inner.settings_page, true);
+        self.inner.show();
+    }
+
     /// See the free function of the same name - a thin method wrapper so
     /// callers holding a `PageIndicator` don't need to import the module
     /// separately just for this one call.

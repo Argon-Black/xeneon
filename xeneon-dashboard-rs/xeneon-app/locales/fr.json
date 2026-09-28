@@ -370,5 +370,16 @@
   "widgets.system_info.settings.content_scale": "Taille du contenu",
   "widgets.system_info.settings.cpu_color": "Couleur CPU",
   "widgets.system_info.settings.mem_color": "Couleur mémoire",
-  "widgets.system_info.settings.disk_color": "Couleur disque"
+  "widgets.system_info.settings.disk_color": "Couleur disque",
+
+  "widgets.hue.title": "Hue",
+  "widgets.hue.badge": "{on}/{total} allumées",
+  "widgets.hue.status.off": "Éteint",
+  "widgets.hue.status.color": "{percent}% · Couleur",
+  "widgets.hue.status.temperature": "{percent}% · {kelvin}K",
+  "widgets.hue.status.dimmable": "{percent}%",
+  "widgets.hue.empty.not_configured": "Aucun bridge configuré",
+  "widgets.hue.empty.no_lights": "Aucune lumière trouvée",
+  "widgets.hue.empty.unreachable": "Bridge injoignable",
+  "widgets.hue.empty.open_settings": "Ouvrir les réglages"
 }

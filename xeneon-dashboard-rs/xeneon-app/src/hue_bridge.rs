@@ -295,6 +295,262 @@ pub fn fetch_resources(ip: &str, username: &str) -> Result<serde_json::Value, St
     serde_json::from_str(&body).map_err(|err| err.to_string())
 }
 
+/// What a light can be told to do - which of these three depends on
+/// whether the light resource carries a `color` field (full color, "gamut
+/// C" in Hue's own terms), a `color_temperature` field but no `color`
+/// (white ambiance, warm-to-cool only), or neither (a plain dimmable white
+/// bulb, brightness only). Presence of those fields, not the bridge's
+/// `metadata.archetype` string, is what actually determines capability -
+/// same check the reference GNOME extension effectively makes by just
+/// reading whichever fields are there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BulbType {
+    Color,
+    ColorTemperature,
+    Dimmable,
+}
+
+/// One light, already resolved against its owning room - the shape the
+/// widget actually wants, as opposed to `fetch_resources`'s raw bridge
+/// JSON. `display_color_hex` is an approximation for the on-card dot/icon
+/// tint, not a color-accurate conversion - good enough to tell a violet
+/// light from a warm-white one at a glance, not meant for anything more
+/// precise.
+#[derive(Debug, Clone)]
+pub struct Light {
+    pub id: String,
+    pub name: String,
+    pub room_name: Option<String>,
+    pub on: bool,
+    /// 0.0-100.0, whatever the bridge last reported - meaningless while
+    /// `on` is `false` (Hue keeps reporting the brightness a light will
+    /// return to, not 0).
+    pub brightness_percent: f64,
+    pub bulb_type: BulbType,
+    pub display_color_hex: String,
+    /// Only `Some` for `BulbType::ColorTemperature` - the widget's status
+    /// text (e.g. "68% · 2700K") converts this to Kelvin itself rather
+    /// than storing a pre-formatted string here, keeping this a plain data
+    /// type with no display concerns of its own.
+    pub mirek: Option<f64>,
+}
+
+/// A room/zone grouping, only for the light ids it directly contains -
+/// enough for the widget's settings picker (step 3) to offer "this whole
+/// room" as one unit. Deliberately doesn't carry a `grouped_light` id of
+/// its own (the bridge's own way to address "all lights in this room" in
+/// one PUT) - not needed until a card actually offers a room-level
+/// toggle, at which point it belongs here.
+#[derive(Debug, Clone)]
+pub struct Room {
+    pub name: String,
+    pub light_ids: Vec<String>,
+}
+
+/// Converts a CIE xy chromaticity + brightness into an approximate sRGB
+/// hex color - the standard conversion Philips' own SDK documents and
+/// every third-party Hue integration reimplements (XYZ via the xy+Y
+/// values, then the Wide RGB D65 matrix, then gamma-correct and clamp).
+/// Only used for `Light::display_color_hex`'s cosmetic dot/icon tint, not
+/// for anything sent back to the bridge, so the minor inaccuracy real
+/// color-management would fix here doesn't matter.
+fn xy_to_hex(x: f64, y: f64, brightness_percent: f64) -> String {
+    let y_val = (brightness_percent / 100.0).clamp(0.01, 1.0);
+    let z = 1.0 - x - y;
+    let x_val = (y_val / y.max(0.0001)) * x;
+    let z_val = (y_val / y.max(0.0001)) * z;
+
+    let r = x_val * 1.656_492 - y_val * 0.354_851 - z_val * 0.255_038;
+    let g = -x_val * 0.707_196 + y_val * 1.655_397 + z_val * 0.036_152;
+    let b = x_val * 0.051_713 - y_val * 0.121_364 + z_val * 1.011_530;
+
+    let gamma_correct = |c: f64| {
+        let c = if c <= 0.0 { 0.0 } else { c };
+        if c <= 0.003_130_8 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    };
+    let to_byte = |c: f64| (gamma_correct(c).clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    format!("#{:02x}{:02x}{:02x}", to_byte(r), to_byte(g), to_byte(b))
+}
+
+/// Approximates a color-temperature light's on-card tint by linearly
+/// interpolating between a warm and a cool swatch across the mirek range
+/// Hue bulbs actually support (roughly 153-500 mirek, ~6500K-2000K) -
+/// deliberately not a real blackbody-radiation calculation (see
+/// `xy_to_hex`'s own doc comment on why cosmetic accuracy isn't the goal
+/// here), just enough to make a warm light look warm and a cool one look
+/// cool next to each other on the same card.
+fn mirek_to_hex(mirek: f64) -> String {
+    const WARM: (f64, f64, f64) = (0xf2 as f64, 0xa5 as f64, 0x41 as f64); // network_sq/system_sq's own accent amber
+    const COOL: (f64, f64, f64) = (0xbc as f64, 0xdc as f64, 0xff as f64);
+    const MIN_MIREK: f64 = 153.0;
+    const MAX_MIREK: f64 = 500.0;
+
+    let t = ((mirek - MIN_MIREK) / (MAX_MIREK - MIN_MIREK)).clamp(0.0, 1.0);
+    let lerp = |a: f64, b: f64| (a + (b - a) * t).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", lerp(COOL.0, WARM.0), lerp(COOL.1, WARM.1), lerp(COOL.2, WARM.2))
+}
+
+/// Plain white/dimmable bulbs have no chromaticity data at all to derive a
+/// color from - a fixed warm swatch (matching `mirek_to_hex`'s own warm
+/// end) reads better than an arbitrary neutral gray, since every Hue
+/// "White" bulb is physically ~2700K.
+const DIMMABLE_COLOR_HEX: &str = "#f2a541";
+
+/// Parses the raw `/clip/v2/resource` payload into the light list the
+/// widget actually wants - resolving each light's owning room along the
+/// way (`room -> children (devices) -> device's own `services` -> light
+/// id`, the only path CLIP v2 exposes from a room down to its lights;
+/// there's no direct "room contains these light ids" field on the room
+/// resource itself).
+pub fn parse_lights(resources: &serde_json::Value) -> Vec<Light> {
+    let data = resources.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+    // device id -> light id, from every device's own `services` list.
+    let mut device_to_light: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for entry in &data {
+        if entry.get("type").and_then(|v| v.as_str()) != Some("device") {
+            continue;
+        }
+        let Some(device_id) = entry.get("id").and_then(|v| v.as_str()) else { continue };
+        let services = entry.get("services").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        for service in services {
+            if service.get("rtype").and_then(|v| v.as_str()) == Some("light") {
+                if let Some(light_id) = service.get("rid").and_then(|v| v.as_str()) {
+                    device_to_light.insert(device_id.to_string(), light_id.to_string());
+                }
+            }
+        }
+    }
+
+    // light id -> room name, from every room's own `children` (devices).
+    let mut light_to_room: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for entry in &data {
+        if entry.get("type").and_then(|v| v.as_str()) != Some("room") {
+            continue;
+        }
+        let Some(room_name) = entry.get("metadata").and_then(|m| m.get("name")).and_then(|v| v.as_str()) else { continue };
+        let children = entry.get("children").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        for child in children {
+            if child.get("rtype").and_then(|v| v.as_str()) != Some("device") {
+                continue;
+            }
+            let Some(device_id) = child.get("rid").and_then(|v| v.as_str()) else { continue };
+            if let Some(light_id) = device_to_light.get(device_id) {
+                light_to_room.insert(light_id.clone(), room_name.to_string());
+            }
+        }
+    }
+
+    data.iter()
+        .filter(|entry| entry.get("type").and_then(|v| v.as_str()) == Some("light"))
+        .filter_map(|entry| {
+            let id = entry.get("id")?.as_str()?.to_string();
+            let name = entry.get("metadata")?.get("name")?.as_str()?.to_string();
+            let on = entry.get("on").and_then(|v| v.get("on")).and_then(|v| v.as_bool()).unwrap_or(false);
+            let brightness_percent = entry.get("dimming").and_then(|v| v.get("brightness")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+            let color = entry.get("color").and_then(|v| v.get("xy"));
+            let mirek = entry.get("color_temperature").and_then(|v| v.get("mirek")).and_then(|v| v.as_f64());
+
+            let (bulb_type, display_color_hex) = match (color, mirek) {
+                (Some(xy), _) => {
+                    let x = xy.get("x").and_then(|v| v.as_f64()).unwrap_or(0.33);
+                    let y = xy.get("y").and_then(|v| v.as_f64()).unwrap_or(0.33);
+                    (BulbType::Color, xy_to_hex(x, y, brightness_percent.max(20.0)))
+                }
+                (None, Some(mirek)) => (BulbType::ColorTemperature, mirek_to_hex(mirek)),
+                (None, None) => (BulbType::Dimmable, DIMMABLE_COLOR_HEX.to_string()),
+            };
+
+            // Only kept for `ColorTemperature` - an extended-color light
+            // often reports both `color` and `color_temperature`, but it
+            // took the `Color` branch above, and this field's own doc
+            // comment promises it's `None` for anything but a
+            // color-temperature-only bulb.
+            let stored_mirek = if bulb_type == BulbType::ColorTemperature { mirek } else { None };
+
+            Some(Light {
+                room_name: light_to_room.get(&id).cloned(),
+                id,
+                name,
+                on,
+                brightness_percent,
+                bulb_type,
+                display_color_hex,
+                mirek: stored_mirek,
+            })
+        })
+        .collect()
+}
+
+/// Groups `lights` by room, in room-discovery order (whatever order the
+/// bridge listed `room` resources in) - a light with no resolved room
+/// (rare: only possible if a device belongs to no room at all) simply
+/// doesn't appear in any `Room::light_ids`, not dropped from `lights`
+/// itself.
+pub fn group_by_room(resources: &serde_json::Value, lights: &[Light]) -> Vec<Room> {
+    let data = resources.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    data.iter()
+        .filter(|entry| entry.get("type").and_then(|v| v.as_str()) == Some("room"))
+        .filter_map(|entry| entry.get("metadata")?.get("name")?.as_str().map(str::to_string))
+        .map(|room_name| {
+            let light_ids = lights.iter().filter(|light| light.room_name.as_deref() == Some(room_name.as_str())).map(|light| light.id.clone()).collect();
+            Room { name: room_name, light_ids }
+        })
+        .collect()
+}
+
+/// Turns one light on/off and (in the same request) sets its brightness -
+/// combined into a single PUT rather than two, since setting brightness on
+/// an off light doesn't implicitly turn it on (confirmed against the CLIP
+/// v2 API), and the card's brightness-bar tap needs exactly that: tapping
+/// a bar on an off light should both turn it on and set the tapped level.
+/// `on` and `brightness_percent` are still independent (a plain on/off
+/// toggle passes the light's last-known brightness back unchanged) -
+/// combining the request is only about it always being one PUT, not about
+/// the two fields being coupled.
+pub fn set_light(ip: &str, username: &str, light_id: &str, on: bool, brightness_percent: f64) -> Result<(), String> {
+    let body = serde_json::json!({
+        "on": {"on": on},
+        "dimming": {"brightness": brightness_percent.clamp(0.0, 100.0)},
+    });
+
+    ureq::put(format!("https://{ip}/clip/v2/resource/light/{light_id}"))
+        .header("hue-application-key", username)
+        .config()
+        .tls_config(bridge_tls_config())
+        .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
+        .build()
+        .send_json(&body)
+        .map_err(|err| err.to_string())?;
+
+    Ok(())
+}
+
+thread_local! {
+    // Set once by main.rs right after `PageIndicator::new`, same pattern
+    // (and same reason) as `ha_page.rs`'s own `REVEAL_INDICATOR` - lets a
+    // Hue widget card's "no bridge configured" empty state jump straight
+    // to Settings without needing carousel/page-indicator access of its
+    // own. `None` in the narrow startup window before that wiring runs
+    // (nothing to click yet) and forever `None` in a context with no real
+    // window at all (unit tests).
+    static OPEN_SETTINGS: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn set_open_settings(callback: impl Fn() + 'static) {
+    OPEN_SETTINGS.with(|cell| *cell.borrow_mut() = Some(Box::new(callback)));
+}
+
+pub fn open_settings() {
+    OPEN_SETTINGS.with(|cell| {
+        if let Some(callback) = cell.borrow().as_ref() {
+            callback();
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +576,95 @@ mod tests {
     #[test]
     fn devicetype_stays_under_bridge_limit() {
         assert!(device_type().len() <= 40);
+    }
+
+    /// A small but complete CLIP v2 fixture: one room ("Salon") with one
+    /// device holding one color light, and one color-temperature light
+    /// with no room at all (an unassigned accessory, which does happen in
+    /// practice) - enough to exercise every branch of `parse_lights`
+    /// (color vs color-temperature vs missing room) and `group_by_room` in
+    /// one fixture rather than a separate one per case.
+    fn fixture_resources() -> serde_json::Value {
+        serde_json::json!({
+            "data": [
+                {
+                    "type": "room",
+                    "id": "room-1",
+                    "metadata": {"name": "Salon"},
+                    "children": [{"rid": "device-1", "rtype": "device"}]
+                },
+                {
+                    "type": "device",
+                    "id": "device-1",
+                    "services": [{"rid": "light-1", "rtype": "light"}]
+                },
+                {
+                    "type": "light",
+                    "id": "light-1",
+                    "metadata": {"name": "Lampe Salon"},
+                    "on": {"on": true},
+                    "dimming": {"brightness": 72.0},
+                    "color": {"xy": {"x": 0.3, "y": 0.15}}
+                },
+                {
+                    "type": "light",
+                    "id": "light-2",
+                    "metadata": {"name": "Lampe Bureau Grégory"},
+                    "on": {"on": false},
+                    "dimming": {"brightness": 40.0},
+                    "color_temperature": {"mirek": 366.0}
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn parses_color_light_with_resolved_room() {
+        let lights = parse_lights(&fixture_resources());
+        let salon = lights.iter().find(|l| l.id == "light-1").unwrap();
+        assert_eq!(salon.name, "Lampe Salon");
+        assert_eq!(salon.room_name.as_deref(), Some("Salon"));
+        assert!(salon.on);
+        assert_eq!(salon.bulb_type, BulbType::Color);
+    }
+
+    #[test]
+    fn parses_color_temperature_light_with_no_room() {
+        let lights = parse_lights(&fixture_resources());
+        let bureau = lights.iter().find(|l| l.id == "light-2").unwrap();
+        assert_eq!(bureau.room_name, None);
+        assert!(!bureau.on);
+        assert_eq!(bureau.bulb_type, BulbType::ColorTemperature);
+    }
+
+    #[test]
+    fn groups_only_the_room_resolved_light() {
+        let lights = parse_lights(&fixture_resources());
+        let rooms = group_by_room(&fixture_resources(), &lights);
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].name, "Salon");
+        assert_eq!(rooms[0].light_ids, vec!["light-1".to_string()]);
+    }
+
+    #[test]
+    fn mirek_extremes_land_close_to_their_named_swatch() {
+        assert_eq!(mirek_to_hex(500.0), "#f2a541");
+        assert_eq!(mirek_to_hex(153.0), "#bcdcff");
+    }
+
+    #[test]
+    fn dimmable_light_has_no_color_data_at_all() {
+        let resources = serde_json::json!({
+            "data": [{
+                "type": "light",
+                "id": "light-3",
+                "metadata": {"name": "Lampe Cave"},
+                "on": {"on": true},
+                "dimming": {"brightness": 100.0}
+            }]
+        });
+        let lights = parse_lights(&resources);
+        assert_eq!(lights[0].bulb_type, BulbType::Dimmable);
+        assert_eq!(lights[0].display_color_hex, DIMMABLE_COLOR_HEX);
     }
 }

@@ -427,6 +427,13 @@ impl SimpleComponent for AppModel {
             let page_indicator = page_indicator.clone();
             ha_page::set_reveal_indicator(move || page_indicator.show());
         }
+        // Lets a Hue widget card's "no bridge configured" empty-state
+        // button jump straight to Settings - see hue_bridge.rs's own
+        // `OPEN_SETTINGS`/`set_open_settings` doc comment.
+        hue_bridge::set_open_settings({
+            let page_indicator = page_indicator.clone();
+            move || page_indicator.go_to_settings()
+        });
         for grid in &real_grids {
             page_indicator.register_page(grid.widget(), grid.clone());
         }
