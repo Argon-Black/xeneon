@@ -17,14 +17,27 @@
 //! empty, shows a short message and a button that jumps straight to
 //! Settings (`hue_bridge::open_settings`) instead of the four rows.
 //!
-//! **Deliberately not built yet** (this is step 2 of a 4-step plan agreed
-//! with the user): which lights/rooms appear on a given card is not yet
-//! configurable - `pick_default_lights` below just takes the first four
-//! lights, sorted by name, every card the same. Step 3 adds a settings
-//! panel to choose up to four specific lights or rooms per instance. Step
-//! 4 adds a color/color-temperature popover on tapping a light's name
-//! (currently a no-op) - deliberately not wired to anything here, since
-//! what it should open depends on `BulbType`, not yet decided in detail.
+//! Step 3 (this pass) adds the settings panel: a "par pièce"/"par lumière"
+//! mode toggle plus a checklist (capped at `MAX_ROWS`) of whichever the
+//! bridge currently reports, persisted as `SelectionMode` + a list of ids
+//! (`hue_bridge::Light::id` in light mode, `hue_bridge::Room::id` in room
+//! mode - see `resolve_selection`). A room row addresses the room's
+//! `grouped_light` resource (every light in the room moves together, one
+//! PUT) rather than any single light in it - see `hue_bridge::Room`'s own
+//! doc comment. A freshly-spawned card (or one saved before step 3, whose
+//! `selected` list is empty/missing) falls back to `pick_default_lights`'s
+//! "first four lights, alphabetically" behavior, in light mode, so
+//! existing placed widgets keep showing *something* sensible after this
+//! update rather than going blank.
+//!
+//! **Deliberately not built yet**: step 4 adds a color/color-temperature
+//! popover on tapping a light's name (currently a no-op) - not wired to
+//! anything here, since what it should open depends on `BulbType`, not yet
+//! decided in detail. A room row's status/icon also doesn't aggregate its
+//! member lights' actual colors (see `room_to_entry`) - it always renders
+//! as a plain dimmable accent-colored entry, a deliberate simplification
+//! since color aggregation across a whole room is its own small design
+//! question, not needed for the picker mechanics this step is about.
 //!
 //! Bulb-type detection (`hue_bridge::BulbType`) drives the status line's
 //! wording (`"72% · Couleur"` / `"100% · 2700K"` / `"45%"`) and, for a
@@ -60,7 +73,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
 
 use crate::config_store;
-use crate::hue_bridge::{self, BulbType, Light};
+use crate::hue_bridge::{self, BulbType, Light, Room};
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::WidgetInstance;
 
@@ -214,43 +227,146 @@ fn hex_to_rgb(hex: &str) -> (f64, f64, f64) {
     (component(0..2), component(2..4), component(4..6))
 }
 
-/// Status line text for one light - wording depends on `BulbType` (see the
+/// Status line text for one entry - wording depends on `BulbType` (see the
 /// module doc comment): a color light names its capability generically
 /// ("Couleur") rather than trying to name the actual hue, a
-/// color-temperature light shows its Kelvin value, a dimmable light shows
-/// only the percentage. Any type shows the plain "off" text while `on` is
-/// `false`, since a bridge keeps reporting the brightness/color a light
-/// will return to rather than resetting it to zero.
-fn status_text(light: &Light) -> String {
-    if !light.on {
+/// color-temperature light shows its Kelvin value, a dimmable light (and
+/// every room entry, which always carries `BulbType::Dimmable` - see
+/// `room_to_entry`) shows only the percentage. Any type shows the plain
+/// "off" text while `on` is `false`, since a bridge keeps reporting the
+/// brightness/color a light will return to rather than resetting it to
+/// zero.
+fn status_text(entry: &CardEntry) -> String {
+    if !entry.on {
         return i18n::t("widgets.hue.status.off");
     }
-    let percent = light.brightness_percent.round() as i64;
-    match light.bulb_type {
+    let percent = entry.brightness_percent.round() as i64;
+    match entry.bulb_type {
         BulbType::Color => i18n::t_args("widgets.hue.status.color", &[("percent", &percent.to_string())]),
         BulbType::ColorTemperature => {
-            let kelvin = light.mirek.map(|mirek| (1_000_000.0 / mirek).round() as i64).unwrap_or(0);
+            let kelvin = entry.mirek.map(|mirek| (1_000_000.0 / mirek).round() as i64).unwrap_or(0);
             i18n::t_args("widgets.hue.status.temperature", &[("percent", &percent.to_string()), ("kelvin", &kelvin.to_string())])
         }
         BulbType::Dimmable => i18n::t_args("widgets.hue.status.dimmable", &[("percent", &percent.to_string())]),
     }
 }
 
-/// Picks which lights a freshly-spawned card shows, until step 3's
-/// settings panel exists to make this a real choice - the first
-/// `MAX_ROWS` lights, alphabetically, the same for every card. Sorting by
-/// name (rather than bridge order, which is closer to "creation order" and
-/// not meaningful to a user) at least makes the arbitrary choice
-/// deterministic and easy to reason about while testing.
+/// Picks which lights a card shows when its own selection is empty - the
+/// first `MAX_ROWS` lights, alphabetically, the same for every such card.
+/// Used both as the very first cut's only behavior (step 2) and, now, as
+/// light-mode's fallback when nothing has been explicitly picked yet (a
+/// freshly spawned card, or one saved before step 3 existed) - see the
+/// module doc comment. Sorting by name (rather than bridge order, closer
+/// to "creation order" and not meaningful to a user) at least makes the
+/// arbitrary choice deterministic and easy to reason about while testing.
 fn pick_default_lights(mut lights: Vec<Light>) -> Vec<Light> {
     lights.sort_by(|a, b| a.name.cmp(&b.name));
     lights.truncate(MAX_ROWS);
     lights
 }
 
-/// One row's live widgets plus the light id it currently shows - `None`
-/// while unused (fewer than `MAX_ROWS` lights exist) or before the first
-/// successful fetch, in which case the row stays hidden.
+/// Whether a card shows individually-picked lights or whole rooms (each
+/// addressed through its `grouped_light` resource) - persisted as a plain
+/// `"light"`/`"room"` string (see `HueState::to_dict`/`apply_dict`) rather
+/// than deriving `serde::Serialize` on the enum, matching how every other
+/// widget in this codebase hand-writes its own `to_dict`/`apply_dict`
+/// instead of deriving one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionMode {
+    Light,
+    Room,
+}
+
+/// What a row is currently bound to and, therefore, which bridge endpoint
+/// a toggle/drag on it should PUT to - `hue_bridge::set_light` for a
+/// single light, `hue_bridge::set_grouped_light` for a whole room. Carries
+/// the id itself so the toggle/drag handlers (see `build_content`) don't
+/// need a second lookup back into `HueState::all_lights`/`all_rooms` to
+/// find out which bridge call to make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CardTarget {
+    Light(String),
+    Room(String),
+}
+
+/// One row's worth of display data, regardless of whether it came from a
+/// single light or a whole room - lets `apply_entry_to_row` (and
+/// everything downstream of it: the draw funcs, the status text) stay
+/// oblivious to `SelectionMode`, same "normalize once, render generically"
+/// shape `hue_bridge::Light` itself already gives the widget for a single
+/// light.
+struct CardEntry {
+    target: CardTarget,
+    name: String,
+    on: bool,
+    brightness_percent: f64,
+    bulb_type: BulbType,
+    display_color_hex: String,
+    mirek: Option<f64>,
+}
+
+fn light_to_entry(light: &Light) -> CardEntry {
+    CardEntry {
+        target: CardTarget::Light(light.id.clone()),
+        name: light.name.clone(),
+        on: light.on,
+        brightness_percent: light.brightness_percent,
+        bulb_type: light.bulb_type,
+        display_color_hex: light.display_color_hex.clone(),
+        mirek: light.mirek,
+    }
+}
+
+/// A room always renders as a plain dimmable, accent-colored entry - see
+/// the module doc comment on why this step doesn't attempt to aggregate
+/// its member lights' actual colors into one on-card swatch.
+fn room_to_entry(room: &Room) -> CardEntry {
+    CardEntry {
+        target: CardTarget::Room(room.grouped_light_id.clone()),
+        name: room.name.clone(),
+        on: room.on,
+        brightness_percent: room.brightness_percent,
+        bulb_type: BulbType::Dimmable,
+        display_color_hex: ACCENT_COLOR_HEX.to_string(),
+        mirek: None,
+    }
+}
+
+/// Resolves the card's current settings (`mode` + `selected_ids`) against
+/// the bridge's latest data into the up-to-`MAX_ROWS` entries to actually
+/// show - the one place `HueState::refresh` needs to call to go from "raw
+/// bridge data" to "what this specific card displays". An id in
+/// `selected_ids` naming a light/room that no longer exists (deleted or
+/// renamed on the bridge since this card was configured) is simply
+/// skipped, same "stale setting doesn't error, just quietly does less"
+/// tolerance `system_sq.rs`'s disk-path setting already has.
+fn resolve_selection(mode: SelectionMode, selected_ids: &[String], all_lights: &[Light], all_rooms: &[Room]) -> Vec<CardEntry> {
+    match mode {
+        SelectionMode::Light if selected_ids.is_empty() => pick_default_lights(all_lights.to_vec()).iter().map(light_to_entry).collect(),
+        SelectionMode::Light => selected_ids
+            .iter()
+            .filter_map(|id| all_lights.iter().find(|light| &light.id == id))
+            .take(MAX_ROWS)
+            .map(light_to_entry)
+            .collect(),
+        SelectionMode::Room if selected_ids.is_empty() => {
+            let mut rooms: Vec<&Room> = all_rooms.iter().collect();
+            rooms.sort_by(|a, b| a.name.cmp(&b.name));
+            rooms.truncate(MAX_ROWS);
+            rooms.iter().map(|room| room_to_entry(room)).collect()
+        }
+        SelectionMode::Room => selected_ids
+            .iter()
+            .filter_map(|id| all_rooms.iter().find(|room| &room.id == id))
+            .take(MAX_ROWS)
+            .map(room_to_entry)
+            .collect(),
+    }
+}
+
+/// One row's live widgets plus which light/room it currently shows -
+/// `None` while unused (fewer than `MAX_ROWS` entries selected) or before
+/// the first successful fetch, in which case the row stays hidden.
 struct LightRow {
     container: gtk::Box,
     icon_area: gtk::DrawingArea,
@@ -258,7 +374,7 @@ struct LightRow {
     name_label: gtk::Label,
     status_label: gtk::Label,
     bar_area: gtk::DrawingArea,
-    light_id: RefCell<Option<String>>,
+    target: RefCell<Option<CardTarget>>,
     on: Cell<bool>,
     fraction: Cell<f64>,
     rgb: Cell<(f64, f64, f64)>,
@@ -311,7 +427,7 @@ fn build_row() -> LightRow {
         name_label,
         status_label,
         bar_area,
-        light_id: RefCell::new(None),
+        target: RefCell::new(None),
         on: Cell::new(false),
         fraction: Cell::new(0.0),
         rgb: Cell::new((0.6, 0.6, 0.6)),
@@ -320,8 +436,10 @@ fn build_row() -> LightRow {
 
 /// All of this widget's live state - one instance per placed card. Owns
 /// the bridge connection's *view* only (the connection itself lives in
-/// `Config`/`hue_bridge.rs`, shared) - this struct just remembers which
-/// four lights are currently shown and their last-fetched values.
+/// `Config`/`hue_bridge.rs`, shared) - this struct remembers this card's
+/// own selection settings, the last full fetch (so the settings panel has
+/// something to build its checklist from without a fetch of its own - see
+/// `on_data_changed`), and the up-to-`MAX_ROWS` entries currently shown.
 struct HueState {
     badge_label: gtk::Label,
     rows_box: gtk::Box,
@@ -334,6 +452,25 @@ struct HueState {
     /// overwriting fresher data, same technique `weather.rs`'s own
     /// `fetch_generation` uses.
     generation: Cell<u64>,
+
+    mode: Cell<SelectionMode>,
+    /// `hue_bridge::Light::id`s in light mode, `hue_bridge::Room::id`s in
+    /// room mode - meaning depends entirely on `mode`, same as
+    /// `resolve_selection`'s own parameter.
+    selected_ids: RefCell<Vec<String>>,
+    /// The bridge's full light/room list as of the last successful fetch -
+    /// what `resolve_selection` picks from, and what the settings panel's
+    /// checklist is built from (see `on_data_changed`). Empty until the
+    /// very first fetch lands.
+    all_lights: RefCell<Vec<Light>>,
+    all_rooms: RefCell<Vec<Room>>,
+    /// Called at the end of every successful `refresh()` - lets the
+    /// settings panel (built once, before any fetch has necessarily
+    /// completed) rebuild its checklist as soon as real data arrives,
+    /// without polling or a fetch of its own. Never called on a failed
+    /// fetch, so the panel keeps showing its last-known-good list rather
+    /// than flashing empty on a momentary network hiccup.
+    data_listeners: RefCell<Vec<Box<dyn Fn()>>>,
 }
 
 impl HueState {
@@ -344,24 +481,28 @@ impl HueState {
         self.badge_label.set_label("");
     }
 
-    fn show_rows(&self, lights: &[Light]) {
+    fn show_rows(&self, entries: &[CardEntry]) {
         self.rows_box.set_visible(true);
         self.empty_box.set_visible(false);
 
-        let on_count = lights.iter().filter(|l| l.on).count();
+        let on_count = entries.iter().filter(|e| e.on).count();
         self.badge_label.set_label(&i18n::t_args(
             "widgets.hue.badge",
-            &[("on", &on_count.to_string()), ("total", &lights.len().to_string())],
+            &[("on", &on_count.to_string()), ("total", &entries.len().to_string())],
         ));
 
-        for (row, light) in self.rows.iter().zip(lights.iter()) {
-            apply_light_to_row(row, light);
+        for (row, entry) in self.rows.iter().zip(entries.iter()) {
+            apply_entry_to_row(row, entry);
             row.container.set_visible(true);
         }
-        for row in self.rows.iter().skip(lights.len()) {
-            *row.light_id.borrow_mut() = None;
+        for row in self.rows.iter().skip(entries.len()) {
+            *row.target.borrow_mut() = None;
             row.container.set_visible(false);
         }
+    }
+
+    fn on_data_changed(&self, listener: impl Fn() + 'static) {
+        self.data_listeners.borrow_mut().push(Box::new(listener));
     }
 
     /// Re-reads the bridge (if configured) and updates every row -
@@ -385,38 +526,65 @@ impl HueState {
             }
             match result {
                 Ok(Ok(resources)) => {
-                    let lights = pick_default_lights(hue_bridge::parse_lights(&resources));
-                    if lights.is_empty() {
+                    let lights = hue_bridge::parse_lights(&resources);
+                    let rooms = hue_bridge::parse_rooms(&resources, &lights);
+                    let entries = resolve_selection(state.mode.get(), &state.selected_ids.borrow(), &lights, &rooms);
+                    *state.all_lights.borrow_mut() = lights;
+                    *state.all_rooms.borrow_mut() = rooms;
+
+                    if entries.is_empty() {
                         state.show_empty("widgets.hue.empty.no_lights");
                     } else {
-                        state.show_rows(&lights);
+                        state.show_rows(&entries);
+                    }
+                    for listener in state.data_listeners.borrow().iter() {
+                        listener();
                     }
                 }
                 _ => state.show_empty("widgets.hue.empty.unreachable"),
             }
         });
     }
+
+    fn to_dict(&self) -> serde_json::Value {
+        serde_json::json!({
+            "mode": match self.mode.get() { SelectionMode::Light => "light", SelectionMode::Room => "room" },
+            "selected": self.selected_ids.borrow().clone(),
+        })
+    }
+
+    fn apply_dict(self: &Rc<Self>, data: &serde_json::Value) {
+        if let Some(mode) = data.get("mode").and_then(|v| v.as_str()) {
+            self.mode.set(if mode == "room" { SelectionMode::Room } else { SelectionMode::Light });
+        }
+        if let Some(selected) = data.get("selected").and_then(|v| v.as_array()) {
+            *self.selected_ids.borrow_mut() = selected.iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+        }
+    }
 }
 
-/// Updates one row's widgets to show `light`'s current state - shared by
+/// Updates one row's widgets to show `entry`'s current state - shared by
 /// `HueState::show_rows` (a full refresh) and the toggle/drag handlers'
 /// optimistic local update (see `build_content`'s gesture wiring), so both
-/// paths render a light exactly the same way.
-fn apply_light_to_row(row: &Rc<LightRow>, light: &Light) {
-    *row.light_id.borrow_mut() = Some(light.id.clone());
-    row.on.set(light.on);
-    row.fraction.set((light.brightness_percent / 100.0).clamp(0.0, 1.0));
-    row.rgb.set(hex_to_rgb(&light.display_color_hex));
+/// paths render an entry exactly the same way.
+fn apply_entry_to_row(row: &Rc<LightRow>, entry: &CardEntry) {
+    *row.target.borrow_mut() = Some(entry.target.clone());
+    row.on.set(entry.on);
+    row.fraction.set((entry.brightness_percent / 100.0).clamp(0.0, 1.0));
+    row.rgb.set(hex_to_rgb(&entry.display_color_hex));
 
-    row.name_label.set_label(&light.name);
-    let status_hex = if light.on { light.display_color_hex.clone() } else { "rgba(255,255,255,0.4)".to_string() };
+    row.name_label.set_label(&entry.name);
+    // Pango's `<span color="...">` only accepts `#rrggbb`/`#rrggbbaa` or a
+    // named color, never a CSS `rgba(...)` function - `#ffffff66` (~40%
+    // alpha) is the off-state equivalent of the on-state's plain hex.
+    let status_hex = if entry.on { entry.display_color_hex.clone() } else { "#ffffff66".to_string() };
     row.status_label.set_markup(&format!(
         "<span size=\"small\" color=\"{}\">{}</span>",
         gtk::glib::markup_escape_text(&status_hex),
-        gtk::glib::markup_escape_text(&status_text(light))
+        gtk::glib::markup_escape_text(&status_text(entry))
     ));
 
-    let texture = if light.on { load_on_icon(&light.display_color_hex) } else { load_off_icon() };
+    let texture = if entry.on { load_on_icon(&entry.display_color_hex) } else { load_off_icon() };
     row.icon_image.set_paintable(texture.as_ref());
     row.icon_area.queue_draw();
     row.bar_area.queue_draw();
@@ -480,7 +648,19 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
     empty_box.append(&empty_button);
     root.append(&empty_box);
 
-    let state = Rc::new(HueState { badge_label, rows_box, empty_box, empty_message, rows, generation: Cell::new(0) });
+    let state = Rc::new(HueState {
+        badge_label,
+        rows_box,
+        empty_box,
+        empty_message,
+        rows,
+        generation: Cell::new(0),
+        mode: Cell::new(SelectionMode::Light),
+        selected_ids: RefCell::new(Vec::new()),
+        all_lights: RefCell::new(Vec::new()),
+        all_rooms: RefCell::new(Vec::new()),
+        data_listeners: RefCell::new(Vec::new()),
+    });
 
     for row in &state.rows {
         row.icon_area.set_draw_func({
@@ -500,7 +680,7 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
             let state = state.clone();
             move |gesture, _n_press, _x, _y| {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
-                let Some(light_id) = row.light_id.borrow().clone() else { return };
+                let Some(target) = row.target.borrow().clone() else { return };
                 let new_on = !row.on.get();
                 // Optimistic local update first (instant visual feedback),
                 // then the real PUT, then a full refresh to reconcile -
@@ -517,7 +697,7 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
                 let brightness = row.fraction.get() * 100.0;
                 let state = state.clone();
                 gtk::glib::spawn_future_local(async move {
-                    let _ = gtk::gio::spawn_blocking(move || hue_bridge::set_light(&ip, &username, &light_id, new_on, brightness)).await;
+                    let _ = gtk::gio::spawn_blocking(move || put_target(&ip, &username, &target, new_on, brightness)).await;
                     state.refresh();
                 });
             }
@@ -562,7 +742,7 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
                 row.fraction.set(fraction);
                 row.bar_area.queue_draw();
 
-                let Some(light_id) = row.light_id.borrow().clone() else { return };
+                let Some(target) = row.target.borrow().clone() else { return };
                 let brightness = fraction * 100.0;
                 // Tapping/dragging the bar always turns the light on, even
                 // from 0% - matches the mockup's "tapping the bar also
@@ -577,7 +757,7 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
                 let (Some(ip), Some(username)) = (config.hue_bridge_ip, config.hue_username) else { return };
                 let state = state.clone();
                 gtk::glib::spawn_future_local(async move {
-                    let _ = gtk::gio::spawn_blocking(move || hue_bridge::set_light(&ip, &username, &light_id, new_on, brightness)).await;
+                    let _ = gtk::gio::spawn_blocking(move || put_target(&ip, &username, &target, new_on, brightness)).await;
                     state.refresh();
                 });
             }
@@ -606,6 +786,17 @@ fn build_content() -> (Rc<HueState>, gtk::Widget) {
     (state, root.upcast())
 }
 
+/// Sends one on/brightness PUT to whichever bridge endpoint `target`
+/// addresses - a single light or a whole room's `grouped_light` - shared
+/// by the icon-toggle and brightness-drag handlers in `build_content` so
+/// neither has to duplicate this branch itself.
+fn put_target(ip: &str, username: &str, target: &CardTarget, on: bool, brightness_percent: f64) -> Result<(), String> {
+    match target {
+        CardTarget::Light(id) => hue_bridge::set_light(ip, username, id, on, brightness_percent),
+        CardTarget::Room(grouped_light_id) => hue_bridge::set_grouped_light(ip, username, grouped_light_id, on, brightness_percent),
+    }
+}
+
 /// Re-derives a `#rrggbb` string from the `(r, g, b)` 0.0-1.0 floats
 /// `LightRow::rgb` stores - the inverse of `hex_to_rgb`, needed because
 /// the optimistic toggle handlers only have the row's already-converted
@@ -617,19 +808,217 @@ fn hex_from_rgb((r, g, b): (f64, f64, f64)) -> String {
     format!("#{:02x}{:02x}{:02x}", to_byte(r), to_byte(g), to_byte(b))
 }
 
+/// Builds the settings panel: a "par pièce"/"par lumière" mode toggle,
+/// then a scrollable checklist of whichever the current mode offers -
+/// rooms or lights, up to `MAX_ROWS` checked at once (the rest disabled
+/// once that cap is reached, rather than showing an error). The list is
+/// rebuilt from `state.all_lights`/`all_rooms` both once up front (using
+/// whatever's already cached - empty on a card added seconds ago, whose
+/// first fetch hasn't landed yet) and every time `state.on_data_changed`
+/// fires, so it fills in on its own once real data arrives rather than
+/// needing the popover reopened.
+fn build_settings(state: Rc<HueState>) -> gtk::Widget {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    root.set_size_request(240, -1);
+
+    let mode_label = gtk::Label::new(Some(&i18n::t("widgets.hue.settings.mode.title")));
+    mode_label.set_hexpand(true);
+    mode_label.set_halign(gtk::Align::Start);
+    let room_button = gtk::ToggleButton::with_label(&i18n::t("widgets.hue.settings.mode.room"));
+    let light_button = gtk::ToggleButton::with_label(&i18n::t("widgets.hue.settings.mode.light"));
+    light_button.set_group(Some(&room_button));
+    room_button.set_active(state.mode.get() == SelectionMode::Room);
+    light_button.set_active(state.mode.get() == SelectionMode::Light);
+    let mode_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    mode_row.append(&mode_label);
+    mode_row.append(&room_button);
+    mode_row.append(&light_button);
+    root.append(&mode_row);
+
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroller.set_propagate_natural_height(true);
+    scroller.set_max_content_height(220);
+    let list_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    scroller.set_child(Some(&list_box));
+    root.append(&scroller);
+
+    let loading_label = gtk::Label::new(Some(&i18n::t("widgets.hue.settings.loading")));
+    loading_label.add_css_class("dim-label");
+    loading_label.set_halign(gtk::Align::Start);
+
+    // Rebuilds `list_box` from whichever the current mode offers -
+    // `Rc<dyn Fn()>` (not a plain closure) since it needs to be called
+    // both immediately below and from `state.on_data_changed`'s own
+    // `'static` listener list, and it recursively needs to call itself
+    // indirectly through the checkbox toggle handlers below (unchecking
+    // one once the cap is no longer reached should re-enable the rest).
+    let rebuild: Rc<dyn Fn()> = {
+        let state = state.clone();
+        let list_box = list_box.clone();
+        let loading_label = loading_label.clone();
+        Rc::new(move || {
+            while let Some(child) = list_box.first_child() {
+                list_box.remove(&child);
+            }
+
+            // (id, label) pairs - a room's label is just its name; a
+            // light's label includes its room, when known, so two
+            // same-named lights in different rooms (or an unassigned
+            // one) stay distinguishable in the list.
+            let items: Vec<(String, String)> = match state.mode.get() {
+                SelectionMode::Room => {
+                    let mut rooms = state.all_rooms.borrow().clone();
+                    rooms.sort_by(|a, b| a.name.cmp(&b.name));
+                    // "(N)" rather than a translated "N lights" - a bare
+                    // count sidesteps French/English singular-plural
+                    // agreement for a detail this minor, while `light_ids`
+                    // (otherwise unread) still earns its place here.
+                    rooms.into_iter().map(|room| (room.id, format!("{} ({})", room.name, room.light_ids.len()))).collect()
+                }
+                SelectionMode::Light => {
+                    let mut lights = state.all_lights.borrow().clone();
+                    lights.sort_by(|a, b| a.name.cmp(&b.name));
+                    lights
+                        .into_iter()
+                        .map(|light| {
+                            let label = match &light.room_name {
+                                Some(room_name) => format!("{} · {room_name}", light.name),
+                                None => light.name.clone(),
+                            };
+                            (light.id, label)
+                        })
+                        .collect()
+                }
+            };
+
+            if items.is_empty() {
+                list_box.append(&loading_label);
+                return;
+            }
+
+            let selected = state.selected_ids.borrow().clone();
+            let check_buttons: Rc<RefCell<Vec<gtk::CheckButton>>> = Rc::new(RefCell::new(Vec::new()));
+            for (id, label) in items {
+                let check = gtk::CheckButton::with_label(&label);
+                check.set_active(selected.contains(&id));
+                list_box.append(&check);
+                check_buttons.borrow_mut().push(check.clone());
+
+                check.connect_toggled({
+                    let state = state.clone();
+                    let id = id.clone();
+                    let check_buttons = check_buttons.clone();
+                    move |check| {
+                        let mut selected = state.selected_ids.borrow_mut();
+                        if check.is_active() {
+                            if !selected.contains(&id) {
+                                selected.push(id.clone());
+                            }
+                        } else {
+                            selected.retain(|existing| existing != &id);
+                        }
+                        let at_cap = selected.len() >= MAX_ROWS;
+                        drop(selected);
+
+                        // Disables every unchecked box once the cap is
+                        // reached (rather than rejecting a click past it),
+                        // and re-enables them all the moment a selection
+                        // drops back under the cap - simpler than an error
+                        // message, and makes the limit discoverable just
+                        // by trying to check a 5th box.
+                        for other in check_buttons.borrow().iter() {
+                            if !other.is_active() {
+                                other.set_sensitive(!at_cap);
+                            }
+                        }
+
+                        state.refresh();
+                    }
+                });
+            }
+
+            // The cap may already be reached from a restored selection -
+            // apply the same disabling pass once up front, not just from
+            // inside a toggle handler.
+            let at_cap = state.selected_ids.borrow().len() >= MAX_ROWS;
+            if at_cap {
+                for check in check_buttons.borrow().iter() {
+                    if !check.is_active() {
+                        check.set_sensitive(false);
+                    }
+                }
+            }
+        })
+    };
+    rebuild();
+    state.on_data_changed({
+        let rebuild = rebuild.clone();
+        move || rebuild()
+    });
+
+    room_button.connect_toggled({
+        let state = state.clone();
+        let rebuild = rebuild.clone();
+        move |button| {
+            if !button.is_active() {
+                return;
+            }
+            state.mode.set(SelectionMode::Room);
+            state.selected_ids.borrow_mut().clear();
+            rebuild();
+            state.refresh();
+        }
+    });
+    light_button.connect_toggled({
+        let state = state.clone();
+        let rebuild = rebuild.clone();
+        move |button| {
+            if !button.is_active() {
+                return;
+            }
+            state.mode.set(SelectionMode::Light);
+            state.selected_ids.borrow_mut().clear();
+            rebuild();
+            state.refresh();
+        }
+    });
+
+    root.upcast()
+}
+
 pub fn spawn() -> WidgetInstance {
-    let (_state, content) = build_content();
+    let (state, content) = build_content();
+    let settings = build_settings(state.clone());
     WidgetInstance {
         content,
-        settings: None,
-        to_dict: Box::new(|| serde_json::Value::Null),
+        settings: Some(settings),
+        to_dict: Box::new(move || state.to_dict()),
         on_reset: None,
         on_change_ready: None,
     }
 }
 
-pub fn restore(_data: &serde_json::Value) -> WidgetInstance {
-    spawn()
+pub fn restore(data: &serde_json::Value) -> WidgetInstance {
+    let (state, content) = build_content();
+    // Applied *before* `build_settings` (which reads `state.mode`/
+    // `selected_ids` to set the toggle buttons' initial state) and before
+    // `build_content`'s own first `refresh()` fetch can possibly have
+    // landed yet (the network round trip can't complete within this still-
+    // synchronous function call) - so the very first real data to arrive
+    // already resolves against the restored selection, not the default
+    // one `build_content` started with.
+    state.apply_dict(data);
+    let settings = build_settings(state.clone());
+    WidgetInstance {
+        content,
+        settings: Some(settings),
+        to_dict: Box::new(move || state.to_dict()),
+        on_reset: None,
+        on_change_ready: None,
+    }
 }
 
 #[cfg(test)]

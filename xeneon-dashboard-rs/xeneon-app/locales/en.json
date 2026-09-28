@@ -381,5 +381,9 @@
   "widgets.hue.empty.not_configured": "No bridge configured",
   "widgets.hue.empty.no_lights": "No light found",
   "widgets.hue.empty.unreachable": "Bridge unreachable",
-  "widgets.hue.empty.open_settings": "Open settings"
+  "widgets.hue.empty.open_settings": "Open settings",
+  "widgets.hue.settings.mode.title": "Show by",
+  "widgets.hue.settings.mode.room": "Room",
+  "widgets.hue.settings.mode.light": "Light",
+  "widgets.hue.settings.loading": "Loading…"
 }

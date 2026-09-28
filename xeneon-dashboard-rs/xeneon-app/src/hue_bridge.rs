@@ -335,16 +335,26 @@ pub struct Light {
     pub mirek: Option<f64>,
 }
 
-/// A room/zone grouping, only for the light ids it directly contains -
-/// enough for the widget's settings picker (step 3) to offer "this whole
-/// room" as one unit. Deliberately doesn't carry a `grouped_light` id of
-/// its own (the bridge's own way to address "all lights in this room" in
-/// one PUT) - not needed until a card actually offers a room-level
-/// toggle, at which point it belongs here.
+/// A room, resolved enough for the widget to show and control it as one
+/// unit (step 3's "par pièce" mode): its own light ids (for the settings
+/// picker to describe what's inside, and to compute an aggregate on-count
+/// elsewhere if ever needed), plus the room's `grouped_light` resource -
+/// the bridge's own way to address "every light in this room" in one PUT -
+/// and that group's current on/brightness state, read exactly like a
+/// single light's own `on`/`dimming` fields.
+///
+/// `grouped_light_id` is `None` for a room with no lights at all (the
+/// bridge still creates the room resource, but never a `grouped_light`
+/// service for it) - such a room is filtered out before it ever reaches
+/// the widget (see `parse_rooms`), since there'd be nothing to control.
 #[derive(Debug, Clone)]
 pub struct Room {
+    pub id: String,
     pub name: String,
     pub light_ids: Vec<String>,
+    pub grouped_light_id: String,
+    pub on: bool,
+    pub brightness_percent: f64,
 }
 
 /// Converts a CIE xy chromaticity + brightness into an approximate sRGB
@@ -484,19 +494,45 @@ pub fn parse_lights(resources: &serde_json::Value) -> Vec<Light> {
         .collect()
 }
 
-/// Groups `lights` by room, in room-discovery order (whatever order the
-/// bridge listed `room` resources in) - a light with no resolved room
-/// (rare: only possible if a device belongs to no room at all) simply
-/// doesn't appear in any `Room::light_ids`, not dropped from `lights`
-/// itself.
-pub fn group_by_room(resources: &serde_json::Value, lights: &[Light]) -> Vec<Room> {
+/// Resolves every room with at least one light into a `Room`, in
+/// room-discovery order (whatever order the bridge listed `room` resources
+/// in) - a light with no resolved room (rare: only possible if a device
+/// belongs to no room at all) simply doesn't appear in any
+/// `Room::light_ids`, not dropped from `lights` itself. A room with no
+/// `grouped_light` service (only possible for a room with zero lights) is
+/// skipped entirely - see `Room`'s own doc comment on why.
+pub fn parse_rooms(resources: &serde_json::Value, lights: &[Light]) -> Vec<Room> {
     let data = resources.get("data").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+    // grouped_light id -> (on, brightness), same shape `parse_lights`
+    // reads off a plain light resource's own `on`/`dimming` fields.
+    let mut grouped_light_state: std::collections::HashMap<String, (bool, f64)> = std::collections::HashMap::new();
+    for entry in &data {
+        if entry.get("type").and_then(|v| v.as_str()) != Some("grouped_light") {
+            continue;
+        }
+        let Some(id) = entry.get("id").and_then(|v| v.as_str()) else { continue };
+        let on = entry.get("on").and_then(|v| v.get("on")).and_then(|v| v.as_bool()).unwrap_or(false);
+        let brightness = entry.get("dimming").and_then(|v| v.get("brightness")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        grouped_light_state.insert(id.to_string(), (on, brightness));
+    }
+
     data.iter()
         .filter(|entry| entry.get("type").and_then(|v| v.as_str()) == Some("room"))
-        .filter_map(|entry| entry.get("metadata")?.get("name")?.as_str().map(str::to_string))
-        .map(|room_name| {
-            let light_ids = lights.iter().filter(|light| light.room_name.as_deref() == Some(room_name.as_str())).map(|light| light.id.clone()).collect();
-            Room { name: room_name, light_ids }
+        .filter_map(|entry| {
+            let id = entry.get("id")?.as_str()?.to_string();
+            let name = entry.get("metadata")?.get("name")?.as_str()?.to_string();
+            let grouped_light_id = entry
+                .get("services")?
+                .as_array()?
+                .iter()
+                .find(|service| service.get("rtype").and_then(|v| v.as_str()) == Some("grouped_light"))?
+                .get("rid")?
+                .as_str()?
+                .to_string();
+            let (on, brightness_percent) = grouped_light_state.get(&grouped_light_id).copied().unwrap_or((false, 0.0));
+            let light_ids = lights.iter().filter(|light| light.room_name.as_deref() == Some(name.as_str())).map(|light| light.id.clone()).collect();
+            Some(Room { id, name, light_ids, grouped_light_id, on, brightness_percent })
         })
         .collect()
 }
@@ -517,6 +553,32 @@ pub fn set_light(ip: &str, username: &str, light_id: &str, on: bool, brightness_
     });
 
     ureq::put(format!("https://{ip}/clip/v2/resource/light/{light_id}"))
+        .header("hue-application-key", username)
+        .config()
+        .tls_config(bridge_tls_config())
+        .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
+        .build()
+        .send_json(&body)
+        .map_err(|err| err.to_string())?;
+
+    Ok(())
+}
+
+/// Same as `set_light`, but addresses a room's `grouped_light` resource
+/// instead - every light in the room picks up the change at once. Kept as
+/// a separate function rather than a `group: bool` parameter on
+/// `set_light`: the two hit different resource paths
+/// (`/resource/light/<id>` vs `/resource/grouped_light/<id>`) and nothing
+/// else about the request differs, so a shared body-building helper would
+/// save a few lines at the cost of a less obvious call site - not a good
+/// trade for two call sites this small.
+pub fn set_grouped_light(ip: &str, username: &str, grouped_light_id: &str, on: bool, brightness_percent: f64) -> Result<(), String> {
+    let body = serde_json::json!({
+        "on": {"on": on},
+        "dimming": {"brightness": brightness_percent.clamp(0.0, 100.0)},
+    });
+
+    ureq::put(format!("https://{ip}/clip/v2/resource/grouped_light/{grouped_light_id}"))
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
@@ -579,11 +641,12 @@ mod tests {
     }
 
     /// A small but complete CLIP v2 fixture: one room ("Salon") with one
-    /// device holding one color light, and one color-temperature light
-    /// with no room at all (an unassigned accessory, which does happen in
-    /// practice) - enough to exercise every branch of `parse_lights`
-    /// (color vs color-temperature vs missing room) and `group_by_room` in
-    /// one fixture rather than a separate one per case.
+    /// device holding one color light plus its `grouped_light` service,
+    /// and one color-temperature light with no room at all (an unassigned
+    /// accessory, which does happen in practice) - enough to exercise
+    /// every branch of `parse_lights` (color vs color-temperature vs
+    /// missing room) and `parse_rooms` in one fixture rather than a
+    /// separate one per case.
     fn fixture_resources() -> serde_json::Value {
         serde_json::json!({
             "data": [
@@ -591,7 +654,8 @@ mod tests {
                     "type": "room",
                     "id": "room-1",
                     "metadata": {"name": "Salon"},
-                    "children": [{"rid": "device-1", "rtype": "device"}]
+                    "children": [{"rid": "device-1", "rtype": "device"}],
+                    "services": [{"rid": "grouped-1", "rtype": "grouped_light"}]
                 },
                 {
                     "type": "device",
@@ -613,6 +677,12 @@ mod tests {
                     "on": {"on": false},
                     "dimming": {"brightness": 40.0},
                     "color_temperature": {"mirek": 366.0}
+                },
+                {
+                    "type": "grouped_light",
+                    "id": "grouped-1",
+                    "on": {"on": true},
+                    "dimming": {"brightness": 72.0}
                 }
             ]
         })
@@ -638,12 +708,29 @@ mod tests {
     }
 
     #[test]
-    fn groups_only_the_room_resolved_light() {
+    fn resolves_room_with_its_grouped_light_state() {
         let lights = parse_lights(&fixture_resources());
-        let rooms = group_by_room(&fixture_resources(), &lights);
+        let rooms = parse_rooms(&fixture_resources(), &lights);
         assert_eq!(rooms.len(), 1);
         assert_eq!(rooms[0].name, "Salon");
         assert_eq!(rooms[0].light_ids, vec!["light-1".to_string()]);
+        assert_eq!(rooms[0].grouped_light_id, "grouped-1");
+        assert!(rooms[0].on);
+        assert_eq!(rooms[0].brightness_percent, 72.0);
+    }
+
+    #[test]
+    fn room_with_no_grouped_light_service_is_skipped() {
+        let resources = serde_json::json!({
+            "data": [{
+                "type": "room",
+                "id": "room-2",
+                "metadata": {"name": "Cave"},
+                "children": [],
+                "services": []
+            }]
+        });
+        assert!(parse_rooms(&resources, &[]).is_empty());
     }
 
     #[test]

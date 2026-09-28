@@ -381,5 +381,9 @@
   "widgets.hue.empty.not_configured": "Aucun bridge configuré",
   "widgets.hue.empty.no_lights": "Aucune lumière trouvée",
   "widgets.hue.empty.unreachable": "Bridge injoignable",
-  "widgets.hue.empty.open_settings": "Ouvrir les réglages"
+  "widgets.hue.empty.open_settings": "Ouvrir les réglages",
+  "widgets.hue.settings.mode.title": "Afficher par",
+  "widgets.hue.settings.mode.room": "Pièce",
+  "widgets.hue.settings.mode.light": "Lumière",
+  "widgets.hue.settings.loading": "Chargement…"
 }
