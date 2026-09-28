@@ -282,7 +282,7 @@ fn ensure_css_installed() {
         let Some(display) = gtk::gdk::Display::default() else { return };
         let css = gtk::CssProvider::new();
         css.load_from_string(&format!(
-            ".xeneon-hue-title {{ font-weight: 500; color: #ffffff; }}\n\
+            ".xeneon-hue-title {{ font-size: 17px; font-weight: 500; color: #ffffff; }}\n\
              .xeneon-hue-badge {{ background-color: rgba(242, 165, 65, 0.15); \
              border-radius: 13px; padding: 5px 12px; }}\n\
              .xeneon-hue-badge-label {{ font-size: 14px; font-weight: 500; color: {ACCENT_COLOR_HEX}; }}\n\

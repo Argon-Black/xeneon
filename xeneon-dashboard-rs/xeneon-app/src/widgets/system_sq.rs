@@ -26,14 +26,21 @@
 //! scoping a `font-size` rule to just this card, since a plain shared class
 //! can't hold a different pixel size per instance.
 //!
-//! The hostname's base size (`BASE_HOSTNAME_FONT_PX`) and the OS badge's
-//! fixed size (`OS_BADGE_FONT_PX`) deliberately match `network_sq.rs`'s own
+//! The hostname's fixed size (`HOSTNAME_FONT_PX`) and the OS badge's fixed
+//! size (`OS_BADGE_FONT_PX`) deliberately match `network_sq.rs`'s own
 //! `BASE_NAME_FONT_PX`/`VPN_BADGE_FONT_PX` - after comparing both cards
 //! side by side, the user asked for "LAN"/"Aorus" and the VPN/OS badges to
 //! read at the same size across both widgets rather than each picking its
 //! own. The OS badge, like `network_sq.rs`'s VPN badge, stays a fixed size
 //! rather than joining `content_scale`: neither badge grows with the rest
-//! of its card's text.
+//! of its card's text. Once the Hue widget shipped its own fixed-size
+//! header (icon + title, no `content_scale` of its own at all), the user
+//! asked for this card's header to match that too: the hostname moved out
+//! of the scaled-with-the-gauges group into its own fixed size (still
+//! `HOSTNAME_FONT_PX`, no longer multiplied by `content_scale`), and a
+//! plain white header icon (`load_header_icon`, `assets/system-icon.svg`)
+//! was added in front of it - this card had none at all before, unlike
+//! `network_sq.rs`'s Wi-Fi/Ethernet icon or `hue.rs`'s bulb icon.
 //!
 //! CPU load needs two `/proc/stat` samples to turn into a percentage (see
 //! `system_info::CpuTimes::usage_percent_since`), so this widget keeps the
@@ -45,6 +52,7 @@
 //! refresh.
 
 use gtk::prelude::*;
+use log::warn;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,12 +94,27 @@ const DEFAULT_DISK_COLOR_HEX: &str = "#8fd3c7";
 /// part of `content_scale` for the same reason that badge isn't either
 /// (see the module doc comment).
 const OS_BADGE_FONT_PX: i32 = 15;
-/// Base sizes at `content_scale == 1.0` (100%) for every bit of text that
-/// *is* resizable - the hostname, the three gauges' labels/values, and the
-/// four footer lines. Same "BASE_* times content_scale" technique as
-/// `temp_gauge.rs`. `BASE_HOSTNAME_FONT_PX` matches `network_sq.rs`'s
-/// `BASE_NAME_FONT_PX` (see the module doc comment).
-const BASE_HOSTNAME_FONT_PX: f64 = 17.0;
+/// Fixed, not part of `content_scale` - matches `network_sq.rs`'s
+/// `BASE_NAME_FONT_PX` and `hue.rs`'s `.xeneon-hue-title` at their own
+/// default/fixed sizes, per the user's own side-by-side comparison of all
+/// three cards' headers. Was scaled alongside the gauges/footer until
+/// then (still `BASE_HOSTNAME_FONT_PX`, still multiplied by
+/// `content_scale`) - pulled out for the same reason `OS_BADGE_FONT_PX`
+/// above already stays fixed: a card header's own title text shouldn't
+/// grow or shrink just because its *body* content scale changed.
+const HOSTNAME_FONT_PX: i32 = 17;
+/// Same value as `network_sq.rs`'s `BASE_HEADER_ICON_PX`/`hue.rs`'s
+/// `HEADER_ICON_PX` - the third leg of the same header harmonization as
+/// `HOSTNAME_FONT_PX` above. Always plain white (`ICON_PATH`'s own fill,
+/// loaded unmodified - see `load_header_icon`), unlike `network_sq.rs`'s
+/// user-colorable header icon: this card has no equivalent "icon color"
+/// setting to hang a color picker off, and white is that widget's own
+/// default anyway.
+const HEADER_ICON_PX: i32 = 18;
+const ICON_PATH: &str = "assets/system-icon.svg";
+/// Base sizes at `content_scale == 1.0` (100%) for the text that *is*
+/// still resizable - the three gauges' labels/values and the four footer
+/// lines. Same "BASE_* times content_scale" technique as `temp_gauge.rs`.
 const BASE_GAUGE_LABEL_FONT_PX: f64 = 14.0;
 const BASE_GAUGE_VALUE_FONT_PX: f64 = 15.0;
 const BASE_FOOTER_FONT_PX: f64 = 12.0;
@@ -119,7 +142,7 @@ fn ensure_css_installed() {
         // class can't hold a different pixel size per card. The OS badge
         // stays fixed-size here, same as `network_sq.rs`'s VPN badge.
         css.load_from_string(&format!(
-            ".xeneon-sysinfo-hostname {{ font-weight: 500; color: #ffffff; }}\n\
+            ".xeneon-sysinfo-hostname {{ font-size: {HOSTNAME_FONT_PX}px; font-weight: 500; color: #ffffff; }}\n\
              .xeneon-sysinfo-os-badge {{ background-color: rgba(255, 255, 255, 0.08); \
              border-radius: 10px; padding: 3px 10px; }}\n\
              .xeneon-sysinfo-os-badge-label {{ font-size: {OS_BADGE_FONT_PX}px; color: rgba(255, 255, 255, 0.7); }}\n\
@@ -129,6 +152,29 @@ fn ensure_css_installed() {
         ));
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
     });
+}
+
+thread_local! {
+    // Always the same (plain white, untinted) texture, so - unlike
+    // `network_sq.rs`'s per-color-tinted `TINTED_ICON_TEXTURES` cache -
+    // this only ever needs to load the file once, same shape as
+    // `hue.rs`'s own `OFF_ICON_TEXTURE`.
+    static HEADER_ICON_TEXTURE: RefCell<Option<gtk::gdk::Texture>> = const { RefCell::new(None) };
+}
+
+fn load_header_icon() -> Option<gtk::gdk::Texture> {
+    HEADER_ICON_TEXTURE.with(|cache| {
+        if let Some(texture) = cache.borrow().as_ref() {
+            return Some(texture.clone());
+        }
+        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ICON_PATH);
+        let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&full_path, HEADER_ICON_PX * 4, HEADER_ICON_PX * 4)
+            .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
+            .inspect_err(|err| warn!("failed to load {}: {err}", full_path.display()))
+            .ok();
+        *cache.borrow_mut() = texture.clone();
+        texture
+    })
 }
 
 // Per-instance scaled font-size rule for the resizable text, keyed by each
@@ -299,16 +345,17 @@ impl SystemSqState {
     /// Rebuilds this instance's scaled-text CSS rule from `content_scale` -
     /// called from `set_content_scale` and once up front in `build_content`.
     /// Mirrors `network_sq.rs::apply_content_scale`, minus the icon
-    /// re-tinting this widget has no icon to redo.
+    /// re-tinting this widget has no icon to redo (the new header icon is
+    /// always plain white, unlike `network_sq.rs`'s user-colorable one).
+    /// The hostname is deliberately *not* in this scaled rule - see its own
+    /// static CSS rule's doc comment for why.
     fn apply_content_scale(&self) {
         let scale = self.content_scale.get();
         let rule = format!(
-            ".{class} .xeneon-sysinfo-hostname {{ font-size: {hostname}px; }}\n\
-             .{class} .xeneon-sysinfo-gauge-label {{ font-size: {label}px; }}\n\
+            ".{class} .xeneon-sysinfo-gauge-label {{ font-size: {label}px; }}\n\
              .{class} .xeneon-sysinfo-gauge-value {{ font-size: {value}px; }}\n\
              .{class} .xeneon-sysinfo-footer {{ font-size: {footer}px; }}",
             class = self.css_class,
-            hostname = (BASE_HOSTNAME_FONT_PX * scale).round() as i32,
             label = (BASE_GAUGE_LABEL_FONT_PX * scale).round() as i32,
             value = (BASE_GAUGE_VALUE_FONT_PX * scale).round() as i32,
             footer = (BASE_FOOTER_FONT_PX * scale).round() as i32,
@@ -471,6 +518,10 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
     root.set_margin_bottom(10);
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let header_icon = gtk::Image::new();
+    header_icon.set_pixel_size(HEADER_ICON_PX);
+    header_icon.set_paintable(load_header_icon().as_ref());
+    header.append(&header_icon);
     let hostname_label = gtk::Label::new(None);
     hostname_label.add_css_class("xeneon-sysinfo-hostname");
     hostname_label.set_halign(gtk::Align::Start);

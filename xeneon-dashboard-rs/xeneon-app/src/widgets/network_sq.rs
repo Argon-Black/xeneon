@@ -102,7 +102,13 @@ const BASE_HEADER_ICON_PX: f64 = 18.0;
 const BASE_NAME_FONT_PX: f64 = 17.0;
 const MIN_CONTENT_SCALE: f64 = 0.5;
 const MAX_CONTENT_SCALE: f64 = 2.0;
-const DEFAULT_CONTENT_SCALE: f64 = 1.25;
+/// 100% - dropped from an earlier 125% so a freshly-placed card's icon
+/// (18px) and name (17px) read at the same size as `hue.rs`'s own fixed
+/// header icon/title by default, per the user's own side-by-side
+/// comparison once the Hue widget existed. Still a starting point, not a
+/// floor or ceiling - the slider still reaches up to `MAX_CONTENT_SCALE`
+/// for anyone who wants it bigger again.
+const DEFAULT_CONTENT_SCALE: f64 = 1.0;
 
 /// Bounds the rate line's width - it no longer includes the interface name
 /// (moved to its own header row), so unlike the earlier text-only version
