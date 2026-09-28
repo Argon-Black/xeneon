@@ -101,6 +101,13 @@ const REFRESH_INTERVAL_SECONDS: u32 = 4;
 /// doc comment on why this design fits 4, not 5) - also the hard cap
 /// `pick_default_lights` and, later, step 3's settings panel both respect.
 const MAX_ROWS: usize = 4;
+/// Cap on the settings panel's scrollable checklist height - tall enough
+/// to show most households' room/light count without scrolling at all
+/// (the popover has the vertical room for it), a scrollbar only kicking in
+/// past that. Bumped from an earlier, much tighter 220px after real
+/// hands-on feedback: that cap scrolled far sooner than the popover's own
+/// available space actually needed it to.
+const SETTINGS_LIST_MAX_HEIGHT_PX: i32 = 340;
 
 const ICON_ON_PATH: &str = "assets/hue-bulb-icon.svg";
 const ICON_OFF_PATH: &str = "assets/hue-bulb-off-icon.svg";
@@ -1314,7 +1321,7 @@ fn build_settings(state: Rc<HueState>) -> gtk::Widget {
     let scroller = gtk::ScrolledWindow::new();
     scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroller.set_propagate_natural_height(true);
-    scroller.set_max_content_height(220);
+    scroller.set_max_content_height(SETTINGS_LIST_MAX_HEIGHT_PX);
     let list_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
     scroller.set_child(Some(&list_box));
     root.append(&scroller);
@@ -1338,11 +1345,17 @@ fn build_settings(state: Rc<HueState>) -> gtk::Widget {
                 list_box.remove(&child);
             }
 
-            // (id, label) pairs - a room's label is just its name; a
-            // light's label includes its room, when known, so two
-            // same-named lights in different rooms (or an unassigned
-            // one) stay distinguishable in the list.
-            let items: Vec<(String, String)> = match state.mode.get() {
+            // Room mode is one flat, unheaded group of (id, label) pairs -
+            // a room's label is just its name (plus how many lights it
+            // has). Light mode groups lights by their own room, each
+            // group headed by that room's name, so scanning a long list
+            // doesn't mean reading every light's own room suffix one by
+            // one - lights with no resolved room fall into one final
+            // "Sans pièce"/"No room" group instead of being dropped or
+            // scattered. Groups (and lights within a group) are sorted by
+            // name; the unassigned group always sorts last, regardless of
+            // its own name, since it isn't a real room a user chose.
+            let groups: Vec<(Option<String>, Vec<(String, String)>)> = match state.mode.get() {
                 SelectionMode::Room => {
                     let mut rooms = state.all_rooms.borrow().clone();
                     rooms.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1350,68 +1363,93 @@ fn build_settings(state: Rc<HueState>) -> gtk::Widget {
                     // count sidesteps French/English singular-plural
                     // agreement for a detail this minor, while `light_ids`
                     // (otherwise unread) still earns its place here.
-                    rooms.into_iter().map(|room| (room.id, format!("{} ({})", room.name, room.light_ids.len()))).collect()
+                    let items = rooms.into_iter().map(|room| (room.id, format!("{} ({})", room.name, room.light_ids.len()))).collect();
+                    vec![(None, items)]
                 }
                 SelectionMode::Light => {
-                    let mut lights = state.all_lights.borrow().clone();
-                    lights.sort_by(|a, b| a.name.cmp(&b.name));
-                    lights
+                    let mut by_room: std::collections::HashMap<Option<String>, Vec<(String, String)>> = std::collections::HashMap::new();
+                    for light in state.all_lights.borrow().iter() {
+                        by_room.entry(light.room_name.clone()).or_default().push((light.id.clone(), light.name.clone()));
+                    }
+                    let unassigned = by_room.remove(&None);
+
+                    let mut room_names: Vec<String> = by_room.keys().filter_map(|name| name.clone()).collect();
+                    room_names.sort();
+
+                    let mut groups: Vec<(Option<String>, Vec<(String, String)>)> = room_names
                         .into_iter()
-                        .map(|light| {
-                            let label = match &light.room_name {
-                                Some(room_name) => format!("{} · {room_name}", light.name),
-                                None => light.name.clone(),
-                            };
-                            (light.id, label)
+                        .map(|name| {
+                            let mut lights = by_room.remove(&Some(name.clone())).unwrap_or_default();
+                            lights.sort_by(|a, b| a.1.cmp(&b.1));
+                            (Some(name), lights)
                         })
-                        .collect()
+                        .collect();
+                    if let Some(mut lights) = unassigned {
+                        lights.sort_by(|a, b| a.1.cmp(&b.1));
+                        groups.push((Some(i18n::t("widgets.hue.settings.unassigned")), lights));
+                    }
+                    groups
                 }
             };
 
-            if items.is_empty() {
+            if groups.iter().all(|(_, items)| items.is_empty()) {
                 list_box.append(&loading_label);
                 return;
             }
 
             let selected = state.selected_ids.borrow().clone();
             let check_buttons: Rc<RefCell<Vec<gtk::CheckButton>>> = Rc::new(RefCell::new(Vec::new()));
-            for (id, label) in items {
-                let check = gtk::CheckButton::with_label(&label);
-                check.set_active(selected.contains(&id));
-                list_box.append(&check);
-                check_buttons.borrow_mut().push(check.clone());
-
-                check.connect_toggled({
-                    let state = state.clone();
-                    let id = id.clone();
-                    let check_buttons = check_buttons.clone();
-                    move |check| {
-                        let mut selected = state.selected_ids.borrow_mut();
-                        if check.is_active() {
-                            if !selected.contains(&id) {
-                                selected.push(id.clone());
-                            }
-                        } else {
-                            selected.retain(|existing| existing != &id);
-                        }
-                        let at_cap = selected.len() >= MAX_ROWS;
-                        drop(selected);
-
-                        // Disables every unchecked box once the cap is
-                        // reached (rather than rejecting a click past it),
-                        // and re-enables them all the moment a selection
-                        // drops back under the cap - simpler than an error
-                        // message, and makes the limit discoverable just
-                        // by trying to check a 5th box.
-                        for other in check_buttons.borrow().iter() {
-                            if !other.is_active() {
-                                other.set_sensitive(!at_cap);
-                            }
-                        }
-
-                        state.refresh();
+            for (group_index, (header, items)) in groups.into_iter().enumerate() {
+                if let Some(header_text) = header {
+                    if group_index > 0 {
+                        list_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
                     }
-                });
+                    let header_label = gtk::Label::new(Some(&header_text));
+                    header_label.add_css_class("dim-label");
+                    header_label.add_css_class("caption");
+                    header_label.set_halign(gtk::Align::Start);
+                    list_box.append(&header_label);
+                }
+
+                for (id, label) in items {
+                    let check = gtk::CheckButton::with_label(&label);
+                    check.set_active(selected.contains(&id));
+                    list_box.append(&check);
+                    check_buttons.borrow_mut().push(check.clone());
+
+                    check.connect_toggled({
+                        let state = state.clone();
+                        let id = id.clone();
+                        let check_buttons = check_buttons.clone();
+                        move |check| {
+                            let mut selected = state.selected_ids.borrow_mut();
+                            if check.is_active() {
+                                if !selected.contains(&id) {
+                                    selected.push(id.clone());
+                                }
+                            } else {
+                                selected.retain(|existing| existing != &id);
+                            }
+                            let at_cap = selected.len() >= MAX_ROWS;
+                            drop(selected);
+
+                            // Disables every unchecked box once the cap is
+                            // reached (rather than rejecting a click past
+                            // it), and re-enables them all the moment a
+                            // selection drops back under the cap - simpler
+                            // than an error message, and makes the limit
+                            // discoverable just by trying to check a 5th
+                            // box.
+                            for other in check_buttons.borrow().iter() {
+                                if !other.is_active() {
+                                    other.set_sensitive(!at_cap);
+                                }
+                            }
+
+                            state.refresh();
+                        }
+                    });
+                }
             }
 
             // The cap may already be reached from a restored selection -
