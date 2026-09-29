@@ -544,6 +544,13 @@ struct LightRow {
     /// `apply_entry_to_row` doesn't need `variant` threaded all the way
     /// down to it just for this one field.
     status_size_keyword: &'static str,
+    /// The on/brightness state this row most recently asked to send to
+    /// the bridge - see `queue_put`'s own doc comment (audit finding
+    /// 2026-09-29): coalesces rapid taps/drags into one in-order PUT
+    /// sequence instead of firing overlapping requests with no ordering
+    /// guarantee.
+    put_pending: RefCell<Option<(bool, f64)>>,
+    put_in_flight: Cell<bool>,
 }
 
 fn build_row(variant: &CardVariant) -> LightRow {
@@ -602,7 +609,46 @@ fn build_row(variant: &CardVariant) -> LightRow {
         bulb_type: Cell::new(BulbType::Dimmable),
         mirek: Cell::new(None),
         status_size_keyword: variant.status_size_keyword,
+        put_pending: RefCell::new(None),
+        put_in_flight: Cell::new(false),
     }
+}
+
+/// Sends `(on, brightness_percent)` for `target` to the bridge, coalescing
+/// with whatever else is already in flight for this same row rather than
+/// firing a new overlapping request: if a PUT for this row is currently
+/// running, this just overwrites `put_pending` with the latest desired
+/// state and returns - the running loop below picks it up as soon as its
+/// current request finishes. Audit finding 2026-09-29 (PLAUSIBLE): the
+/// icon-toggle and brightness-drag handlers used to each spawn their own
+/// independent `spawn_blocking` with no sequencing, so two rapid taps
+/// could complete out of order under any network jitter and leave the
+/// bridge not matching the user's actual last tap until the next
+/// periodic `refresh()` (up to 4s later) corrected it. This guarantees
+/// requests for one row are sent strictly in the order queued, and only
+/// the most recently queued state survives to be sent once the previous
+/// one settles - refresh() runs once, after the queue fully drains,
+/// rather than after every individual PUT.
+fn queue_put(row: &Rc<LightRow>, state: &Rc<HueState>, ip: String, username: String, target: CardTarget, on: bool, brightness: f64) {
+    *row.put_pending.borrow_mut() = Some((on, brightness));
+    if row.put_in_flight.replace(true) {
+        return;
+    }
+    let row = row.clone();
+    let state = state.clone();
+    gtk::glib::spawn_future_local(async move {
+        loop {
+            let Some((on, brightness)) = row.put_pending.borrow_mut().take() else { break };
+            let ip = ip.clone();
+            let username = username.clone();
+            let target = target.clone();
+            if let Ok(Err(err)) = gtk::gio::spawn_blocking(move || put_target(&ip, &username, &target, on, brightness)).await {
+                warn!("failed to set Hue on/brightness: {err}");
+            }
+        }
+        row.put_in_flight.set(false);
+        state.refresh();
+    });
 }
 
 /// All of this widget's live state - one instance per placed card. Owns
@@ -898,13 +944,7 @@ fn build_content(variant: CardVariant) -> (Rc<HueState>, gtk::Widget) {
                 let config = config_store::get();
                 let (Some(ip), Some(username)) = (config.hue_bridge_ip, config.hue_username) else { return };
                 let brightness = row.fraction.get() * 100.0;
-                let state = state.clone();
-                gtk::glib::spawn_future_local(async move {
-                    if let Ok(Err(err)) = gtk::gio::spawn_blocking(move || put_target(&ip, &username, &target, new_on, brightness)).await {
-                        warn!("failed to set Hue on/brightness: {err}");
-                    }
-                    state.refresh();
-                });
+                queue_put(&row, &state, ip, username, target, new_on, brightness);
             }
         });
         row.icon_area.add_controller(toggle_click);
@@ -975,13 +1015,7 @@ fn build_content(variant: CardVariant) -> (Rc<HueState>, gtk::Widget) {
 
                 let config = config_store::get();
                 let (Some(ip), Some(username)) = (config.hue_bridge_ip, config.hue_username) else { return };
-                let state = state.clone();
-                gtk::glib::spawn_future_local(async move {
-                    if let Ok(Err(err)) = gtk::gio::spawn_blocking(move || put_target(&ip, &username, &target, new_on, brightness)).await {
-                        warn!("failed to set Hue on/brightness: {err}");
-                    }
-                    state.refresh();
-                });
+                queue_put(&row, &state, ip, username, target, new_on, brightness);
             }
         });
         row.bar_area.add_controller(drag);
