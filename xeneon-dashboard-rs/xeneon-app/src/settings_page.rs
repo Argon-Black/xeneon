@@ -1432,12 +1432,15 @@ fn is_http_url(text: &str) -> bool {
 }
 
 /// A light dotted-quad check, not a full IP parser (same "no new
-/// dependency for this" reasoning as `is_http_url` above) - good enough to
-/// catch a typo in the Hue bridge IP field before it's saved, not meant to
-/// validate every edge case (e.g. this accepts "999.999.999.999").
+/// dependency for this" reasoning as `is_http_url` above) - catches a typo
+/// in the Hue bridge IP field before it's saved. Also requires a private
+/// (RFC1918) range via `hue_bridge::is_private_ipv4` - audit finding
+/// 2026-09-29 (Medium): this used to accept any well-formed address
+/// (each octet 0-255), and the resulting `hue_bridge_ip` is trusted with
+/// certificate verification disabled for every future request to it.
 fn is_valid_ipv4(text: &str) -> bool {
     let parts: Vec<&str> = text.split('.').collect();
-    parts.len() == 4 && parts.iter().all(|part| part.parse::<u8>().is_ok())
+    parts.len() == 4 && parts.iter().all(|part| part.parse::<u8>().is_ok()) && hue_bridge::is_private_ipv4(text)
 }
 
 /// The Hue pairing row's subtitle for the bridge currently on file -

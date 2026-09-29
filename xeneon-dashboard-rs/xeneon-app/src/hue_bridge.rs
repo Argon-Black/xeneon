@@ -231,11 +231,32 @@ fn probe_bridge_name(ip: &str) -> Option<String> {
     json.get("name").and_then(|v| v.as_str()).map(str::to_string)
 }
 
-/// Runs both discovery methods, merges the IPs (deduped), and probes each
-/// one for its bridge name - the one function Settings' discovery button
-/// actually calls. Blocking (network + a subprocess), so the caller must
-/// run this off the GTK main thread (`gio::spawn_blocking`, same as every
-/// blocking call `weather.rs` makes - see that module's own doc comment).
+/// Whether `ip` (a dotted-quad string) falls in a private (RFC1918)
+/// range - `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`. A Hue bridge
+/// is a LAN device; nothing claiming to be one from outside those ranges
+/// is trusted. Audit finding 2026-09-29 (Medium): `discover_cloud`'s
+/// response is unvalidated data from an external network response
+/// (`discovery.meethue.com`), previously fed straight into
+/// `probe_bridge_name` - which disables TLS certificate verification for
+/// whatever answers at that address - with no check that it's even
+/// plausibly a local device. Also used by `settings_page.rs`'s
+/// `is_valid_ipv4` to close the same gap for a manually-typed IP.
+pub fn is_private_ipv4(ip: &str) -> bool {
+    let octets: Vec<u8> = ip.split('.').filter_map(|part| part.parse::<u8>().ok()).collect();
+    if octets.len() != 4 {
+        return false;
+    }
+    let (a, b) = (octets[0], octets[1]);
+    a == 10 || (a == 172 && (16..=31).contains(&b)) || (a == 192 && b == 168)
+}
+
+/// Runs both discovery methods, merges the IPs (deduped), keeps only the
+/// ones in a private range (see `is_private_ipv4`), and probes each
+/// surviving one for its bridge name - the one function Settings'
+/// discovery button actually calls. Blocking (network + a subprocess),
+/// so the caller must run this off the GTK main thread
+/// (`gio::spawn_blocking`, same as every blocking call `weather.rs`
+/// makes - see that module's own doc comment).
 pub fn discover_all() -> Vec<DiscoveredBridge> {
     let mut ips = discover_avahi();
     for ip in discover_cloud() {
@@ -243,6 +264,7 @@ pub fn discover_all() -> Vec<DiscoveredBridge> {
             ips.push(ip);
         }
     }
+    ips.retain(|ip| is_private_ipv4(ip));
 
     ips.into_iter().map(|ip| DiscoveredBridge { name: probe_bridge_name(&ip), ip }).collect()
 }
@@ -754,6 +776,26 @@ mod tests {
     #[test]
     fn devicetype_stays_under_bridge_limit() {
         assert!(device_type().len() <= 40);
+    }
+
+    #[test]
+    fn private_ipv4_ranges_are_accepted() {
+        assert!(is_private_ipv4("10.0.0.1"));
+        assert!(is_private_ipv4("10.255.255.255"));
+        assert!(is_private_ipv4("172.16.0.1"));
+        assert!(is_private_ipv4("172.31.255.255"));
+        assert!(is_private_ipv4("192.168.1.42"));
+    }
+
+    #[test]
+    fn public_or_malformed_addresses_are_rejected() {
+        assert!(!is_private_ipv4("8.8.8.8"));
+        assert!(!is_private_ipv4("172.32.0.1")); // just outside 172.16.0.0/12
+        assert!(!is_private_ipv4("172.15.255.255")); // just below the range
+        assert!(!is_private_ipv4("193.168.1.1")); // not 192.168.*
+        assert!(!is_private_ipv4("not.an.ip.address"));
+        assert!(!is_private_ipv4("10.0.0"));
+        assert!(!is_private_ipv4("300.0.0.1"));
     }
 
     /// A small but complete CLIP v2 fixture: one room ("Salon") with one
