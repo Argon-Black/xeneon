@@ -710,6 +710,20 @@ impl HueState {
         ));
 
         for (row, entry) in self.rows.iter().zip(entries.iter()) {
+            // Audit finding 2026-09-29: skip while a PUT is still in
+            // flight for this row (see `queue_put`) - the periodic timer
+            // firing mid-request would otherwise briefly repaint the row
+            // back to the bridge's pre-change state (still reflecting
+            // what it was before this row's own optimistic update took
+            // effect), flashing for one tick before `queue_put`'s own
+            // trailing `refresh()` corrects it again. Leaving the
+            // optimistic value in place until that settles is simpler
+            // than reconciling it against a response that's already
+            // stale by the time it arrives.
+            if row.put_in_flight.get() {
+                row.container.set_visible(true);
+                continue;
+            }
             apply_entry_to_row(row, entry);
             row.container.set_visible(true);
         }
