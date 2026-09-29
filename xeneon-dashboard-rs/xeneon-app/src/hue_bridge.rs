@@ -296,6 +296,26 @@ pub fn pair(ip: &str) -> Result<Paired, PairError> {
 /// (step 2), once its exact field needs (color mode, on/off, brightness,
 /// room membership) are being written against real code, not guessed
 /// ahead of time.
+/// The Hue CLIP v2 API answers every request - success or a
+/// resource-level failure alike - with HTTP 200 and a body shaped
+/// `{"errors": [...], "data": [...]}`; a resource that no longer exists
+/// (deleted on the bridge since this app's last fetch), an out-of-range
+/// value, or similar comes back this way rather than as an HTTP error
+/// status. Audit finding 2026-09-29 (PLAUSIBLE): every `set_*` PUT below
+/// used to only check the transport-level `Result` from `ureq`, never
+/// this body, so a bridge-level failure silently read as success. Called
+/// by each of them after `send_json` succeeds transport-wise.
+fn check_clip_errors(body: &str) -> Result<(), String> {
+    let json: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    let errors = json.get("errors").and_then(|v| v.as_array()).map(Vec::as_slice).unwrap_or(&[]);
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let messages: Vec<String> =
+        errors.iter().filter_map(|e| e.get("description").and_then(|d| d.as_str()).map(str::to_string)).collect();
+    Err(if messages.is_empty() { "bridge reported an error with no description".to_string() } else { messages.join("; ") })
+}
+
 pub fn fetch_resources(ip: &str, username: &str) -> Result<serde_json::Value, String> {
     let response = ureq::get(format!("https://{ip}/clip/v2/resource"))
         .header("hue-application-key", username)
@@ -568,7 +588,7 @@ pub fn set_light(ip: &str, username: &str, light_id: &str, on: bool, brightness_
         "dimming": {"brightness": brightness_percent.clamp(0.0, 100.0)},
     });
 
-    ureq::put(format!("https://{ip}/clip/v2/resource/light/{light_id}"))
+    let mut response = ureq::put(format!("https://{ip}/clip/v2/resource/light/{light_id}"))
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
@@ -578,7 +598,8 @@ pub fn set_light(ip: &str, username: &str, light_id: &str, on: bool, brightness_
         .send_json(&body)
         .map_err(|err| err.to_string())?;
 
-    Ok(())
+    let body = response.body_mut().read_to_string().map_err(|err| err.to_string())?;
+    check_clip_errors(&body)
 }
 
 /// Same as `set_light`, but addresses a room's `grouped_light` resource
@@ -595,7 +616,7 @@ pub fn set_grouped_light(ip: &str, username: &str, grouped_light_id: &str, on: b
         "dimming": {"brightness": brightness_percent.clamp(0.0, 100.0)},
     });
 
-    ureq::put(format!("https://{ip}/clip/v2/resource/grouped_light/{grouped_light_id}"))
+    let mut response = ureq::put(format!("https://{ip}/clip/v2/resource/grouped_light/{grouped_light_id}"))
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
@@ -605,7 +626,8 @@ pub fn set_grouped_light(ip: &str, username: &str, grouped_light_id: &str, on: b
         .send_json(&body)
         .map_err(|err| err.to_string())?;
 
-    Ok(())
+    let body = response.body_mut().read_to_string().map_err(|err| err.to_string())?;
+    check_clip_errors(&body)
 }
 
 /// A single-light PUT (`resource_kind = "light"`) or a whole-room one
@@ -622,7 +644,7 @@ pub fn set_grouped_light(ip: &str, username: &str, grouped_light_id: &str, on: b
 pub fn set_color_xy(ip: &str, username: &str, resource_kind: &str, id: &str, x: f64, y: f64) -> Result<(), String> {
     let body = serde_json::json!({"color": {"xy": {"x": x, "y": y}}});
 
-    ureq::put(format!("https://{ip}/clip/v2/resource/{resource_kind}/{id}"))
+    let mut response = ureq::put(format!("https://{ip}/clip/v2/resource/{resource_kind}/{id}"))
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
@@ -632,7 +654,8 @@ pub fn set_color_xy(ip: &str, username: &str, resource_kind: &str, id: &str, x: 
         .send_json(&body)
         .map_err(|err| err.to_string())?;
 
-    Ok(())
+    let body = response.body_mut().read_to_string().map_err(|err| err.to_string())?;
+    check_clip_errors(&body)
 }
 
 /// Same shape as `set_color_xy`, for a color-temperature-only bulb
@@ -648,7 +671,7 @@ pub fn set_color_temperature_mirek(ip: &str, username: &str, resource_kind: &str
     let mirek = mirek.round().clamp(1.0, u32::MAX as f64) as u32;
     let body = serde_json::json!({"color_temperature": {"mirek": mirek}});
 
-    ureq::put(format!("https://{ip}/clip/v2/resource/{resource_kind}/{id}"))
+    let mut response = ureq::put(format!("https://{ip}/clip/v2/resource/{resource_kind}/{id}"))
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
@@ -658,7 +681,8 @@ pub fn set_color_temperature_mirek(ip: &str, username: &str, resource_kind: &str
         .send_json(&body)
         .map_err(|err| err.to_string())?;
 
-    Ok(())
+    let body = response.body_mut().read_to_string().map_err(|err| err.to_string())?;
+    check_clip_errors(&body)
 }
 
 /// Converts an sRGB color (0.0-1.0 components, e.g. from a
