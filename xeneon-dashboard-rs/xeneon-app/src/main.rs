@@ -26,8 +26,10 @@
 //! directly here. Both paths share the actual page-creation logic (see
 //! `AppModel::create_page`/`scroll_to_once_sized`).
 //!
-//! Startup layout: whatever was saved (or one empty page, on a first run
-//! with nothing saved yet), then - only in dev mode (see
+//! Startup layout: whatever was saved, or on a genuine first run (no
+//! saved widgets or pages at all - e.g. a fresh install) a single page
+//! with a default Clock widget rather than a totally empty page - then,
+//! only in dev mode (see
 //! `dev_mode_enabled`) - a page with one of every dummy widget size, to
 //! validate the base interaction stack (move, snap, delete, page swipe)
 //! on demand. That page's own widgets are never persisted (see
@@ -295,11 +297,8 @@ impl SimpleComponent for AppModel {
 
         // A page can have saved state (a custom name) with no widgets on
         // it at all, so the page count has to account for both sources -
-        // mirrors window.py's _build_pages_from_state. No saved state
-        // anywhere (first run) falls back to a single empty page rather
-        // than the Python original's hardcoded demo layout (registry
-        // exists now, but a demo layout is a deliberate choice to make
-        // later, not a side effect of this refactor).
+        // mirrors window.py's _build_pages_from_state.
+        let is_first_run = widget_states.is_empty() && page_states.is_empty();
         let max_page_index =
             widget_states.iter().map(|s| s.page_index).chain(page_states.iter().map(|s| s.page_index)).max();
         // Audit finding 2026-09-18: previously `m + 1` with no cap - a
@@ -353,6 +352,21 @@ impl SimpleComponent for AppModel {
             match widgets::registry::find(&state.kind) {
                 Some(descriptor) => grid.restore_widget(state, descriptor.card_title_key, (descriptor.restore)(&state.content)),
                 None => warn!("widget {} has unknown kind {:?}, skipped", state.id, state.kind),
+            }
+        }
+
+        // Genuine first run (fresh install, nothing saved at all yet) -
+        // seed page 1 with a default Clock rather than leaving it
+        // totally empty, matching the Python original's own "not a
+        // hardcoded demo layout" spirit but with exactly one widget
+        // rather than a full mockup. Goes through the normal
+        // `add_widget` path (same as picking Clock from the widget
+        // picker), so it's saved to disk like any other widget and
+        // behaves like one from here on - delete it and it's gone for
+        // good, same as any other widget the user placed themselves.
+        if is_first_run {
+            if let Some(descriptor) = widgets::registry::find("clock") {
+                real_grids[0].add_widget(descriptor.card_title_key, descriptor.kind, descriptor.size, (descriptor.spawn)());
             }
         }
 
