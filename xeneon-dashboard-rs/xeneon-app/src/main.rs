@@ -35,6 +35,16 @@
 //! on demand. That page's own widgets are never persisted (see
 //! `WidgetGrid::ephemeral`), so dev-only test content can never leak into
 //! the real saved layout.
+//!
+//! Dev mode also sandboxes *everything else* persisted: `main()` redirects
+//! `config::config_dir()` into a scratch directory, wiped clean at the
+//! start of every dev-mode launch, before any of the above even runs - so
+//! a dev-mode session always starts from the same genuine first-run state
+//! (handy for repeatedly checking what a fresh Flatpak install actually
+//! looks like) and can never read or write the real saved layout under
+//! `config::real_config_dir()`. Only the dev-mode on/off flag itself
+//! survives outside the sandbox, deliberately - see
+//! `config::dev_mode_flag_enabled`/`set_dev_mode_flag`.
 
 mod appearance_css;
 mod appearance_popover;
@@ -85,12 +95,16 @@ pub(crate) const APP_ID: &str = "com.n3tlab.XeneonDashboardRust";
 /// instead of creating another page.
 const MAX_PAGES: usize = 10;
 
-/// Set `XENEON_DEV_MODE=1` (any value works) to show the dummy-widgets
-/// test page at startup and the settings page's restart button. Runtime
-/// env var rather than a Cargo feature flag so it can be toggled
-/// per-launch without recompiling.
+/// Whether dev mode is on: either `XENEON_DEV_MODE=1` (any value works,
+/// for a one-off launch that doesn't persist anything - e.g. `cargo run`)
+/// or the persisted marker file the Settings dev-mode switch writes (see
+/// `config::dev_mode_flag_enabled`), so the choice survives a real restart
+/// (closing the app and reopening it later), not just the self-relaunch
+/// the switch itself also does. Shows the dummy-widgets test page at
+/// startup and the settings page's restart button; also gates the sandbox
+/// redirection set up in `main()` below.
 pub(crate) fn dev_mode_enabled() -> bool {
-    std::env::var("XENEON_DEV_MODE").is_ok()
+    std::env::var("XENEON_DEV_MODE").is_ok() || config::dev_mode_flag_enabled()
 }
 
 struct AppModel {
@@ -675,7 +689,7 @@ impl SimpleComponent for AppModel {
                     self.scroll_to_once_sized(index);
                 }
             }
-            AppMsg::Relaunch => settings_page::relaunch(dev_mode_enabled()),
+            AppMsg::Relaunch => settings_page::relaunch(),
             AppMsg::Quit => relm4::main_application().quit(),
             AppMsg::ShowHelp => self.help_overlay.open(),
             AppMsg::PageEmptied(page_id) => {
@@ -857,7 +871,30 @@ fn register_app_icon(display: &gtk::gdk::Display) {
     gtk::Window::set_default_icon_name(APP_ID);
 }
 
+/// Fixed path (not per-PID) - wiped and recreated at the start of every
+/// dev-mode launch (see below), so there's nothing to preserve across
+/// launches anyway, and a fixed name is easier to find on disk while
+/// iterating.
+fn dev_sandbox_dir() -> PathBuf {
+    std::env::temp_dir().join("xeneon-dashboard-rs-dev-sandbox")
+}
+
 fn main() {
+    // Dev mode always comes up in the genuine "nothing saved yet" state -
+    // wipe any sandbox left over from a previous dev-mode launch before
+    // redirecting config::config_dir() (and everything derived from it:
+    // widgets_dir, pages_dir, background_dir, config_file) into it. Done
+    // here, before anything else touches config state, so the real saved
+    // layout under config::real_config_dir() is never read or written by
+    // a dev-mode session - only the dev-mode marker file itself is (see
+    // config::dev_mode_flag_enabled), since that's what decided whether to
+    // do this in the first place.
+    if dev_mode_enabled() {
+        let sandbox = dev_sandbox_dir();
+        let _ = std::fs::remove_dir_all(&sandbox);
+        config::set_sandbox_dir(Some(sandbox));
+    }
+
     // Must be the very first thing - every `log::` call before this
     // point is silently dropped (see `logging::init`'s own doc comment).
     logging::init(dev_mode_enabled());

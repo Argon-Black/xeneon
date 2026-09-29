@@ -1180,7 +1180,14 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     dev_switch.set_active(crate::dev_mode_enabled());
     dev_switch.set_valign(gtk::Align::Center);
     dev_switch.connect_state_set(|_, active| {
-        relaunch(active);
+        // Persisted ahead of the relaunch below so the fresh process picks
+        // it up on its own (see `crate::dev_mode_enabled`) - not just
+        // carried through this one relaunch, but every launch from now on,
+        // until toggled again.
+        if let Err(err) = xeneon_core::config::set_dev_mode_flag(active) {
+            warn!("failed to persist dev mode flag: {err}");
+        }
+        relaunch();
         gtk::glib::Propagation::Proceed
     });
     dev_toggle_row.add_suffix(&dev_switch);
@@ -1200,7 +1207,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let restart_button = gtk::Button::from_icon_name("view-refresh-symbolic");
         restart_button.set_valign(gtk::Align::Center);
         restart_button.add_css_class("flat");
-        restart_button.connect_clicked(|_| relaunch(crate::dev_mode_enabled()));
+        restart_button.connect_clicked(|_| relaunch());
         restart_row.add_suffix(&restart_button);
         restart_row.set_activatable_widget(Some(&restart_button));
 
@@ -1478,23 +1485,16 @@ fn ping_ha_url(url: &str) -> bool {
     }
 }
 
-/// Spawns a fresh instance with dev mode set to `dev_mode` and quits this
-/// one - used by both the always-visible dev-mode toggle and the dev-only
-/// restart button, and (via `AppMsg::Relaunch`) the tray menu's "relaunch"
-/// entry. Explicit rather than relying on env inheritance from this
-/// process to the spawned one - the single-instance GApplication D-Bus
-/// registration means the new process can race this one's shutdown in
-/// ways that make "obviously inherited" state look like it vanished, so
-/// don't leave it to chance.
-pub(crate) fn relaunch(dev_mode: bool) {
+/// Spawns a fresh instance and quits this one - used by both the
+/// always-visible dev-mode toggle and the dev-only restart button, and
+/// (via `AppMsg::Relaunch`) the tray menu's "relaunch" entry. Dev mode
+/// itself needs no help surviving the relaunch: it's read fresh from the
+/// persisted marker file (see `crate::dev_mode_enabled`), not carried
+/// through by hand - so unlike an env var passed explicitly to the child,
+/// there's no race with this process's own shutdown to worry about.
+pub(crate) fn relaunch() {
     if let Ok(exe) = std::env::current_exe() {
-        let mut cmd = std::process::Command::new(exe);
-        if dev_mode {
-            cmd.env("XENEON_DEV_MODE", "1");
-        } else {
-            cmd.env_remove("XENEON_DEV_MODE");
-        }
-        let _ = cmd.spawn();
+        let _ = std::process::Command::new(exe).spawn();
     }
     relm4::main_application().quit();
 }
@@ -1510,8 +1510,6 @@ pub(crate) fn relaunch(dev_mode: bool) {
 /// Escape/clicking outside behaves the same as clicking it) just closes
 /// the dialog and leaves the setting saved but not yet applied - the same
 /// prompt reappears the next time something tries to apply it.
-/// `dev_mode_enabled()` carries the *current* dev-mode state through
-/// unchanged - this relaunch is about the HA page, not about dev mode.
 fn confirm_ha_restart(parent: &gtk::Box) {
     let dialog = adw::AlertDialog::new(
         Some(&i18n::t("settings.ha_group.restart_dialog.heading")),
@@ -1522,10 +1520,9 @@ fn confirm_ha_restart(parent: &gtk::Box) {
     dialog.set_response_appearance("restart", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("restart"));
     dialog.set_close_response("cancel");
-    let dev_mode = crate::dev_mode_enabled();
     dialog.connect_response(None, move |_dialog, response| {
         if response == "restart" {
-            relaunch(dev_mode);
+            relaunch();
         }
     });
     dialog.present(Some(parent));
@@ -1560,7 +1557,6 @@ fn confirm_import(parent: &gtk::Box, source: std::path::PathBuf) {
     dialog.set_response_appearance("import", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
-    let dev_mode = crate::dev_mode_enabled();
     dialog.connect_response(None, {
         let parent = parent.clone();
         move |_dialog, response| {
@@ -1568,7 +1564,7 @@ fn confirm_import(parent: &gtk::Box, source: std::path::PathBuf) {
                 return;
             }
             match crate::backup::import(&source) {
-                Ok(()) => relaunch(dev_mode),
+                Ok(()) => relaunch(),
                 Err(err) => {
                     warn!("failed to import configuration: {err}");
                     info_dialog(

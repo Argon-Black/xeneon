@@ -9,10 +9,34 @@
 use crate::persistence;
 use log::warn;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::path::PathBuf;
+
+thread_local! {
+    // Set only by xeneon-app's dev-mode sandbox (see its `main()`) - `None`
+    // the rest of the time, so `config_dir()` behaves exactly as before for
+    // normal (non-dev) launches.
+    static SANDBOX_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Redirects `config_dir()` - and therefore `widgets_dir()`, `pages_dir()`,
+/// `background_dir()`, `config_file()`, every path derived from it - to
+/// `path` for the rest of this process. Used only by dev mode's sandbox:
+/// dev mode is meant to always come up in the genuine "nothing saved yet"
+/// state (see xeneon-app's `main()`, which wipes `path` before calling
+/// this), so nothing it does ever touches the real saved layout.
+/// `real_config_dir()` below is deliberately unaffected by this - the
+/// dev-mode marker file has to survive the redirection it itself decides
+/// whether to apply.
+pub fn set_sandbox_dir(path: Option<PathBuf>) {
+    SANDBOX_DIR.with(|s| *s.borrow_mut() = path);
+}
 
 /// Base directory for all of this app's persisted state - `config.json`
 /// directly inside it, `widgets/` and `pages/` subdirectories alongside.
+/// Resolves to the sandbox directory instead, for the lifetime of a
+/// dev-mode process, once `set_sandbox_dir` has been called - see its own
+/// doc comment.
 ///
 /// Deliberately named `xeneon-dashboard-rs`, distinct from the Python app's
 /// `xeneon-dashboard` config directory, so the two can run side by side on
@@ -21,11 +45,52 @@ use std::path::PathBuf;
 /// the actual cutover, once the Rust version is what actually runs day to
 /// day - not before.
 pub fn config_dir() -> PathBuf {
+    if let Some(path) = SANDBOX_DIR.with(|s| s.borrow().clone()) {
+        return path;
+    }
+    real_config_dir()
+}
+
+/// `config_dir()`'s own resolution logic, but never redirected by
+/// `set_sandbox_dir` - only for state that has to survive dev mode's
+/// sandbox regardless (currently just the dev-mode marker file, see
+/// `dev_mode_flag_enabled`/`set_dev_mode_flag` below).
+pub fn real_config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
     base.join("xeneon-dashboard-rs")
+}
+
+/// Bare marker file (content unused, only its presence matters) recording
+/// whether dev mode is on - deliberately not a field on `Config`, since
+/// `Config` lives under `config_dir()` and gets swept into the sandbox
+/// redirection while dev mode is active. This flag has to survive that
+/// (it's what decides whether to apply the redirection at all), so it's
+/// always read/written against `real_config_dir()` instead.
+fn dev_mode_marker_file() -> PathBuf {
+    real_config_dir().join("dev_mode.on")
+}
+
+pub fn dev_mode_flag_enabled() -> bool {
+    dev_mode_marker_file().exists()
+}
+
+pub fn set_dev_mode_flag(enabled: bool) -> std::io::Result<()> {
+    let path = dev_mode_marker_file();
+    if enabled {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, b"")
+    } else {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
 }
 
 pub fn widgets_dir() -> PathBuf {
