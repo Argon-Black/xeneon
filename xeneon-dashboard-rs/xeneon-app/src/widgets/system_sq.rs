@@ -304,6 +304,7 @@ struct SystemSqState {
     hostname_label: gtk::Label,
     os_badge_label: gtk::Label,
 
+    cpu_label: gtk::Label,
     cpu_value_label: gtk::Label,
     cpu_bar: gtk::DrawingArea,
     mem_label: gtk::Label,
@@ -410,6 +411,11 @@ impl SystemSqState {
         self.hostname_label.set_label(&read_hostname());
         self.os_badge_label.set_label(&read_os_short_name());
 
+        // Audit finding 2026-09-29: this label was set once at
+        // construction (build_content) and never retranslated here,
+        // unlike mem_label/disk_label right below - left frozen in
+        // whatever language was active when the card was built.
+        self.cpu_label.set_label(&i18n::t("widgets.system_info.cpu_label"));
         match read_cpu_times() {
             Some(current) => {
                 let percent = match self.previous_cpu_times.borrow().as_ref() {
@@ -553,7 +559,6 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
     root.append(&header);
 
     let (cpu_row, cpu_label, cpu_value_label, cpu_bar) = build_metric_row();
-    cpu_label.set_label(&i18n::t("widgets.system_info.cpu_label"));
     root.append(&cpu_row);
 
     let (mem_row, mem_label, mem_value_label, mem_bar) = build_metric_row();
@@ -596,6 +601,7 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
         css_class,
         hostname_label,
         os_badge_label,
+        cpu_label,
         cpu_value_label,
         cpu_bar: cpu_bar.clone(),
         mem_label,
