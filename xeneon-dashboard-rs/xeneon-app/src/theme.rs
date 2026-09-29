@@ -39,6 +39,16 @@ fn swatch_static_css() -> String {
 
 fn ensure_installed() {
     INSTALL.call_once(|| {
+        // Force dark regardless of the host desktop's own light/dark
+        // preference - every widget card is designed against a dark
+        // background, so a fresh install on a light-themed system
+        // otherwise showed a jarring white Settings page next to the
+        // dark widget dashboard (found 2026-09-29 testing a genuine
+        // first-run install). Accent color still follows the system's
+        // own choice when "follow system" is on (see
+        // `system_accent_hex`/`connect_system_accent_changed`) - only
+        // the light/dark axis is pinned, not the accent.
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
         let Some(display) = gtk::gdk::Display::default() else { return };
         let provider = gtk::CssProvider::new();
         gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
