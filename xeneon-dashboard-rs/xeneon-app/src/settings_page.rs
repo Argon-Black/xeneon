@@ -130,11 +130,11 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     // that holds whichever groups fit; a group too tall to fit anywhere on
     // screen 1 moves whole onto the matching block on screen 2 instead of
     // truncating or scrolling - laid out by hand below, block by block.
-    // Screen 1: block1 Interface+Language, block2 Theme, block3 Pages
-    // (which also carries the Home Assistant row - see its own comment
-    // below on why it lives there rather than in a group of its own).
-    // Screen 2: block1 default widget appearance, block2 empty (nothing
-    // needs it yet), block3 keyboard shortcuts + dev tools.
+    // Screen 1: block1 Interface+Language, block2 Theme+Backup+Hue, block3
+    // Pages (which also carries the Home Assistant row - see its own
+    // comment below on why it lives there rather than in a group of its
+    // own). Screen 2: block1 default widget appearance, block2 empty
+    // (nothing needs it yet), block3 keyboard shortcuts + dev tools.
     let screen1 = new_screen();
     let (screen1_block1, screen1_block2, screen1_block3) = (new_column(), new_column(), new_column());
     screen1.append(&screen1_block1);
@@ -816,27 +816,33 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
 
     screen2_block1.append(&appearance_group);
 
-    // --- Screen 2, block 2: Backup (export/import the whole config) ---
+    // --- Screen 1, block 2 (cont'd): Backup (export/import the whole
+    // config) - built here, alongside the rest of screen 2's controls,
+    // but appended to screen1_block2 (below Theme) rather than
+    // screen2_block2: source order doesn't have to match layout order,
+    // only the .append() target does. ---
     let backup_group = adw::PreferencesGroup::new();
     backup_group.set_title(&i18n::t("settings.backup_group.title"));
 
-    let export_row = adw::ActionRow::new();
-    export_row.set_title(&i18n::t("settings.backup_group.export_row.title"));
-    export_row.set_subtitle(&i18n::t("settings.backup_group.export_row.subtitle"));
+    // One row for both actions, not two - export and import used to each
+    // get their own title/subtitle/button stacked vertically, which ate
+    // more of this block's fixed height than the feature is worth.
+    // `subtitle_lines(1)` ellipsizes instead of wrapping, so the combined
+    // explanation always stays a single line regardless of translation
+    // length.
+    let backup_row = adw::ActionRow::new();
+    backup_row.set_title(&i18n::t("settings.backup_group.row.title"));
+    backup_row.set_subtitle(&i18n::t("settings.backup_group.row.subtitle"));
+    backup_row.set_subtitle_lines(1);
     let export_button = gtk::Button::with_label(&i18n::t("settings.backup_group.export_row.button"));
     export_button.set_valign(gtk::Align::Center);
-    export_row.add_suffix(&export_button);
-    backup_group.add(&export_row);
-
-    let import_row = adw::ActionRow::new();
-    import_row.set_title(&i18n::t("settings.backup_group.import_row.title"));
-    import_row.set_subtitle(&i18n::t("settings.backup_group.import_row.subtitle"));
+    backup_row.add_suffix(&export_button);
     let import_button = gtk::Button::with_label(&i18n::t("settings.backup_group.import_row.button"));
     import_button.set_valign(gtk::Align::Center);
-    import_row.add_suffix(&import_button);
-    backup_group.add(&import_row);
+    backup_row.add_suffix(&import_button);
+    backup_group.add(&backup_row);
 
-    screen2_block2.append(&backup_group);
+    screen1_block2.append(&backup_group);
 
     export_button.connect_clicked({
         let root = root.clone();
@@ -901,7 +907,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         }
     });
 
-    // --- Screen 2, block 2 (continued): Philips Hue bridge ---
+    // --- Screen 1, block 2 (continued): Philips Hue bridge ---
     // Discovery/pairing only - the connection is shared by every Hue
     // widget instance (see `Config::hue_bridge_ip`'s own doc comment in
     // xeneon-core for why that lives at the app level rather than per-
@@ -1054,7 +1060,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     hue_pair_row.add_suffix(&hue_pair_button);
 
     hue_group.add(&hue_pair_row);
-    screen2_block2.append(&hue_group);
+    screen1_block2.append(&hue_group);
 
     // Bumped on every "Appairer" click, checked after every blocking
     // pairing attempt and every retry wait - a click while a previous
@@ -1291,9 +1297,8 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let appearance_apply_row = appearance_apply_row.clone();
         let appearance_apply_button = appearance_apply_button.clone();
         let backup_group = backup_group.clone();
-        let export_row = export_row.clone();
+        let backup_row = backup_row.clone();
         let export_button = export_button.clone();
-        let import_row = import_row.clone();
         let import_button = import_button.clone();
         let ha_row = ha_row.clone();
         let ha_url_row = ha_url_row.clone();
@@ -1354,11 +1359,9 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             appearance_apply_row.set_subtitle(&i18n::t("settings.appearance_apply_row.subtitle"));
             appearance_apply_button.set_label(&i18n::t("settings.appearance_apply_row.button"));
             backup_group.set_title(&i18n::t("settings.backup_group.title"));
-            export_row.set_title(&i18n::t("settings.backup_group.export_row.title"));
-            export_row.set_subtitle(&i18n::t("settings.backup_group.export_row.subtitle"));
+            backup_row.set_title(&i18n::t("settings.backup_group.row.title"));
+            backup_row.set_subtitle(&i18n::t("settings.backup_group.row.subtitle"));
             export_button.set_label(&i18n::t("settings.backup_group.export_row.button"));
-            import_row.set_title(&i18n::t("settings.backup_group.import_row.title"));
-            import_row.set_subtitle(&i18n::t("settings.backup_group.import_row.subtitle"));
             import_button.set_label(&i18n::t("settings.backup_group.import_row.button"));
             ha_row.set_title(&i18n::t("settings.ha_group.title"));
             ha_url_row.set_title(&i18n::t("settings.ha_group.url_row.title"));
