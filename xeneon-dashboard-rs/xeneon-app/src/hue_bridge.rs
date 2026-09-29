@@ -105,6 +105,19 @@ fn device_type() -> String {
 /// never to an arbitrary or user-supplied URL) and never used for anything
 /// else, e.g. `discover_cloud`'s call to Philips' own cloud service keeps
 /// normal certificate verification.
+///
+/// Every call site pairs this with `.max_redirects(0)` on the same
+/// request builder (audit finding 2026-09-29, HIGH): with verification
+/// disabled, whatever actually answers at that IP is trusted
+/// unconditionally, so if it replies with a redirect, `ureq`'s default
+/// of following up to 10 hops - forwarding any custom header, including
+/// `hue-application-key` on the authenticated calls, to wherever the
+/// `Location` points - would hand the long-lived bridge token to an
+/// attacker-controlled host. The Hue CLIP API never legitimately
+/// redirects, so refusing to follow any is a pure hardening with no
+/// functional cost; with `max_redirects(0)` the raw (unfollowed) 3xx
+/// response is returned rather than erroring, and every caller here
+/// already treats a non-JSON/unexpected body as a normal failure.
 fn bridge_tls_config() -> TlsConfig {
     TlsConfig::builder().disable_verification(true).build()
 }
@@ -207,6 +220,7 @@ fn probe_bridge_name(ip: &str) -> Option<String> {
     let response = ureq::get(format!("https://{ip}/api/config"))
         .config()
         .tls_config(bridge_tls_config())
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
         .build()
         .call();
@@ -245,6 +259,7 @@ pub fn pair(ip: &str) -> Result<Paired, PairError> {
     let response = ureq::post(format!("https://{ip}/api"))
         .config()
         .tls_config(bridge_tls_config())
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
         .build()
         .send_json(&body);
@@ -286,6 +301,7 @@ pub fn fetch_resources(ip: &str, username: &str) -> Result<serde_json::Value, St
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
         .build()
         .call();
@@ -556,6 +572,7 @@ pub fn set_light(ip: &str, username: &str, light_id: &str, on: bool, brightness_
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
         .build()
         .send_json(&body)
@@ -582,6 +599,7 @@ pub fn set_grouped_light(ip: &str, username: &str, grouped_light_id: &str, on: b
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
         .build()
         .send_json(&body)
@@ -608,6 +626,7 @@ pub fn set_color_xy(ip: &str, username: &str, resource_kind: &str, id: &str, x: 
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
         .build()
         .send_json(&body)
@@ -633,6 +652,7 @@ pub fn set_color_temperature_mirek(ip: &str, username: &str, resource_kind: &str
         .header("hue-application-key", username)
         .config()
         .tls_config(bridge_tls_config())
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(BRIDGE_TIMEOUT_SECONDS)))
         .build()
         .send_json(&body)
