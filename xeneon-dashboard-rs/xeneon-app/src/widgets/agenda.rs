@@ -1273,27 +1273,30 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    /// A real weekly-recurring event pulled from a live calendar while
-    /// building this (see the module doc comment) - EDS's raw
-    /// `GetObjectList` returns exactly this master component, unexpanded,
-    /// for any query whose range overlaps its series.
-    const ONGLE_ICS: &str = "BEGIN:VEVENT\r\n\
+    /// Shaped exactly like a real weekly-recurring event pulled from a
+    /// live calendar while building this (see the module doc comment) -
+    /// EDS's raw `GetObjectList` returns exactly this master component,
+    /// unexpanded, for any query whose range overlaps its series.
+    /// Anonymized before this went public (SUMMARY/UID replaced with
+    /// invented values) - CREATED/LAST-MODIFIED/RRULE/DTSTART/DTEND are
+    /// unchanged and still drive the actual assertions below.
+    const RECURRING_EVENT_ICS: &str = "BEGIN:VEVENT\r\n\
         CREATED:20260721T054157Z\r\n\
         LAST-MODIFIED:20260915T151527Z\r\n\
         DTSTAMP:20260915T151527Z\r\n\
-        SUMMARY:Ongle\r\n\
+        SUMMARY:Rendez-vous test\r\n\
         RRULE:FREQ=WEEKLY;BYDAY=WE\r\n\
         DTSTART;VALUE=DATE:20260722\r\n\
         DTEND;VALUE=DATE:20260723\r\n\
-        UID:620e6840-24e0-4ba0-82f1-36ae53d35a8a\r\n\
+        UID:6c9343a0-330f-4235-bbe9-c21085e47a34\r\n\
         END:VEVENT\r\n";
 
     #[test]
     fn expands_a_weekly_recurring_all_day_event() {
-        let unfolded = unfold_ical_lines(ONGLE_ICS);
+        let unfolded = unfold_ical_lines(RECURRING_EVENT_ICS);
         assert!(has_rrule(&unfolded));
         let (summary, master_date, master_time) = parse_summary_and_dtstart(&unfolded).unwrap();
-        assert_eq!(summary, "Ongle");
+        assert_eq!(summary, "Rendez-vous test");
         assert_eq!(master_date, NaiveDate::from_ymd_opt(2026, 7, 22).unwrap());
         assert!(master_time.is_none());
 
@@ -1303,7 +1306,7 @@ mod tests {
         let dates: Vec<NaiveDate> = occurrences.into_iter().map(|(date, _)| date).collect();
 
         // Every Wednesday in September 2026 - matches what the Python
-        // original (via libecal) returns for the same real event/range.
+        // original (via libecal) returns for the same date range.
         assert_eq!(
             dates,
             vec![
