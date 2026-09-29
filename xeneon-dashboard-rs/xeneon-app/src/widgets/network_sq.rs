@@ -7,16 +7,14 @@
 //! layouts and iterated from there; this is that iteration for SQ).
 //!
 //! Same interface Auto/pin + rename-only settings as SX/S/SQ's earlier
-//! text-only version, plus (per the user's own follow-up request) four
-//! appearance settings: the icon+name's size and color together (one
-//! `content_scale` slider, one color picker - see `apply_content_scale`),
-//! and separate color pickers for the down and up rate, which double as
-//! the graph's trace colors (see `refresh`/`draw_graph`) so the two stay
-//! in sync rather than needing to be set twice. Persistence and the
-//! color-picker rows themselves mirror `temp_gauge.rs`'s own
-//! `text_color`/`bar_color`/`content_scale` settings - the closest
-//! existing precedent for "small set of appearance knobs on top of the
-//! functional settings".
+//! text-only version, plus (per the user's own follow-up request) three
+//! appearance settings: the icon+name's color (one color picker - see
+//! `apply_name_style`; the header icon+name are the widget's fixed-size
+//! *label*, not its content, so there's no size slider for them - audit
+//! finding 2026-09-29, see `HEADER_ICON_PX`'s own doc comment), and
+//! separate color pickers for the down and up rate, which double as the
+//! graph's trace colors (see `refresh`/`draw_graph`) so the two stay in
+//! sync rather than needing to be set twice.
 //!
 //! The rate line still uses the single-`gtk::Label`-with-markup approach
 //! `network_sx.rs`'s doc comment explains (colored/bold/monospace spans
@@ -94,31 +92,19 @@ const DEFAULT_NAME_COLOR_HEX: &str = "#ffffff";
 const DEFAULT_DOWN_COLOR_HEX: &str = "#5da9e8";
 const DEFAULT_UP_COLOR_HEX: &str = "#e8875d";
 
-/// Icon size at `content_scale == 1.0` (100%) - still resizable off the
-/// settings panel's slider, same technique as `temp_gauge.rs`'s
-/// `BASE_*`/`content_scale`. Deliberately doesn't touch the rate line, the
-/// graph, or the VPN badge - the user asked for the icon (specifically,
-/// not the interface label alongside it - see `NAME_FONT_PX` below) to be
-/// resizable, not the whole card.
-const BASE_HEADER_ICON_PX: f64 = 18.0;
-/// Fixed, *not* part of `content_scale` - matches `hue.rs`'s
-/// `.xeneon-hue-title`/`system_sq.rs`'s `HOSTNAME_FONT_PX` at their own
-/// fixed size. Used to scale together with the icon (see
-/// `BASE_HEADER_ICON_PX`'s own doc comment for that older behavior); split
-/// out once the user asked for the card's *title* (the interface name
-/// text) to read at a fixed size matching the other two cards' headers,
-/// separately from "the global size increase" the content-scale slider
-/// still gives the icon.
+/// Fixed - audit finding 2026-09-29: the header icon+title are the
+/// widget's *label*, not its *content*, and this widget has no content-
+/// size slider at all (removed the same day - it used to resize only
+/// this icon, nothing else). Previously scaled with that now-removed
+/// slider (see git history), which broke the header-icon-size
+/// harmonization with `hue.rs`'s/`system_sq.rs`'s own always-fixed
+/// `HEADER_ICON_PX` the moment the slider moved off 100% - exactly what
+/// happened once the user's own real card settled on 125%. Matches
+/// those two constants' value (18px).
+const HEADER_ICON_PX: i32 = 18;
+/// Fixed - matches `hue.rs`'s `.xeneon-hue-title`/`system_sq.rs`'s
+/// `HOSTNAME_FONT_PX` at their own fixed size.
 const NAME_FONT_PX: i32 = 17;
-const MIN_CONTENT_SCALE: f64 = 0.5;
-const MAX_CONTENT_SCALE: f64 = 2.0;
-/// 100% - dropped from an earlier 125% so a freshly-placed card's icon
-/// reads at the same size as `hue.rs`'s own fixed header icon by default,
-/// per the user's own side-by-side comparison once the Hue widget
-/// existed. Still a starting point, not a floor or ceiling - the slider
-/// still reaches up to `MAX_CONTENT_SCALE` for anyone who wants the icon
-/// bigger again.
-const DEFAULT_CONTENT_SCALE: f64 = 1.0;
 
 /// Bounds the rate line's width - it no longer includes the interface name
 /// (moved to its own header row), so unlike the earlier text-only version
@@ -139,15 +125,15 @@ const VPN_ICON_PATH: &str = "assets/vpn-icon.svg";
 /// color. The VPN badge (loaded via the plain, untinted `load_icon_texture`)
 /// doesn't use this color at all, so tinting never touches it.
 const ICON_SOURCE_FILL: &str = "#ffffff";
-/// Rasterized well above the ~18-36px range these icons actually display
-/// at (`BASE_HEADER_ICON_PX` times the content-scale range), so they stay
-/// crisp rather than looking like upscaled bitmaps - same reasoning as
-/// `audio.rs`'s `EMPTY_STATE_ICON_RASTER_PX`, just a much smaller target
-/// size since these are small corner icons, not hero art.
+/// Rasterized well above the fixed 18px these icons actually display at
+/// (`HEADER_ICON_PX`), so they stay crisp rather than looking like
+/// upscaled bitmaps - same reasoning as `audio.rs`'s
+/// `EMPTY_STATE_ICON_RASTER_PX`, just a much smaller target size since
+/// these are small corner icons, not hero art.
 const ICON_RASTER_PX: i32 = 96;
-/// Bigger than the header's own Wi-Fi/Ethernet icon (`BASE_HEADER_ICON_PX`
-/// at 100% scale) - a pill badge with a label reads as a unit even at
-/// this size, where a bare small icon didn't.
+/// Bigger than the header's own Wi-Fi/Ethernet icon (`HEADER_ICON_PX`) -
+/// a pill badge with a label reads as a unit even at this size, where a
+/// bare small icon didn't.
 const VPN_BADGE_ICON_PX: i32 = 20;
 const VPN_BADGE_FONT_PX: i32 = 15;
 const VPN_COLOR_HEX: &str = "#5DCAA5";
@@ -266,11 +252,10 @@ struct NetworkSqState {
     name_color: RefCell<gtk::gdk::RGBA>,
     down_color: RefCell<gtk::gdk::RGBA>,
     up_color: RefCell<gtk::gdk::RGBA>,
-    content_scale: Cell<f64>,
     /// Whether the currently-effective interface is wireless, as of the
     /// last `refresh()` - cached here (rather than re-derived) so a
-    /// settings-only change (content scale, icon color) can re-render the
-    /// icon at the right size/color/type without needing a fresh
+    /// settings-only change (icon color) can re-render the icon at the
+    /// right color/type without needing a fresh
     /// `/proc`/`/sys` read of its own.
     current_wireless: Cell<bool>,
 }
@@ -309,7 +294,7 @@ impl NetworkSqState {
 
     fn set_name_color(&self, rgba: gtk::gdk::RGBA) {
         *self.name_color.borrow_mut() = rgba;
-        self.apply_content_scale(); // font-size and color live in the same CSS rule, and the icon needs re-tinting too
+        self.apply_name_style(); // font-size and color live in the same CSS rule, and the icon needs re-tinting too
     }
 
     fn set_down_color(&self, rgba: gtk::gdk::RGBA) {
@@ -330,37 +315,34 @@ impl NetworkSqState {
     /// button via `WidgetInstance::on_reset`, wired up in `spawn`/`restore`
     /// below - previously `on_reset` was left `None` here, which is why
     /// resetting a card's appearance left its interface pin/custom label/
-    /// colors/size untouched.
+    /// colors untouched.
     fn reset(&self) {
         self.set_interface(None);
         self.set_custom_label(None);
         self.set_name_color(hex_to_rgba(DEFAULT_NAME_COLOR_HEX));
         self.set_down_color(hex_to_rgba(DEFAULT_DOWN_COLOR_HEX));
         self.set_up_color(hex_to_rgba(DEFAULT_UP_COLOR_HEX));
-        self.set_content_scale(DEFAULT_CONTENT_SCALE);
-    }
-
-    fn set_content_scale(&self, scale: f64) {
-        self.content_scale.set(scale.clamp(MIN_CONTENT_SCALE, MAX_CONTENT_SCALE));
-        self.apply_content_scale();
     }
 
     /// Rebuilds this instance's name-label CSS rule (fixed font size, but
     /// still a per-instance rule since `color` isn't fixed - see
     /// `NAME_FONT_PX`'s own doc comment on why size and color parted ways
-    /// here), and re-renders the header icon at `content_scale`'s own
-    /// size/matching color - mirrors `TempGaugeState::apply_content_scale`.
-    /// Called from every setter that touches either of those two settings,
-    /// not just `set_content_scale` itself.
-    fn apply_content_scale(&self) {
-        let scale = self.content_scale.get();
+    /// here) and re-renders the header icon's color. Audit finding
+    /// 2026-09-29: this used to also resize the header icon
+    /// (`content_scale`, now removed - see `HEADER_ICON_PX`'s own doc
+    /// comment); the icon's size is set once at construction now, since
+    /// it never changes again.
+    fn apply_name_style(&self) {
         let name_hex = rgba_to_hex(&self.name_color.borrow());
+        // font-weight: 500 to match hue.rs's/system_sq.rs's own header
+        // title rule exactly (audit finding 2026-09-29: this rule was
+        // missing it, the only actual CSS difference between the three
+        // header titles once font-size/color already matched).
         let rule = format!(
-            ".{class} .xeneon-network-sq-name {{ font-size: {NAME_FONT_PX}px; color: {name_hex}; }}",
+            ".{class} .xeneon-network-sq-name {{ font-size: {NAME_FONT_PX}px; font-weight: 500; color: {name_hex}; }}",
             class = self.css_class,
         );
         NAME_CSS.with(|registry| registry.set_rule(&self.css_class, rule));
-        self.icon_image.set_pixel_size((BASE_HEADER_ICON_PX * scale).round() as i32);
         self.apply_icon(self.current_wireless.get());
     }
 
@@ -417,7 +399,19 @@ impl NetworkSqState {
         // traffic without ever taking over the default route, in which
         // case `Auto` keeps displaying the physical interface and this
         // card would otherwise never show the badge at all.
-        self.vpn_badge.set_visible(vpn_active(&interfaces));
+        // Audit finding 2026-09-29: `set_visible(false)` removes the
+        // badge from layout entirely, shrinking the whole header row's
+        // height whenever no VPN is active - since the icon/title are
+        // valign-centered within that row, a shorter row (no badge)
+        // centers them higher than hue.rs's/system_sq.rs's own header,
+        // whose badge is always shown and so never shrinks their row.
+        // Opacity keeps the same layout space reserved either way; only
+        // the badge's own visual presence (and its now-conditional
+        // tooltip, which would otherwise still fire over an invisible
+        // badge) changes.
+        let vpn_on = vpn_active(&interfaces);
+        self.vpn_badge.set_opacity(if vpn_on { 1.0 } else { 0.0 });
+        self.vpn_badge.set_tooltip_text(vpn_on.then(|| i18n::t("widgets.network.vpn_active")).as_deref());
 
         let counters = effective_name.as_ref().and_then(|name| interfaces.iter().find(|(n, _, _)| n == name));
 
@@ -493,7 +487,6 @@ impl NetworkSqState {
             "name_color": rgba_to_hex(&self.name_color.borrow()),
             "down_color": rgba_to_hex(&self.down_color.borrow()),
             "up_color": rgba_to_hex(&self.up_color.borrow()),
-            "content_scale": self.content_scale.get(),
         })
     }
 
@@ -515,9 +508,10 @@ impl NetworkSqState {
         if let Some(v) = data.get("up_color").and_then(|v| v.as_str()) {
             self.set_up_color(hex_to_rgba(v));
         }
-        if let Some(v) = data.get("content_scale").and_then(|v| v.as_f64()) {
-            self.set_content_scale(v);
-        }
+        // "content_scale" may still be present in a JSON file saved
+        // before this widget's size slider was removed (2026-09-29) -
+        // ignored here rather than causing an error, same as any other
+        // unrecognized key.
     }
 }
 
@@ -613,9 +607,11 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
 
     // Paintable set in the first `refresh()` call below, once the
     // effective interface (and therefore Wi-Fi vs Ethernet) is known -
-    // starts empty rather than defaulting to one or the other. Size is
-    // set in `apply_content_scale`, called from the same first `refresh()`.
+    // starts empty rather than defaulting to one or the other. Fixed
+    // size, not content_scale-dependent - see `HEADER_ICON_PX`'s own
+    // doc comment.
     let (header, icon_image, name_label) = card_header::build_card_header(6, "xeneon-network-sq-name");
+    icon_image.set_pixel_size(HEADER_ICON_PX);
 
     // A pill (icon + "VPN" label), not a bare icon - a small icon on its
     // own didn't read clearly at this size; the label makes it
@@ -632,10 +628,13 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
     let vpn_badge_label = gtk::Label::new(Some(&i18n::t("widgets.network.vpn_badge_label")));
     vpn_badge_label.add_css_class("xeneon-network-sq-vpn-badge-label");
     vpn_badge.append(&vpn_badge_label);
-    vpn_badge.set_tooltip_text(Some(&i18n::t("widgets.network.vpn_active")));
-    // Hidden until the first `refresh()` call below decides whether any
-    // interface actually looks like a VPN.
-    vpn_badge.set_visible(false);
+    // Transparent (not hidden) until the first `refresh()` call below
+    // decides whether any interface actually looks like a VPN - stays
+    // visible for layout purposes so it keeps reserving its own space
+    // in the header row even while invisible (see `refresh`'s own
+    // comment on why `set_visible(false)` doesn't work for this). Its
+    // tooltip is set/cleared there too, not here.
+    vpn_badge.set_opacity(0.0);
     header.append(&vpn_badge);
 
     root.append(&header);
@@ -669,7 +668,6 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
         name_color: RefCell::new(hex_to_rgba(DEFAULT_NAME_COLOR_HEX)),
         down_color: RefCell::new(hex_to_rgba(DEFAULT_DOWN_COLOR_HEX)),
         up_color: RefCell::new(hex_to_rgba(DEFAULT_UP_COLOR_HEX)),
-        content_scale: Cell::new(DEFAULT_CONTENT_SCALE),
         current_wireless: Cell::new(true),
     });
 
@@ -678,10 +676,10 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
         move |_area, cr, width, height| draw_graph(&state, cr, width, height)
     });
 
-    // `apply_content_scale()` sets the name CSS rule and the icon's
-    // initial size/color; `refresh()` (which also calls `apply_icon`)
-    // fills in the real interface data right after.
-    state.apply_content_scale();
+    // `apply_name_style()` sets the name CSS rule and the icon's
+    // initial color; `refresh()` (which also calls `apply_icon`) fills
+    // in the real interface data right after.
+    state.apply_name_style();
     state.refresh();
 
     let timeout_id = gtk::glib::timeout_add_seconds_local(REFRESH_INTERVAL_SECONDS, {
@@ -813,16 +811,6 @@ fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
     name_color_button.set_rgba(&state.name_color.borrow());
     root.append(&make_row(&[name_color_label.upcast_ref(), name_color_button.upcast_ref()]));
 
-    let scale_label = gtk::Label::new(Some(&i18n::t("widgets.network.settings.content_scale")));
-    scale_label.set_halign(gtk::Align::Start);
-    root.append(&scale_label);
-    let scale_slider =
-        gtk::Scale::with_range(gtk::Orientation::Horizontal, MIN_CONTENT_SCALE * 100.0, MAX_CONTENT_SCALE * 100.0, 1.0);
-    scale_slider.set_value(state.content_scale.get() * 100.0);
-    scale_slider.set_draw_value(true);
-    scale_slider.set_value_pos(gtk::PositionType::Right);
-    root.append(&scale_slider);
-
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     let down_color_label = gtk::Label::new(Some(&i18n::t("widgets.network.settings.down_color")));
@@ -843,10 +831,6 @@ fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
         let state = state.clone();
         move |b| state.set_name_color(b.rgba())
     });
-    scale_slider.connect_value_changed({
-        let state = state.clone();
-        move |s| state.set_content_scale(s.value() / 100.0)
-    });
     down_color_button.connect_rgba_notify({
         let state = state.clone();
         move |b| state.set_down_color(b.rgba())
@@ -860,7 +844,6 @@ fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
         let interface_label_widget = interface_label_widget.clone();
         let custom_label_label = custom_label_label.clone();
         let name_color_label = name_color_label.clone();
-        let scale_label = scale_label.clone();
         let down_color_label = down_color_label.clone();
         let up_color_label = up_color_label.clone();
         let refresh_interface_model = refresh_interface_model.clone();
@@ -868,7 +851,6 @@ fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
             interface_label_widget.set_label(&i18n::t("widgets.network.settings.interface"));
             custom_label_label.set_label(&i18n::t("widgets.network.settings.custom_label"));
             name_color_label.set_label(&i18n::t("widgets.network.settings.name_color"));
-            scale_label.set_label(&i18n::t("widgets.network.settings.content_scale"));
             down_color_label.set_label(&i18n::t("widgets.network.settings.down_color"));
             up_color_label.set_label(&i18n::t("widgets.network.settings.up_color"));
             refresh_interface_model();
@@ -891,7 +873,6 @@ fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
         let state = state.clone();
         let custom_label_entry = custom_label_entry.clone();
         let name_color_button = name_color_button.clone();
-        let scale_slider = scale_slider.clone();
         let down_color_button = down_color_button.clone();
         let up_color_button = up_color_button.clone();
         let refresh_interface_model = refresh_interface_model.clone();
@@ -900,11 +881,9 @@ fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
             let name_color = *state.name_color.borrow();
             let down_color = *state.down_color.borrow();
             let up_color = *state.up_color.borrow();
-            let content_scale = state.content_scale.get();
 
             custom_label_entry.set_text(custom_label.as_deref().unwrap_or(""));
             name_color_button.set_rgba(&name_color);
-            scale_slider.set_value(content_scale * 100.0);
             down_color_button.set_rgba(&down_color);
             up_color_button.set_rgba(&up_color);
             // Also resyncs the interface dropdown's selection and the
