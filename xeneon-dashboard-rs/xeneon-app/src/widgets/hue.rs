@@ -809,6 +809,14 @@ fn build_content(variant: CardVariant) -> (Rc<HueState>, gtk::Widget) {
         badge.append(&badge_label);
         header.append(&badge);
         root.append(&header);
+
+        // Audit finding 2026-09-29: only ever set once here at
+        // construction, never touched again - left frozen in whatever
+        // language was active when the card was built.
+        i18n::on_change({
+            let title_label = title_label.clone();
+            move || title_label.set_label(&i18n::t("widgets.hue.title"))
+        });
     }
 
     let rows_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -842,6 +850,19 @@ fn build_content(variant: CardVariant) -> (Rc<HueState>, gtk::Widget) {
     empty_button.connect_clicked(|_| hue_bridge::open_settings());
     empty_box.append(&empty_button);
     root.append(&empty_box);
+
+    // Audit finding 2026-09-29: this widget had zero `i18n::on_change`
+    // registrations - `empty_message`/`badge_label` retranslate anyway
+    // since they're rewritten by `refresh()` (wired to the periodic
+    // timer, so they catch up within a tick), but `empty_button` was
+    // otherwise only ever set once here at construction and left frozen
+    // in whatever language was active when the card was built
+    // (`title_label`'s own equivalent fix lives just above, inside the
+    // `variant.show_header` block it's actually scoped to).
+    i18n::on_change({
+        let empty_button = empty_button.clone();
+        move || empty_button.set_label(&i18n::t("widgets.hue.empty.open_settings"))
+    });
 
     let state = Rc::new(HueState {
         variant,
@@ -1642,6 +1663,23 @@ fn build_settings(state: Rc<HueState>) -> gtk::Widget {
             state.selected_ids.borrow_mut().clear();
             rebuild();
             state.refresh();
+        }
+    });
+
+    // Audit finding 2026-09-29: none of these four were ever
+    // retranslated after construction - `rebuild()` above only
+    // re-appends `loading_label` when the list is empty, it doesn't
+    // touch its text.
+    i18n::on_change({
+        let mode_label = mode_label.clone();
+        let room_button = room_button.clone();
+        let light_button = light_button.clone();
+        let loading_label = loading_label.clone();
+        move || {
+            mode_label.set_label(&i18n::t("widgets.hue.settings.mode.title"));
+            room_button.set_label(&i18n::t("widgets.hue.settings.mode.room"));
+            light_button.set_label(&i18n::t("widgets.hue.settings.mode.light"));
+            loading_label.set_label(&i18n::t("widgets.hue.settings.loading"));
         }
     });
 
