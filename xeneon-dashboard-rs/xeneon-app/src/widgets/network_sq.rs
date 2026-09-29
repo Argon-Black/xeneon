@@ -79,6 +79,7 @@ use std::time::Instant;
 
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
+use crate::widgets::card_header;
 use crate::widgets::network::{default_interface, format_rate_fixed, is_wireless, read_interfaces, vpn_active, InterfaceCounters};
 use crate::widgets::registry::WidgetInstance;
 
@@ -610,34 +611,11 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
     root.set_margin_top(12);
     root.set_margin_bottom(10);
 
-    // No `set_halign(Start)` here (unlike the earlier version of this
-    // widget) - left at the default `Fill` so this row spans the full
-    // card width, which the spacer below needs to push the VPN badge to
-    // the far right edge rather than right up against the name.
-    let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-
     // Paintable set in the first `refresh()` call below, once the
     // effective interface (and therefore Wi-Fi vs Ethernet) is known -
     // starts empty rather than defaulting to one or the other. Size is
     // set in `apply_content_scale`, called from the same first `refresh()`.
-    let icon_image = gtk::Image::new();
-    // Explicit rather than relying on the row's default `Fill` alignment -
-    // an audit across this card's, `system_sq.rs`'s and `hue.rs`'s headers
-    // found them not reliably centering the same way without it, throwing
-    // the header rows out of vertical alignment with each other (the vpn
-    // badge below already set this explicitly; the icon/name didn't).
-    icon_image.set_valign(gtk::Align::Center);
-    header.append(&icon_image);
-
-    let name_label = gtk::Label::new(None);
-    name_label.add_css_class("xeneon-network-sq-name");
-    name_label.set_halign(gtk::Align::Start);
-    name_label.set_valign(gtk::Align::Center);
-    header.append(&name_label);
-
-    let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    header_spacer.set_hexpand(true);
-    header.append(&header_spacer);
+    let (header, icon_image, name_label) = card_header::build_card_header(6, "xeneon-network-sq-name");
 
     // A pill (icon + "VPN" label), not a bare icon - a small icon on its
     // own didn't read clearly at this size; the label makes it

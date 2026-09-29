@@ -96,6 +96,7 @@ use std::sync::Once;
 use crate::config_store;
 use crate::hue_bridge::{self, BulbType, Light, Room};
 use crate::i18n_runtime as i18n;
+use crate::widgets::card_header;
 use crate::widgets::registry::WidgetInstance;
 
 /// Real-hardware round trips (a bridge on the same LAN) are fast, but this
@@ -783,25 +784,10 @@ fn build_content(variant: CardVariant) -> (Rc<HueState>, gtk::Widget) {
     // light.
     let badge_label = gtk::Label::new(None);
     if variant.show_header {
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let header_icon = gtk::Image::new();
+        let (header, header_icon, title_label) = card_header::build_card_header(8, "xeneon-hue-title");
         header_icon.set_pixel_size(HEADER_ICON_PX);
         header_icon.set_paintable(load_on_icon(ACCENT_COLOR_HEX).as_ref());
-        // Explicit on every header child (icon, title, badge) rather than
-        // relying on the row's own default `Fill` alignment - an audit
-        // across this card's, `network_sq.rs`'s and `system_sq.rs`'s
-        // headers found them not reliably centering the same way without
-        // it, throwing the three cards' header rows out of vertical
-        // alignment with each other.
-        header_icon.set_valign(gtk::Align::Center);
-        header.append(&header_icon);
-        let title_label = gtk::Label::new(Some(&i18n::t("widgets.hue.title")));
-        title_label.add_css_class("xeneon-hue-title");
-        title_label.set_valign(gtk::Align::Center);
-        header.append(&title_label);
-        let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        header_spacer.set_hexpand(true);
-        header.append(&header_spacer);
+        title_label.set_label(&i18n::t("widgets.hue.title"));
         let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         badge.add_css_class("xeneon-hue-badge");
         badge.set_valign(gtk::Align::Center);

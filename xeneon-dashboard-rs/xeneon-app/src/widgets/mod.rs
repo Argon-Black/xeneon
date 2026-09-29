@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pub mod agenda;
 pub mod audio;
+pub mod card_header;
 pub mod clock;
 pub mod cpu_temp;
 pub mod dummy;

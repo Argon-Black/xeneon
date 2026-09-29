@@ -61,6 +61,7 @@ use std::sync::Once;
 use crate::appearance_css::CssRuleRegistry;
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
+use crate::widgets::card_header;
 use crate::widgets::registry::WidgetInstance;
 use crate::widgets::system_info::{
     read_cpu_model, read_cpu_times, read_disk_usage, read_hostname, read_kernel_release, read_memory,
@@ -528,22 +529,9 @@ fn build_content() -> (Rc<SystemSqState>, gtk::Widget) {
     root.set_margin_top(12);
     root.set_margin_bottom(10);
 
-    let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let header_icon = gtk::Image::new();
+    let (header, header_icon, hostname_label) = card_header::build_card_header(6, "xeneon-sysinfo-hostname");
     header_icon.set_pixel_size(HEADER_ICON_PX);
     header_icon.set_paintable(load_header_icon().as_ref());
-    // Explicit on every header child (icon, title, badge - see the same
-    // fix in `network_sq.rs`/`hue.rs`) rather than relying on the row's
-    // own default `Fill` alignment: a bare-text label and a padded badge
-    // pill don't reliably end up centered the same way without it, which
-    // is exactly what an audit across the three SQ cards' headers found.
-    header_icon.set_valign(gtk::Align::Center);
-    header.append(&header_icon);
-    let hostname_label = gtk::Label::new(None);
-    hostname_label.add_css_class("xeneon-sysinfo-hostname");
-    hostname_label.set_halign(gtk::Align::Start);
-    hostname_label.set_valign(gtk::Align::Center);
-    header.append(&hostname_label);
 
     let header_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     header_spacer.set_hexpand(true);
