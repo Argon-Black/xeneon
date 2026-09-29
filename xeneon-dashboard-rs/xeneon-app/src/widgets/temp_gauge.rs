@@ -63,7 +63,10 @@ const BASE_COLUMN_SPACING_PX: f64 = 4.0;
 
 const MIN_CONTENT_SCALE: f64 = 0.5;
 const MAX_CONTENT_SCALE: f64 = 2.0;
-const DEFAULT_CONTENT_SCALE: f64 = 1.0;
+// Matches the user's own real-world tuning on the Xeneon hardware
+// (2026-09-29) - see weather.rs's DEFAULT_CONTENT_SCALE for the same
+// reasoning applied there.
+const DEFAULT_CONTENT_SCALE: f64 = 1.18;
 
 const DEFAULT_TEXT_HEX: &str = "#ffffff";
 const DEFAULT_BAR_HEX: &str = "#e0218a";

@@ -80,7 +80,11 @@ const BASE_STAT_ROW_SPACING: f64 = 4.0;
 
 const MIN_CONTENT_SCALE: f64 = 0.5;
 const MAX_CONTENT_SCALE: f64 = 2.0;
-const DEFAULT_CONTENT_SCALE: f64 = 1.0;
+// Matches the user's own real-world tuning on the Xeneon hardware
+// (2026-09-29) - a fresh install's default should read like the
+// polished setup this app was actually designed against, not a
+// generic 100% starting point.
+const DEFAULT_CONTENT_SCALE: f64 = 1.42;
 
 /// WMO weather code (Open-Meteo's `current.weather_code`) -> (i18n
 /// condition key suffix, day icon, night icon) - same grouping as the
