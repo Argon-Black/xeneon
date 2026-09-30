@@ -23,6 +23,7 @@ use std::sync::Once;
 use std::time::Instant;
 
 use crate::i18n_runtime as i18n;
+use crate::widgets::is_manual;
 use crate::widgets::network::{default_interface, format_rate_fixed, read_interfaces, InterfaceCounters};
 use crate::widgets::registry::WidgetInstance;
 
@@ -193,10 +194,6 @@ impl NetworkSState {
 
 /// True if `entries[index]` is a real pinned interface (`Some`) rather
 /// than the "Auto" placeholder (`None` at index 0).
-fn is_manual(entries: &[Option<String>], index: usize) -> bool {
-    entries.get(index).map(|entry| entry.is_some()).unwrap_or(false)
-}
-
 fn build_content() -> (Rc<NetworkSState>, gtk::Widget) {
     ensure_css_installed();
 

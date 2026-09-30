@@ -42,6 +42,7 @@ use std::rc::Rc;
 use std::sync::Once;
 
 use crate::i18n_runtime as i18n;
+use crate::widgets::{is_manual, make_row};
 use crate::widgets::registry::WidgetInstance;
 
 /// Where the kernel exposes hardware sensors on Linux. Not configurable -
@@ -184,10 +185,6 @@ pub fn sensor_display_name(chip: &str, label: &str) -> String {
 /// whenever the dropdown's whole model gets rebuilt (see `refresh_sensor_
 /// model` and the dropdown's own `connect_selected_notify` in
 /// `build_settings`).
-fn is_manual(entries: &[Option<(String, String)>], index: usize) -> bool {
-    entries.get(index).map(|entry| entry.is_some()).unwrap_or(false)
-}
-
 /// All of this widget's live state - one instance per placed widget,
 /// shared (via `Rc`) between its content (the two labels) and its
 /// settings panel. Mirrors `CpuTempContent`'s instance attributes in the
@@ -352,14 +349,6 @@ impl CpuTempState {
             self.set_unit_fahrenheit(v);
         }
     }
-}
-
-fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for w in widgets {
-        row.append(*w);
-    }
-    row
 }
 
 /// Builds the widget's whole on-card display: "CPU" and the value ("52°C")

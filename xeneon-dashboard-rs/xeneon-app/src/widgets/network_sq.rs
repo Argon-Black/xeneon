@@ -81,6 +81,7 @@ use crate::widgets::card_header;
 use crate::widgets::icon_cache;
 use crate::widgets::network::{default_interface, format_rate_fixed, is_wireless, read_interfaces, vpn_active, InterfaceCounters};
 use crate::widgets::registry::WidgetInstance;
+use crate::widgets::{is_manual, make_row};
 
 const REFRESH_INTERVAL_SECONDS: u32 = 2;
 const VALUES_FONT_PX: i32 = 22;
@@ -445,10 +446,6 @@ impl NetworkSqState {
 
 /// True if `entries[index]` is a real pinned interface (`Some`) rather
 /// than the "Auto" placeholder (`None` at index 0).
-fn is_manual(entries: &[Option<String>], index: usize) -> bool {
-    entries.get(index).map(|entry| entry.is_some()).unwrap_or(false)
-}
-
 /// Paints one trace (line + a faint fill below it) for `samples`, scaled
 /// so its own peak sits at `top_fraction` of the drawing area's height -
 /// called twice per repaint, once for down and once for up, each against
@@ -631,14 +628,6 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
     });
 
     (state, root.upcast())
-}
-
-fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for w in widgets {
-        row.append(*w);
-    }
-    row
 }
 
 /// Builds the settings panel: which interface drives the display, the

@@ -16,6 +16,7 @@ use std::rc::Rc;
 // the one shared implementation.
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
+use crate::widgets::make_row;
 use crate::widgets::registry::WidgetInstance;
 
 const DEFAULT_TEXT_HEX: &str = "#ffffff";
@@ -369,14 +370,6 @@ fn build_content() -> (Rc<ClockState>, gtk::Widget) {
     });
 
     (state, root.upcast())
-}
-
-fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for w in widgets {
-        row.append(*w);
-    }
-    row
 }
 
 fn build_settings(state: Rc<ClockState>) -> (gtk::Widget, Box<dyn Fn()>) {

@@ -36,6 +36,7 @@ use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
 use crate::widgets::cpu_temp::{all_sensors, auto_pick_sensor, sensor_display_name, SensorReading};
 use crate::widgets::registry::WidgetInstance;
+use crate::widgets::{is_manual, make_row};
 
 const REFRESH_INTERVAL_SECONDS: u32 = 2;
 
@@ -79,18 +80,6 @@ const DEFAULT_BAR_HEX: &str = "#e0218a";
 thread_local! {
     static GAUGE_CSS: crate::appearance_css::CssRuleRegistry =
         crate::appearance_css::CssRuleRegistry::new(gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
-}
-
-fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for w in widgets {
-        row.append(*w);
-    }
-    row
-}
-
-fn is_manual(entries: &[Option<(String, String)>], index: usize) -> bool {
-    entries.get(index).map(|entry| entry.is_some()).unwrap_or(false)
 }
 
 /// All of this widget's live state - one instance per placed widget.

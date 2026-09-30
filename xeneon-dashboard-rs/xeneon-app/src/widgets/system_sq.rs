@@ -62,6 +62,7 @@ use crate::appearance_css::CssRuleRegistry;
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
 use crate::widgets::card_header;
+use crate::widgets::make_row;
 use crate::widgets::registry::WidgetInstance;
 use crate::widgets::system_info::{
     read_cpu_model, read_cpu_times, read_disk_usage, read_hostname, read_kernel_release, read_memory,
@@ -774,14 +775,6 @@ fn build_settings(state: Rc<SystemSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
 /// Lays out `widgets` in a single horizontal row - same tiny helper
 /// `network_sq.rs`/`temp_gauge.rs` each keep their own copy of, for a
 /// label-plus-control settings row.
-fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for w in widgets {
-        row.append(*w);
-    }
-    row
-}
-
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
     let (settings, resync) = build_settings(state.clone());

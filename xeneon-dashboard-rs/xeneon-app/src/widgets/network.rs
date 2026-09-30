@@ -43,6 +43,7 @@ use std::time::Instant;
 
 use crate::i18n_runtime as i18n;
 use crate::widgets::registry::WidgetInstance;
+use crate::widgets::{is_manual, make_row};
 
 /// Where the kernel exposes per-interface byte/packet counters on Linux -
 /// a fixed kernel ABI path, not something that varies by distro.
@@ -524,18 +525,6 @@ impl NetworkState {
 /// than the "Auto" placeholder (`None` at index 0) - used to gate the
 /// custom-label entry's sensitivity, same role as `cpu_temp.rs`'s own
 /// `is_manual`.
-fn is_manual(entries: &[Option<String>], index: usize) -> bool {
-    entries.get(index).map(|entry| entry.is_some()).unwrap_or(false)
-}
-
-fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for w in widgets {
-        row.append(*w);
-    }
-    row
-}
-
 /// Builds the widget's whole on-card display: the direction arrow +
 /// interface name (or custom label) as one caption, and the rate next to
 /// it, centered - the same caption+value shape as `cpu_temp.rs`'s

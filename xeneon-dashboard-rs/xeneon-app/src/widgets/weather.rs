@@ -54,6 +54,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::i18n_runtime as i18n;
+use crate::widgets::make_row;
 use crate::widgets::registry::WidgetInstance;
 
 const FORECAST_URL: &str = "https://api.open-meteo.com/v1/forecast";
@@ -681,14 +682,6 @@ fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
     });
 
     (state, root.upcast())
-}
-
-fn make_row(widgets: &[&gtk::Widget]) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for w in widgets {
-        row.append(*w);
-    }
-    row
 }
 
 /// Modal "pick an installed app" dialog - a trimmed copy of
