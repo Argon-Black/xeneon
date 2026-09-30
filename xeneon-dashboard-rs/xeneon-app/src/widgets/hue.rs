@@ -88,7 +88,6 @@
 use gtk::prelude::*;
 use log::warn;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
@@ -97,6 +96,7 @@ use crate::config_store;
 use crate::hue_bridge::{self, BulbType, Light, Room};
 use crate::i18n_runtime as i18n;
 use crate::widgets::card_header;
+use crate::widgets::icon_cache;
 use crate::widgets::registry::WidgetInstance;
 
 /// Real-hardware round trips (a bridge on the same LAN) are fast, but this
@@ -116,11 +116,6 @@ const SETTINGS_LIST_MAX_HEIGHT_PX: i32 = 340;
 
 const ICON_ON_PATH: &str = "assets/hue-bulb-icon.svg";
 const ICON_OFF_PATH: &str = "assets/hue-bulb-off-icon.svg";
-const ICON_SOURCE_FILL: &str = "#ffffff";
-/// Same reasoning as `network_sq.rs`'s own `ICON_RASTER_PX`: well above
-/// the on-screen size so the icon stays crisp rather than an upscaled
-/// bitmap.
-const ICON_RASTER_PX: i32 = 96;
 const HEADER_ICON_PX: i32 = 18;
 /// Fixed - matches `network_sq.rs`/`system_sq.rs`'s own badge accent,
 /// used here for the header icon and the "N/N allumées" badge, neither of
@@ -253,50 +248,18 @@ const BAR_FILL_ALPHA: f64 = 1.0;
 /// bundled SVG).
 const ICON_GLYPH_COLOR_HEX: &str = "#ffffff";
 
-thread_local! {
-    // The "off" icon never changes color, so it only ever needs one
-    // cached texture - same shape as `network_sq.rs`'s `ICON_TEXTURES`.
-    static OFF_ICON_TEXTURE: RefCell<Option<gtk::gdk::Texture>> = const { RefCell::new(None) };
-    // The "on" icon is tinted per light, so its cache is keyed by the hex
-    // color - same shape as `network_sq.rs`'s `TINTED_ICON_TEXTURES`.
-    static ON_ICON_TEXTURES: RefCell<HashMap<String, Option<gtk::gdk::Texture>>> = RefCell::new(HashMap::new());
-}
-
+// Audit finding 2026-09-29: these were two small hand-rolled caches
+// (one single-texture, one keyed by hex color) that were really just
+// `icon_cache::load_icon_texture`/`load_tinted_icon` specialized to
+// this module's own two fixed paths - the shared cache's key already
+// includes the path, so delegating here doesn't collide with
+// `network_sq.rs`'s/`network_m.rs`'s own icons sharing the same cache.
 fn load_off_icon() -> Option<gtk::gdk::Texture> {
-    OFF_ICON_TEXTURE.with(|cache| {
-        if let Some(texture) = cache.borrow().as_ref() {
-            return Some(texture.clone());
-        }
-        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ICON_OFF_PATH);
-        let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&full_path, ICON_RASTER_PX, ICON_RASTER_PX)
-            .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
-            .inspect_err(|err| warn!("failed to load {}: {err}", full_path.display()))
-            .ok();
-        *cache.borrow_mut() = texture.clone();
-        texture
-    })
+    icon_cache::load_icon_texture(ICON_OFF_PATH)
 }
 
 fn load_on_icon(hex_color: &str) -> Option<gtk::gdk::Texture> {
-    ON_ICON_TEXTURES.with(|cache| {
-        if let Some(texture) = cache.borrow().get(hex_color) {
-            return texture.clone();
-        }
-        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ICON_ON_PATH);
-        let texture = std::fs::read_to_string(&full_path)
-            .inspect_err(|err| warn!("failed to read {}: {err}", full_path.display()))
-            .ok()
-            .and_then(|svg_text| {
-                let tinted = svg_text.replace(ICON_SOURCE_FILL, hex_color);
-                let stream = gtk::gio::MemoryInputStream::from_bytes(&gtk::glib::Bytes::from_owned(tinted.into_bytes()));
-                gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(&stream, ICON_RASTER_PX, ICON_RASTER_PX, true, gtk::gio::Cancellable::NONE)
-                    .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
-                    .inspect_err(|err| warn!("failed to rasterize {} tinted {hex_color}: {err}", full_path.display()))
-                    .ok()
-            });
-        cache.borrow_mut().insert(hex_color.to_string(), texture.clone());
-        texture
-    })
+    icon_cache::load_tinted_icon(ICON_ON_PATH, hex_color)
 }
 
 static INSTALL_CSS: Once = Once::new();

@@ -69,7 +69,7 @@
 use gtk::prelude::*;
 use log::{debug, warn};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
@@ -78,6 +78,7 @@ use std::time::Instant;
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
 use crate::widgets::card_header;
+use crate::widgets::icon_cache;
 use crate::widgets::network::{default_interface, format_rate_fixed, is_wireless, read_interfaces, vpn_active, InterfaceCounters};
 use crate::widgets::registry::WidgetInstance;
 
@@ -120,85 +121,12 @@ const MAX_HISTORY_SAMPLES: usize = 60;
 const WIFI_ICON_PATH: &str = "assets/network-icon.svg";
 const ETHERNET_ICON_PATH: &str = "assets/ethernet-icon.svg";
 const VPN_ICON_PATH: &str = "assets/vpn-icon.svg";
-/// The fill color these bundled SVGs use for their main glyph - what
-/// `load_tinted_icon` looks for and replaces with the user's chosen
-/// color. The VPN badge (loaded via the plain, untinted `load_icon_texture`)
-/// doesn't use this color at all, so tinting never touches it.
-const ICON_SOURCE_FILL: &str = "#ffffff";
-/// Rasterized well above the fixed 18px these icons actually display at
-/// (`HEADER_ICON_PX`), so they stay crisp rather than looking like
-/// upscaled bitmaps - same reasoning as `audio.rs`'s
-/// `EMPTY_STATE_ICON_RASTER_PX`, just a much smaller target size since
-/// these are small corner icons, not hero art.
-const ICON_RASTER_PX: i32 = 96;
 /// Bigger than the header's own Wi-Fi/Ethernet icon (`HEADER_ICON_PX`) -
 /// a pill badge with a label reads as a unit even at this size, where a
 /// bare small icon didn't.
 const VPN_BADGE_ICON_PX: i32 = 20;
 const VPN_BADGE_FONT_PX: i32 = 15;
 const VPN_COLOR_HEX: &str = "#5DCAA5";
-
-thread_local! {
-    // The VPN badge's fixed green never changes, so it only ever needs
-    // one cached texture per icon path - same caching shape as
-    // `audio.rs`'s `EMPTY_STATE_TEXTURE`. A failed load is cached too, so
-    // a missing/corrupt file doesn't get retried on every widget
-    // construction.
-    static ICON_TEXTURES: RefCell<HashMap<&'static str, Option<gtk::gdk::Texture>>> = RefCell::new(HashMap::new());
-    // The Wi-Fi/Ethernet icon's color is user-chosen (per-instance, and
-    // changeable at any time), so its cache is keyed by (path, color)
-    // instead - still shared across every instance that happens to pick
-    // the same color, rather than re-rasterizing on every single
-    // `refresh()`/settings-change tick.
-    static TINTED_ICON_TEXTURES: RefCell<HashMap<(&'static str, String), Option<gtk::gdk::Texture>>> = RefCell::new(HashMap::new());
-}
-
-/// Loads and caches the bundled SVG at `path` unmodified - used only for
-/// the VPN badge, whose color is fixed. `None` if it failed to load, in
-/// which case the caller just shows no icon rather than a broken image.
-fn load_icon_texture(path: &'static str) -> Option<gtk::gdk::Texture> {
-    ICON_TEXTURES.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(texture) = cache.get(path) {
-            return texture.clone();
-        }
-        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
-        let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&full_path, ICON_RASTER_PX, ICON_RASTER_PX)
-            .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
-            .inspect_err(|err| warn!("failed to load {}: {err}", full_path.display()))
-            .ok();
-        cache.insert(path, texture.clone());
-        texture
-    })
-}
-
-/// Loads the bundled SVG at `path`, substitutes `ICON_SOURCE_FILL` for
-/// `hex_color` in its source text, then rasterizes and caches the result -
-/// used for the Wi-Fi/Ethernet header icon, whose color the user picks.
-/// `None` if the file couldn't be read or the (already-tinted) SVG
-/// couldn't be rasterized.
-fn load_tinted_icon(path: &'static str, hex_color: &str) -> Option<gtk::gdk::Texture> {
-    let key = (path, hex_color.to_string());
-    TINTED_ICON_TEXTURES.with(|cache| {
-        if let Some(texture) = cache.borrow().get(&key) {
-            return texture.clone();
-        }
-        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
-        let texture = std::fs::read_to_string(&full_path)
-            .inspect_err(|err| warn!("failed to read {}: {err}", full_path.display()))
-            .ok()
-            .and_then(|svg_text| {
-                let tinted = svg_text.replace(ICON_SOURCE_FILL, hex_color);
-                let stream = gtk::gio::MemoryInputStream::from_bytes(&gtk::glib::Bytes::from_owned(tinted.into_bytes()));
-                gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(&stream, ICON_RASTER_PX, ICON_RASTER_PX, true, gtk::gio::Cancellable::NONE)
-                    .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
-                    .inspect_err(|err| warn!("failed to rasterize {} tinted {hex_color}: {err}", full_path.display()))
-                    .ok()
-            });
-        cache.borrow_mut().insert(key, texture.clone());
-        texture
-    })
-}
 
 static INSTALL_CSS: Once = Once::new();
 
@@ -353,7 +281,7 @@ impl NetworkSqState {
     fn apply_icon(&self, wireless: bool) {
         let hex = rgba_to_hex(&self.name_color.borrow());
         let path = if wireless { WIFI_ICON_PATH } else { ETHERNET_ICON_PATH };
-        if let Some(texture) = load_tinted_icon(path, &hex) {
+        if let Some(texture) = icon_cache::load_tinted_icon(path, &hex) {
             self.icon_image.set_paintable(Some(&texture));
         }
     }
@@ -620,7 +548,7 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
     vpn_badge.add_css_class("xeneon-network-sq-vpn-badge");
     vpn_badge.set_valign(gtk::Align::Center);
     let vpn_badge_icon = gtk::Image::new();
-    if let Some(texture) = load_icon_texture(VPN_ICON_PATH) {
+    if let Some(texture) = icon_cache::load_icon_texture(VPN_ICON_PATH) {
         vpn_badge_icon.set_paintable(Some(&texture));
     }
     vpn_badge_icon.set_pixel_size(VPN_BADGE_ICON_PX);
