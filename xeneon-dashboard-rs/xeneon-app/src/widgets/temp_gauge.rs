@@ -176,6 +176,21 @@ impl TempGaugeState {
         self.apply_content_scale();
     }
 
+    /// Back to this widget's out-of-the-box defaults - goes through the
+    /// same setters as everything else, so every side effect (CSS rule,
+    /// redraw) happens exactly like a normal edit would. Audit finding
+    /// 2026-09-29: `on_reset` was left `None` in `spawn`/`restore`
+    /// below, so resetting a card's appearance left these untouched -
+    /// same gap already found and fixed the same day on `cpu_temp.rs`.
+    fn reset(&self) {
+        self.set_sensor(None, None);
+        self.set_custom_label(None);
+        self.set_unit_fahrenheit(false);
+        self.set_text_color(hex_to_rgba(DEFAULT_TEXT_HEX));
+        self.set_bar_color(hex_to_rgba(DEFAULT_BAR_HEX));
+        self.set_content_scale(DEFAULT_CONTENT_SCALE);
+    }
+
     /// Rebuilds this instance's CSS rule (font sizes + text color) from
     /// `content_scale`/`text_color`, and rescales the column spacing to
     /// match - mirrors `_apply_content_scale()` in cpu_temp.py.
@@ -394,7 +409,7 @@ fn build_content() -> (Rc<TempGaugeState>, gtk::Widget) {
 /// duplicated rather than shared), plus what's specific to the dial - text
 /// color, arc color, and the content-size slider. Mirrors
 /// `TempGaugeSettings.__init__`.
-fn build_settings(state: Rc<TempGaugeState>) -> gtk::Widget {
+fn build_settings(state: Rc<TempGaugeState>) -> (gtk::Widget, Box<dyn Fn()>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.set_size_request(260, -1);
 
@@ -571,17 +586,58 @@ fn build_settings(state: Rc<TempGaugeState>) -> gtk::Widget {
         }
     });
 
-    root.upcast()
+    // Re-reads every control's displayed value from `state` - needed
+    // after `state.reset()` (called from the appearance popover's reset
+    // button, see `on_reset` in `spawn`/`restore` below) changes the
+    // model directly. Mirrors `network_sq.rs::build_settings`'s own
+    // `resync`, including its ordering: every value is read out of
+    // `state` into an owned local *before* touching any control.
+    let resync: Box<dyn Fn()> = Box::new({
+        let state = state.clone();
+        let custom_label_entry = custom_label_entry.clone();
+        let celsius_button = celsius_button.clone();
+        let fahrenheit_button = fahrenheit_button.clone();
+        let text_color_button = text_color_button.clone();
+        let bar_color_button = bar_color_button.clone();
+        let scale_slider = scale_slider.clone();
+        let refresh_sensor_model = refresh_sensor_model.clone();
+        move || {
+            let custom_label = state.custom_label.borrow().clone();
+            let fahrenheit = state.unit_fahrenheit.get();
+            let text_color = *state.text_color.borrow();
+            let bar_color = *state.bar_color.borrow();
+            let content_scale = state.content_scale.get();
+
+            custom_label_entry.set_text(custom_label.as_deref().unwrap_or(""));
+            celsius_button.set_active(!fahrenheit);
+            fahrenheit_button.set_active(fahrenheit);
+            text_color_button.set_rgba(&text_color);
+            bar_color_button.set_rgba(&bar_color);
+            scale_slider.set_value(content_scale * 100.0);
+            refresh_sensor_model();
+        }
+    });
+
+    (root.upcast(), resync)
 }
 
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    // Audit finding 2026-09-29: this used to be `None`, same gap
+    // already found and fixed the same day on `cpu_temp.rs`.
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }
@@ -589,12 +645,19 @@ pub fn spawn() -> WidgetInstance {
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content();
     state.apply_dict(data);
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }

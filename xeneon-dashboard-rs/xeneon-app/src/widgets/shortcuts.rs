@@ -682,6 +682,20 @@ fn remove_icon(state: &Rc<ShortcutsState>, tile: &Rc<IconTile>) {
     state.notify_change();
 }
 
+/// Removes every placed icon, the same way as tapping each one's own
+/// delete button. Audit finding 2026-09-29 - per the user's explicit,
+/// informed choice (they were told this makes the reset button
+/// destructive/irreversible for this widget, unlike every other
+/// widget's reset, which only ever touches appearance/config settings
+/// and never user-placed content): the generic appearance-reset button
+/// now also clears this widget's actual content.
+fn clear_icons(state: &Rc<ShortcutsState>) {
+    let tiles: Vec<Rc<IconTile>> = state.tiles.borrow().values().cloned().collect();
+    for tile in tiles {
+        remove_icon(state, &tile);
+    }
+}
+
 /// Places `icon` on `state`'s grid and wires its tile's gestures (plain
 /// click to launch, the move button's drag, the delete button's click). A
 /// free function rather than a `ShortcutsState`/`IconTile` method: every
@@ -1132,6 +1146,7 @@ pub fn spawn() -> WidgetInstance {
         let state = state.clone();
         move || {
             state.reset_backdrop();
+            clear_icons(&state);
             resync();
         }
     };
@@ -1153,6 +1168,7 @@ pub fn restore(data: &serde_json::Value) -> WidgetInstance {
         let state = state.clone();
         move || {
             state.reset_backdrop();
+            clear_icons(&state);
             resync();
         }
     };

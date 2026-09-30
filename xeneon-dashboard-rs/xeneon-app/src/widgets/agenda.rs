@@ -358,6 +358,19 @@ fn list_calendar_sources(connection: &gio::DBusConnection) -> Vec<CalendarSource
     sources
 }
 
+/// Every enabled calendar right now - the natural "selection" for a
+/// freshly added widget (see `build_content`) and, per the audit
+/// finding 2026-09-29, for `AgendaState::reset` too: an *empty*
+/// selection would show a blank, bar-less grid (`build_content`'s
+/// rendering skips any source not in `selected_uids`), not a
+/// meaningful default. Cheap, local D-Bus discovery (see
+/// `list_calendar_sources`'s own doc comment).
+fn default_selected_uids() -> HashSet<String> {
+    gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)
+        .map(|connection| list_calendar_sources(&connection).into_iter().filter(|s| s.enabled).map(|s| s.uid).collect())
+        .unwrap_or_default()
+}
+
 /// Unfolds RFC5545 line-folding (a continuation line starts with a single
 /// space) before scanning for properties - none of the sample data seen
 /// while building this actually folds `SUMMARY`/`DTSTART`, but a long
@@ -806,6 +819,20 @@ impl AgendaState {
         self.apply_content_scale();
     }
 
+    /// Back to this widget's out-of-the-box defaults - goes through the
+    /// same setters as everything else. Audit finding 2026-09-29:
+    /// `on_reset` was left `None` in `spawn`/`restore` below, so
+    /// resetting a card's appearance left these untouched - same gap
+    /// already found and fixed the same day on several other widgets.
+    /// The calendar selection resets to "every enabled calendar right
+    /// now" (see `default_selected_uids`'s own doc comment for why, not
+    /// an empty selection).
+    fn reset(self: &Rc<Self>) {
+        self.set_selected_uids(default_selected_uids());
+        self.set_weekend_color(hex_to_rgba(WEEKEND_HEX));
+        self.set_content_scale(DEFAULT_CONTENT_SCALE);
+    }
+
     fn apply_content_scale(&self) {
         let scale = self.content_scale.get();
         SCALE_CSS.with(|registry| {
@@ -1048,16 +1075,11 @@ fn build_content() -> (Rc<AgendaState>, gtk::Widget) {
         }
     }
 
-    // Cheap, local D-Bus discovery (see `list_calendar_sources`'s own doc
-    // comment) - a freshly added widget has no saved selection yet, so it
-    // starts from "every enabled calendar right now" rather than an
-    // empty, bar-less grid. `apply_dict` (a saved widget) overwrites this
+    // A freshly added widget has no saved selection yet, so it starts
+    // from "every enabled calendar right now" rather than an empty,
+    // bar-less grid. `apply_dict` (a saved widget) overwrites this
     // right after construction if it has its own saved selection.
-    let default_selected_uids: HashSet<String> = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>)
-        .map(|connection| {
-            list_calendar_sources(&connection).into_iter().filter(|s| s.enabled).map(|s| s.uid).collect()
-        })
-        .unwrap_or_default();
+    let default_selected_uids = default_selected_uids();
 
     let state = Rc::new(AgendaState {
         css_class,
@@ -1114,7 +1136,7 @@ fn build_content() -> (Rc<AgendaState>, gtk::Widget) {
 /// `WeatherSettings`' own scale slider in `weather.rs` for the reference
 /// this follows). No `on_reset` (matches the Python original - the
 /// generic appearance reset is all this widget's reset button does).
-fn build_settings(state: Rc<AgendaState>) -> gtk::Widget {
+fn build_settings(state: Rc<AgendaState>) -> (gtk::Widget, Box<dyn Fn()>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.set_size_request(280, -1);
 
@@ -1240,20 +1262,67 @@ fn build_settings(state: Rc<AgendaState>) -> gtk::Widget {
         }
     });
 
-    root.upcast()
+    // Re-reads the weekend-color button/scale-slider from `state`, and
+    // relists the calendar checkboxes - needed after `state.reset()`
+    // (called from the appearance popover's reset button, see
+    // `on_reset` in `spawn`/`restore` below) changes the model
+    // directly. Mirrors `network_sq.rs::build_settings`'s own `resync`.
+    let resync: Box<dyn Fn()> = Box::new({
+        let state = state.clone();
+        let weekend_color_button = weekend_color_button.clone();
+        let scale_slider = scale_slider.clone();
+        let rebuild_sources = rebuild_sources.clone();
+        move || {
+            let weekend_color = *state.weekend_color.borrow();
+            let content_scale = state.content_scale.get();
+            weekend_color_button.set_rgba(&weekend_color);
+            scale_slider.set_value(content_scale * 100.0);
+            rebuild_sources();
+        }
+    });
+
+    (root.upcast(), resync)
 }
 
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
-    let settings = build_settings(state.clone());
-    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None, on_change_ready: None }
+    let (settings, resync) = build_settings(state.clone());
+    // Audit finding 2026-09-29: this used to be `None`, same gap
+    // already found and fixed the same day on several other widgets.
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
+    WidgetInstance {
+        content,
+        settings: Some(settings),
+        to_dict: Box::new(move || state.to_dict()),
+        on_reset: Some(Box::new(on_reset)),
+        on_change_ready: None,
+    }
 }
 
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content();
     state.apply_dict(data);
-    let settings = build_settings(state.clone());
-    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None, on_change_ready: None }
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
+    WidgetInstance {
+        content,
+        settings: Some(settings),
+        to_dict: Box::new(move || state.to_dict()),
+        on_reset: Some(Box::new(on_reset)),
+        on_change_ready: None,
+    }
 }
 
 /// Widget picker tile for this kind - `WidgetDescriptor::preview`, not

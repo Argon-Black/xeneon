@@ -282,6 +282,18 @@ impl CpuTempState {
         self.refresh();
     }
 
+    /// Back to this widget's out-of-the-box defaults - sensor pin/
+    /// custom label/unit. Audit finding 2026-09-29: `on_reset` was left
+    /// `None` in `spawn`/`restore` below, so resetting a card's
+    /// appearance left these untouched - same gap already found and
+    /// fixed the same day on `network.rs`'s/`network_sx.rs`'s/
+    /// `network_s.rs`'s own sensor-less equivalent (interface pin).
+    fn reset(&self) {
+        self.set_sensor(None, None);
+        self.set_custom_label(None);
+        self.set_unit_fahrenheit(false);
+    }
+
     /// Re-reads every hwmon sensor, then redraws both labels from the
     /// fresh snapshot. Called on every tick (see `build_content`'s timer),
     /// on every setter above, and on a language change - cheap enough
@@ -423,7 +435,7 @@ fn build_content() -> (Rc<CpuTempState>, gtk::Widget) {
 /// player list, hwmon chips don't appear or disappear while the app is
 /// running, so (like the Python original) there's nothing to poll for
 /// after this.
-fn build_settings(state: Rc<CpuTempState>) -> gtk::Widget {
+fn build_settings(state: Rc<CpuTempState>) -> (gtk::Widget, Box<dyn Fn()>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.set_size_request(240, -1);
 
@@ -565,20 +577,50 @@ fn build_settings(state: Rc<CpuTempState>) -> gtk::Widget {
         }
     });
 
-    root.upcast()
+    // Re-reads the custom-label entry's text and the unit toggle from
+    // `state` - needed after `state.reset()` (called from the
+    // appearance popover's reset button, see `on_reset` in `spawn`/
+    // `restore` below) changes the model directly. Mirrors
+    // `network_sq.rs::build_settings`'s own `resync`.
+    let resync: Box<dyn Fn()> = Box::new({
+        let state = state.clone();
+        let custom_label_entry = custom_label_entry.clone();
+        let celsius_button = celsius_button.clone();
+        let fahrenheit_button = fahrenheit_button.clone();
+        let refresh_sensor_model = refresh_sensor_model.clone();
+        move || {
+            let custom_label = state.custom_label.borrow().clone();
+            let fahrenheit = state.unit_fahrenheit.get();
+            custom_label_entry.set_text(custom_label.as_deref().unwrap_or(""));
+            celsius_button.set_active(!fahrenheit);
+            fahrenheit_button.set_active(fahrenheit);
+            refresh_sensor_model();
+        }
+    });
+
+    (root.upcast(), resync)
 }
 
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    // Audit finding 2026-09-29: this used to be `None` ("no plugin-
+    // specific reset behavior... the generic appearance reset already
+    // provides enough"), matching the Python original's own lack of a
+    // `reset()` - but per the user's own call, brought in line with
+    // every other widget's sensor/rename/unit reset instead.
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        // No plugin-specific reset behavior (like the Python original -
-        // CpuTempContent has no `reset()`): the generic appearance reset
-        // the popover already provides is enough here.
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }
@@ -586,12 +628,19 @@ pub fn spawn() -> WidgetInstance {
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content();
     state.apply_dict(data);
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }

@@ -756,6 +756,18 @@ impl HueState {
             *self.selected_ids.borrow_mut() = selected.iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
         }
     }
+
+    /// Back to this widget's out-of-the-box defaults (mode `Light`, no
+    /// lights/rooms selected - matching this state's own construction-
+    /// time defaults). Audit finding 2026-09-29: `on_reset` was left
+    /// `None` in `spawn_sq`/`spawn_sx`/`restore_sq`/`restore_sx` below -
+    /// same gap already found and fixed the same day on several other
+    /// widgets.
+    fn reset(self: &Rc<Self>) {
+        self.mode.set(SelectionMode::Light);
+        self.selected_ids.borrow_mut().clear();
+        self.refresh();
+    }
 }
 
 /// Updates one row's widgets to show `entry`'s current state - shared by
@@ -1463,7 +1475,7 @@ fn hex_from_rgb((r, g, b): (f64, f64, f64)) -> String {
 /// first fetch hasn't landed yet) and every time `state.on_data_changed`
 /// fires, so it fills in on its own once real data arrives rather than
 /// needing the popover reopened.
-fn build_settings(state: Rc<HueState>) -> gtk::Widget {
+fn build_settings(state: Rc<HueState>) -> (gtk::Widget, Box<dyn Fn()>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.set_size_request(240, -1);
 
@@ -1680,7 +1692,25 @@ fn build_settings(state: Rc<HueState>) -> gtk::Widget {
         }
     });
 
-    root.upcast()
+    // Re-reads the mode toggle from `state` and relists the light/room
+    // checkboxes - needed after `state.reset()` (called from the
+    // appearance popover's reset button, see `on_reset` in
+    // `spawn_variant`/`restore_variant` below) changes the model
+    // directly. Mirrors `network_sq.rs::build_settings`'s own `resync`.
+    let resync: Box<dyn Fn()> = Box::new({
+        let state = state.clone();
+        let room_button = room_button.clone();
+        let light_button = light_button.clone();
+        let rebuild = rebuild.clone();
+        move || {
+            let mode = state.mode.get();
+            room_button.set_active(mode == SelectionMode::Room);
+            light_button.set_active(mode == SelectionMode::Light);
+            rebuild();
+        }
+    });
+
+    (root.upcast(), resync)
 }
 
 /// Shared by every `spawn_*`/`restore_*` pair below - only `variant` and,
@@ -1689,12 +1719,21 @@ fn build_settings(state: Rc<HueState>) -> gtk::Widget {
 /// file/`CardVariant` rather than a second near-duplicate module).
 fn spawn_variant(variant: CardVariant) -> WidgetInstance {
     let (state, content) = build_content(variant);
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    // Audit finding 2026-09-29: this used to be `None`, same gap
+    // already found and fixed the same day on several other widgets.
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }
@@ -1709,12 +1748,19 @@ fn restore_variant(variant: CardVariant, data: &serde_json::Value) -> WidgetInst
     // already resolves against the restored selection, not the default
     // one `build_content` started with.
     state.apply_dict(data);
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }

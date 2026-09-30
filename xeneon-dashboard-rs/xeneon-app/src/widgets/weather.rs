@@ -375,6 +375,22 @@ impl WeatherState {
         self.refresh_temp_interactivity();
     }
 
+    /// Back to this widget's out-of-the-box defaults - goes through the
+    /// same setters as everything else, so every side effect happens
+    /// exactly like a normal edit would. Audit finding 2026-09-29:
+    /// `on_reset` was left `None` in `spawn`/`restore` below, so
+    /// resetting a card's appearance left these untouched - same gap
+    /// already found and fixed the same day on the network-widget
+    /// family/`cpu_temp.rs`/`temp_gauge.rs` (their own "which thing to
+    /// display" pin, there an interface/sensor, resets the same way
+    /// this widget's location does here).
+    fn reset(&self) {
+        self.set_location(Location::default_paris());
+        self.set_unit_fahrenheit(false);
+        self.set_app_id(None);
+        self.set_content_scale(DEFAULT_CONTENT_SCALE);
+    }
+
     /// The temperature is only clickable/hinted when an app is actually
     /// configured to launch - an unclickable label showing a "click for
     /// more info" tooltip would be a lie. Re-applied on every language
@@ -805,7 +821,7 @@ fn current_app_display(state: &WeatherState) -> String {
 /// wired - nothing outside these controls' own signal handlers ever
 /// mutates `state.location`/`unit_fahrenheit` (matches the Python
 /// original: `_spawn_weather` never passes `on_reset` either).
-fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
+fn build_settings(state: Rc<WeatherState>) -> (gtk::Widget, Box<dyn Fn()>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.set_size_request(280, -1);
 
@@ -1068,17 +1084,51 @@ fn build_settings(state: Rc<WeatherState>) -> gtk::Widget {
     });
     search_entry.set_placeholder_text(Some(&i18n::t("widgets.weather.settings.search_placeholder")));
 
-    root.upcast()
+    // Re-reads every control's displayed value from `state` - needed
+    // after `state.reset()` (called from the appearance popover's reset
+    // button, see `on_reset` in `spawn`/`restore` below) changes the
+    // model directly. Mirrors `network_sq.rs::build_settings`'s own
+    // `resync`.
+    let resync: Box<dyn Fn()> = Box::new({
+        let state = state.clone();
+        let current_location_label = current_location_label.clone();
+        let celsius_button = celsius_button.clone();
+        let fahrenheit_button = fahrenheit_button.clone();
+        let scale_slider = scale_slider.clone();
+        let app_name_label = app_name_label.clone();
+        move || {
+            let fahrenheit = state.unit_fahrenheit.get();
+            let content_scale = state.content_scale.get();
+            current_location_label.set_label(&format_location(&state.location.borrow()));
+            celsius_button.set_active(!fahrenheit);
+            fahrenheit_button.set_active(fahrenheit);
+            scale_slider.set_value(content_scale * 100.0);
+            app_name_label.set_label(&current_app_display(&state));
+        }
+    });
+
+    (root.upcast(), resync)
 }
 
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    // Audit finding 2026-09-29: this used to be `None`, same gap
+    // already found and fixed the same day on `cpu_temp.rs`/
+    // `temp_gauge.rs`/the network-widget family.
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            trigger_fetch(&state);
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }
@@ -1086,12 +1136,20 @@ pub fn spawn() -> WidgetInstance {
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content();
     state.apply_dict(data);
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            trigger_fetch(&state);
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }

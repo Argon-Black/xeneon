@@ -448,6 +448,16 @@ impl AudioState {
         self.pick_active_player();
     }
 
+    /// Back to this widget's out-of-the-box defaults (just the
+    /// preferred-player pin - there's no other appearance setting
+    /// here). Audit finding 2026-09-29: `on_reset` was left `None` in
+    /// `spawn_at`/`restore_at` below (its own `resync` was already
+    /// built and simply discarded as `_resync`) - same gap already
+    /// found and fixed the same day on several other widgets.
+    fn reset(self: &Rc<Self>) {
+        self.set_preferred_player(None);
+    }
+
     /// `(bus_name, display identity)` for every currently known player -
     /// what AudioSettings' dropdown lists, refreshed on its own timer
     /// since players can appear/disappear at any time, not just while
@@ -1104,8 +1114,21 @@ fn build_settings(state: Rc<AudioState>) -> (gtk::Widget, Box<dyn Fn()>) {
 
 fn spawn_at(size: Size) -> WidgetInstance {
     let (state, content) = build_content(size);
-    let (settings, _resync) = build_settings(state.clone());
-    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None, on_change_ready: None }
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
+    WidgetInstance {
+        content,
+        settings: Some(settings),
+        to_dict: Box::new(move || state.to_dict()),
+        on_reset: Some(Box::new(on_reset)),
+        on_change_ready: None,
+    }
 }
 
 fn restore_at(size: Size, data: &serde_json::Value) -> WidgetInstance {
@@ -1117,8 +1140,21 @@ fn restore_at(size: Size, data: &serde_json::Value) -> WidgetInstance {
     // immediately instead of showing whatever auto-follow happened to
     // land on first.
     state.pick_active_player();
-    let (settings, _resync) = build_settings(state.clone());
-    WidgetInstance { content, settings: Some(settings), to_dict: Box::new(move || state.to_dict()), on_reset: None, on_change_ready: None }
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
+    WidgetInstance {
+        content,
+        settings: Some(settings),
+        to_dict: Box::new(move || state.to_dict()),
+        on_reset: Some(Box::new(on_reset)),
+        on_change_ready: None,
+    }
 }
 
 // One pair of tiny wrappers per size so the registry's static CATALOG
