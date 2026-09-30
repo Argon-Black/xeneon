@@ -23,7 +23,7 @@ use std::sync::Once;
 use std::time::Instant;
 
 use crate::i18n_runtime as i18n;
-use crate::widgets::is_manual;
+use crate::widgets::interface_picker;
 use crate::widgets::network::{default_interface, format_rate_fixed, read_interfaces, InterfaceCounters};
 use crate::widgets::registry::WidgetInstance;
 
@@ -90,6 +90,18 @@ impl NetworkSState {
     fn set_custom_label(&self, text: Option<String>) {
         *self.custom_label.borrow_mut() = text.filter(|s| !s.is_empty());
         self.refresh();
+    }
+
+    /// Back to this widget's out-of-the-box defaults (just the interface
+    /// pin/custom label - there's no other appearance setting here).
+    /// Audit finding 2026-09-29: `on_reset` was left `None` in
+    /// `spawn`/`restore` below, so resetting a card's appearance left
+    /// its interface pin/custom label untouched - same gap
+    /// `network_sq.rs`'s own `reset` doc comment already describes
+    /// having been fixed there.
+    fn reset(&self) {
+        self.set_interface(None);
+        self.set_custom_label(None);
     }
 
     /// Same shape as `network::NetworkState::display_label`/
@@ -192,8 +204,24 @@ impl NetworkSState {
     }
 }
 
-/// True if `entries[index]` is a real pinned interface (`Some`) rather
-/// than the "Auto" placeholder (`None` at index 0).
+impl interface_picker::InterfacePickable for NetworkSState {
+    fn interface_name(&self) -> Option<String> {
+        self.interface_name.borrow().clone()
+    }
+    fn available_interfaces(&self) -> Vec<String> {
+        self.available_interfaces.borrow().clone()
+    }
+    fn custom_label(&self) -> Option<String> {
+        self.custom_label.borrow().clone()
+    }
+    fn set_interface(&self, name: Option<String>) {
+        self.set_interface(name)
+    }
+    fn set_custom_label(&self, label: Option<String>) {
+        self.set_custom_label(label)
+    }
+}
+
 fn build_content() -> (Rc<NetworkSState>, gtk::Widget) {
     ensure_css_installed();
 
@@ -237,114 +265,65 @@ fn build_content() -> (Rc<NetworkSState>, gtk::Widget) {
     (state, label.upcast())
 }
 
-/// Builds the settings panel: which interface drives the display, and the
-/// rename field once one is pinned - identical to `network_sx::build_settings`.
-fn build_settings(state: Rc<NetworkSState>) -> gtk::Widget {
+/// Builds the settings panel: which interface drives the display, and
+/// the rename field once one is pinned - the picker itself is shared
+/// with the rest of the network-widget family, see
+/// `interface_picker`'s own doc comment (audit finding 2026-09-29).
+fn build_settings(state: Rc<NetworkSState>) -> (gtk::Widget, Box<dyn Fn()>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.set_size_request(240, -1);
 
-    let interface_label_widget = gtk::Label::new(Some(&i18n::t("widgets.network.settings.interface")));
-    interface_label_widget.set_halign(gtk::Align::Start);
-    root.append(&interface_label_widget);
-
-    let mut initial_entries: Vec<Option<String>> = vec![None];
-    let current_interface = state.interface_name.borrow().clone();
-    for name in state.available_interfaces.borrow().iter() {
-        if !initial_entries.iter().any(|e| e.as_deref() == Some(name.as_str())) {
-            initial_entries.push(Some(name.clone()));
-        }
-    }
-    if let Some(name) = &current_interface {
-        if !initial_entries.iter().any(|e| e.as_deref() == Some(name.as_str())) {
-            initial_entries.push(Some(name.clone()));
-        }
-    }
-    let entries = Rc::new(RefCell::new(initial_entries));
-
-    let interface_dropdown = gtk::DropDown::new(Some(gtk::StringList::new(&[])), gtk::Expression::NONE);
-    interface_dropdown.set_hexpand(true);
-    root.append(&interface_dropdown);
-
-    let custom_label_label = gtk::Label::new(Some(&i18n::t("widgets.network.settings.custom_label")));
-    custom_label_label.set_halign(gtk::Align::Start);
-    root.append(&custom_label_label);
-    let custom_label_entry = gtk::Entry::new();
-    custom_label_entry.set_text(state.custom_label.borrow().as_deref().unwrap_or(""));
-    root.append(&custom_label_entry);
-
-    let refresh_interface_model: Rc<dyn Fn()> = {
-        let entries = entries.clone();
-        let state = state.clone();
-        let interface_dropdown = interface_dropdown.clone();
-        let custom_label_label = custom_label_label.clone();
-        let custom_label_entry = custom_label_entry.clone();
-        Rc::new(move || {
-            let entries_ref = entries.borrow();
-            let names: Vec<String> = entries_ref
-                .iter()
-                .map(|entry| match entry {
-                    None => i18n::t("widgets.network.settings.interface_auto"),
-                    Some(name) => name.clone(),
-                })
-                .collect();
-            let current = state.interface_name.borrow().clone();
-            let selected_index = entries_ref.iter().position(|e| *e == current).unwrap_or(0);
-            let manual = is_manual(&entries_ref, selected_index);
-            drop(entries_ref);
-
-            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            interface_dropdown.set_model(Some(&gtk::StringList::new(&name_refs)));
-            interface_dropdown.set_selected(selected_index as u32);
-            custom_label_label.set_sensitive(manual);
-            custom_label_entry.set_sensitive(manual);
-        })
-    };
-    refresh_interface_model();
-
-    interface_dropdown.connect_selected_notify({
-        let state = state.clone();
-        let entries = entries.clone();
-        let custom_label_label = custom_label_label.clone();
-        let custom_label_entry = custom_label_entry.clone();
-        move |dropdown| {
-            let index = dropdown.selected() as usize;
-            let entries_ref = entries.borrow();
-            if let Some(entry) = entries_ref.get(index) {
-                state.set_interface(entry.clone());
-            }
-            let manual = is_manual(&entries_ref, index);
-            drop(entries_ref);
-            custom_label_label.set_sensitive(manual);
-            custom_label_entry.set_sensitive(manual);
-        }
-    });
-    custom_label_entry.connect_changed({
-        let state = state.clone();
-        move |entry| state.set_custom_label(Some(entry.text().to_string()))
-    });
+    let picker = interface_picker::build(state.clone());
+    root.append(&picker.interface_label);
+    root.append(&picker.interface_dropdown);
+    root.append(&picker.custom_label_label);
+    root.append(&picker.custom_label_entry);
 
     i18n::on_change({
-        let interface_label_widget = interface_label_widget.clone();
-        let custom_label_label = custom_label_label.clone();
-        let refresh_interface_model = refresh_interface_model.clone();
+        let interface_label = picker.interface_label.clone();
+        let custom_label_label = picker.custom_label_label.clone();
+        let refresh = picker.refresh.clone();
         move || {
-            interface_label_widget.set_label(&i18n::t("widgets.network.settings.interface"));
+            interface_label.set_label(&i18n::t("widgets.network.settings.interface"));
             custom_label_label.set_label(&i18n::t("widgets.network.settings.custom_label"));
-            refresh_interface_model();
+            refresh();
         }
     });
 
-    root.upcast()
+    // Re-reads the custom-label entry's text from `state` - needed after
+    // `state.reset()` (called from the appearance popover's reset
+    // button, see `on_reset` in `spawn`/`restore` below) changes the
+    // model directly. Mirrors `network_sq.rs::build_settings`'s own
+    // `resync`.
+    let resync: Box<dyn Fn()> = Box::new({
+        let state = state.clone();
+        let custom_label_entry = picker.custom_label_entry.clone();
+        let refresh = picker.refresh.clone();
+        move || {
+            let custom_label = state.custom_label.borrow().clone();
+            custom_label_entry.set_text(custom_label.as_deref().unwrap_or(""));
+            refresh();
+        }
+    });
+
+    (root.upcast(), resync)
 }
 
 pub fn spawn() -> WidgetInstance {
     let (state, content) = build_content();
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }
@@ -352,12 +331,19 @@ pub fn spawn() -> WidgetInstance {
 pub fn restore(data: &serde_json::Value) -> WidgetInstance {
     let (state, content) = build_content();
     state.apply_dict(data);
-    let settings = build_settings(state.clone());
+    let (settings, resync) = build_settings(state.clone());
+    let on_reset = {
+        let state = state.clone();
+        move || {
+            state.reset();
+            resync();
+        }
+    };
     WidgetInstance {
         content,
         settings: Some(settings),
         to_dict: Box::new(move || state.to_dict()),
-        on_reset: None,
+        on_reset: Some(Box::new(on_reset)),
         on_change_ready: None,
     }
 }

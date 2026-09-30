@@ -79,9 +79,10 @@ use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
 use crate::widgets::card_header;
 use crate::widgets::icon_cache;
+use crate::widgets::interface_picker;
+use crate::widgets::make_row;
 use crate::widgets::network::{default_interface, format_rate_fixed, is_wireless, read_interfaces, vpn_active, InterfaceCounters};
 use crate::widgets::registry::WidgetInstance;
-use crate::widgets::{is_manual, make_row};
 
 const REFRESH_INTERVAL_SECONDS: u32 = 2;
 const VALUES_FONT_PX: i32 = 22;
@@ -444,6 +445,24 @@ impl NetworkSqState {
     }
 }
 
+impl interface_picker::InterfacePickable for NetworkSqState {
+    fn interface_name(&self) -> Option<String> {
+        self.interface_name.borrow().clone()
+    }
+    fn available_interfaces(&self) -> Vec<String> {
+        self.available_interfaces.borrow().clone()
+    }
+    fn custom_label(&self) -> Option<String> {
+        self.custom_label.borrow().clone()
+    }
+    fn set_interface(&self, name: Option<String>) {
+        self.set_interface(name)
+    }
+    fn set_custom_label(&self, label: Option<String>) {
+        self.set_custom_label(label)
+    }
+}
+
 /// True if `entries[index]` is a real pinned interface (`Some`) rather
 /// than the "Auto" placeholder (`None` at index 0).
 /// Paints one trace (line + a faint fill below it) for `samples`, scaled
@@ -631,93 +650,21 @@ fn build_content() -> (Rc<NetworkSqState>, gtk::Widget) {
 }
 
 /// Builds the settings panel: which interface drives the display, the
-/// rename field once one is pinned (same as `network_sx::build_settings`),
-/// then the four appearance settings this card adds on top - icon+name
-/// color, icon+name size, download color, upload color - mirroring
-/// `temp_gauge.rs`'s own color-picker/scale-slider rows.
+/// rename field once one is pinned (shared with the rest of the
+/// network-widget family - see `interface_picker`'s own doc comment,
+/// audit finding 2026-09-29), then the four appearance settings this
+/// card adds on top - icon+name color, icon+name size, download color,
+/// upload color - mirroring `temp_gauge.rs`'s own color-picker/scale-
+/// slider rows.
 fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
     root.set_size_request(260, -1);
 
-    let interface_label_widget = gtk::Label::new(Some(&i18n::t("widgets.network.settings.interface")));
-    interface_label_widget.set_halign(gtk::Align::Start);
-    root.append(&interface_label_widget);
-
-    let mut initial_entries: Vec<Option<String>> = vec![None];
-    let current_interface = state.interface_name.borrow().clone();
-    for name in state.available_interfaces.borrow().iter() {
-        if !initial_entries.iter().any(|e| e.as_deref() == Some(name.as_str())) {
-            initial_entries.push(Some(name.clone()));
-        }
-    }
-    if let Some(name) = &current_interface {
-        if !initial_entries.iter().any(|e| e.as_deref() == Some(name.as_str())) {
-            initial_entries.push(Some(name.clone()));
-        }
-    }
-    let entries = Rc::new(RefCell::new(initial_entries));
-
-    let interface_dropdown = gtk::DropDown::new(Some(gtk::StringList::new(&[])), gtk::Expression::NONE);
-    interface_dropdown.set_hexpand(true);
-    root.append(&interface_dropdown);
-
-    let custom_label_label = gtk::Label::new(Some(&i18n::t("widgets.network.settings.custom_label")));
-    custom_label_label.set_halign(gtk::Align::Start);
-    root.append(&custom_label_label);
-    let custom_label_entry = gtk::Entry::new();
-    custom_label_entry.set_text(state.custom_label.borrow().as_deref().unwrap_or(""));
-    root.append(&custom_label_entry);
-
-    let refresh_interface_model: Rc<dyn Fn()> = {
-        let entries = entries.clone();
-        let state = state.clone();
-        let interface_dropdown = interface_dropdown.clone();
-        let custom_label_label = custom_label_label.clone();
-        let custom_label_entry = custom_label_entry.clone();
-        Rc::new(move || {
-            let entries_ref = entries.borrow();
-            let names: Vec<String> = entries_ref
-                .iter()
-                .map(|entry| match entry {
-                    None => i18n::t("widgets.network.settings.interface_auto"),
-                    Some(name) => name.clone(),
-                })
-                .collect();
-            let current = state.interface_name.borrow().clone();
-            let selected_index = entries_ref.iter().position(|e| *e == current).unwrap_or(0);
-            let manual = is_manual(&entries_ref, selected_index);
-            drop(entries_ref);
-
-            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            interface_dropdown.set_model(Some(&gtk::StringList::new(&name_refs)));
-            interface_dropdown.set_selected(selected_index as u32);
-            custom_label_label.set_sensitive(manual);
-            custom_label_entry.set_sensitive(manual);
-        })
-    };
-    refresh_interface_model();
-
-    interface_dropdown.connect_selected_notify({
-        let state = state.clone();
-        let entries = entries.clone();
-        let custom_label_label = custom_label_label.clone();
-        let custom_label_entry = custom_label_entry.clone();
-        move |dropdown| {
-            let index = dropdown.selected() as usize;
-            let entries_ref = entries.borrow();
-            if let Some(entry) = entries_ref.get(index) {
-                state.set_interface(entry.clone());
-            }
-            let manual = is_manual(&entries_ref, index);
-            drop(entries_ref);
-            custom_label_label.set_sensitive(manual);
-            custom_label_entry.set_sensitive(manual);
-        }
-    });
-    custom_label_entry.connect_changed({
-        let state = state.clone();
-        move |entry| state.set_custom_label(Some(entry.text().to_string()))
-    });
+    let picker = interface_picker::build(state.clone());
+    root.append(&picker.interface_label);
+    root.append(&picker.interface_dropdown);
+    root.append(&picker.custom_label_label);
+    root.append(&picker.custom_label_entry);
 
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -758,19 +705,19 @@ fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
     });
 
     i18n::on_change({
-        let interface_label_widget = interface_label_widget.clone();
-        let custom_label_label = custom_label_label.clone();
+        let interface_label = picker.interface_label.clone();
+        let custom_label_label = picker.custom_label_label.clone();
         let name_color_label = name_color_label.clone();
         let down_color_label = down_color_label.clone();
         let up_color_label = up_color_label.clone();
-        let refresh_interface_model = refresh_interface_model.clone();
+        let refresh = picker.refresh.clone();
         move || {
-            interface_label_widget.set_label(&i18n::t("widgets.network.settings.interface"));
+            interface_label.set_label(&i18n::t("widgets.network.settings.interface"));
             custom_label_label.set_label(&i18n::t("widgets.network.settings.custom_label"));
             name_color_label.set_label(&i18n::t("widgets.network.settings.name_color"));
             down_color_label.set_label(&i18n::t("widgets.network.settings.down_color"));
             up_color_label.set_label(&i18n::t("widgets.network.settings.up_color"));
-            refresh_interface_model();
+            refresh();
         }
     });
 
@@ -788,11 +735,11 @@ fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
     // panics.
     let resync: Box<dyn Fn()> = Box::new({
         let state = state.clone();
-        let custom_label_entry = custom_label_entry.clone();
+        let custom_label_entry = picker.custom_label_entry.clone();
         let name_color_button = name_color_button.clone();
         let down_color_button = down_color_button.clone();
         let up_color_button = up_color_button.clone();
-        let refresh_interface_model = refresh_interface_model.clone();
+        let refresh = picker.refresh.clone();
         move || {
             let custom_label = state.custom_label.borrow().clone();
             let name_color = *state.name_color.borrow();
@@ -805,7 +752,7 @@ fn build_settings(state: Rc<NetworkSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
             up_color_button.set_rgba(&up_color);
             // Also resyncs the interface dropdown's selection and the
             // custom-label controls' sensitivity from `state.interface_name`.
-            refresh_interface_model();
+            refresh();
         }
     });
 

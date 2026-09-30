@@ -7,6 +7,7 @@ pub mod cpu_temp;
 pub mod dummy;
 pub mod hue;
 pub mod icon_cache;
+pub mod interface_picker;
 pub mod network;
 pub mod network_m;
 pub mod network_s;
