@@ -281,6 +281,9 @@ struct ShortcutsState {
     /// recreated per drag, since only one tile can be moved at a time.
     /// Mirrors `_drop_highlight` in shortcuts.py.
     drop_highlight: gtk::Box,
+    /// Idempotent finalizer for the active icon drag, also called from the
+    /// grid's capture-phase primary-button release fallback.
+    release_fallback: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
     /// This instance's own CSS class for its backdrop color rule - see
     /// `next_backdrop_css_class`.
     backdrop_css_class: String,
@@ -667,6 +670,10 @@ fn move_icon(state: &Rc<ShortcutsState>, tile: &Rc<IconTile>, col: i32, row: i32
 
     let (x, y) = state.tile_position(col, row);
     state.fixed.move_(&tile.root, x, y);
+    // Explicit, on top of whatever GTK's own invalidation from move_()
+    // already queues - see idle_add_local_once_and_wake's own doc comment
+    // in main.rs for why this is needed under Flatpak.
+    state.fixed.queue_draw();
     state.update_backdrop();
     state.notify_change();
 }
@@ -677,6 +684,7 @@ fn remove_icon(state: &Rc<ShortcutsState>, tile: &Rc<IconTile>) {
     state.icons.borrow_mut().remove(&key);
     state.tiles.borrow_mut().remove(&key);
     state.fixed.remove(&tile.root);
+    state.fixed.queue_draw();
     state.update_backdrop();
     state.update_add_button_state();
     state.notify_change();
@@ -747,16 +755,37 @@ fn place_icon(state: &Rc<ShortcutsState>, icon: ShortcutIcon) {
             // applied to a whole-widget move/delete.
             let state = state.clone();
             let tile = tile.clone();
-            gtk::glib::idle_add_local_once(move || {
+            crate::idle_add_local_once_and_wake(move || {
                 remove_icon(&state, &tile);
             });
         }
     });
 
     let drag = gtk::GestureDrag::new();
+    let finish_drag: Rc<dyn Fn()> = {
+        let state = Rc::downgrade(state);
+        let tile = tile.clone();
+        Rc::new(move || {
+            let Some(state) = state.upgrade() else { return };
+            tile.root.remove_css_class("xeneon-shortcut-tile-moving");
+            state.drop_highlight.set_visible(false);
+            let (col, row) = (tile.hover_col.get(), tile.hover_row.get());
+            if (col, row) == (tile.col.get(), tile.row.get())
+                || state.icons.borrow().contains_key(&(col, row))
+            {
+                return;
+            }
+            let state = state.clone();
+            let tile = tile.clone();
+            crate::idle_add_local_once_and_wake(move || {
+                move_icon(&state, &tile, col, row);
+            });
+        })
+    };
     drag.connect_drag_begin({
         let state = state.clone();
         let tile = tile.clone();
+        let finish_drag = finish_drag.clone();
         move |gesture, x, y| {
             // Claims immediately - a dedicated button has no ambiguity to
             // resolve (unlike the tile itself, which can also be a plain
@@ -774,6 +803,7 @@ fn place_icon(state: &Rc<ShortcutsState>, icon: ShortcutIcon) {
             tile.hover_col.set(tile.col.get());
             tile.hover_row.set(tile.row.get());
             show_drop_highlight(&state, &tile);
+            *state.release_fallback.borrow_mut() = Some(finish_drag.clone());
         }
     });
     drag.connect_drag_update({
@@ -792,36 +822,11 @@ fn place_icon(state: &Rc<ShortcutsState>, icon: ShortcutIcon) {
         }
     });
     drag.connect_drag_end({
-        let state = state.clone();
-        let tile = tile.clone();
+        let release_fallback = state.release_fallback.clone();
         move |_, _, _| {
-            tile.root.remove_css_class("xeneon-shortcut-tile-moving");
-            state.drop_highlight.set_visible(false);
-            // The tile never moved from its own cell while being dragged
-            // (only the highlight did) - landing on the same cell or an
-            // occupied one just means there's nothing to do.
-            let (col, row) = (tile.hover_col.get(), tile.hover_row.get());
-            if (col, row) == (tile.col.get(), tile.row.get()) {
-                return;
+            if let Some(finish) = release_fallback.borrow_mut().take() {
+                finish();
             }
-            if state.icons.borrow().contains_key(&(col, row)) {
-                return;
-            }
-            // Deferred to the next main-loop idle iteration rather than
-            // done synchronously here: this handler runs while GTK is
-            // still finishing its own dispatch of the drag gesture
-            // attached to tile.move_button, which lives inside tile.root -
-            // moving tile.root out from under that still-in-flight event
-            // processing crashes inside GTK4's own crossing-event
-            // synthesis (confirmed via coredumpctl on real hardware) - see
-            // feedback_rust_gtk_dev_loop_gotchas item 5, and
-            // grid_widget.rs's own connect_drag_end for the same fix
-            // applied to a whole-widget move.
-            let state = state.clone();
-            let tile = tile.clone();
-            gtk::glib::idle_add_local_once(move || {
-                move_icon(&state, &tile, col, row);
-            });
         }
     });
     tile.move_button.add_controller(drag);
@@ -965,6 +970,26 @@ fn build_content(size: Size) -> (Rc<ShortcutsState>, gtk::Widget) {
 
     let fixed = gtk::Fixed::new();
     fixed.set_size_request(size.w, size.h);
+    let release_fallback: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let release = gtk::EventControllerLegacy::new();
+    release.set_propagation_phase(gtk::PropagationPhase::Capture);
+    release.connect_event({
+        let release_fallback = release_fallback.clone();
+        move |_, event| {
+            if event.event_type() == gtk::gdk::EventType::ButtonRelease {
+                let is_primary_release = event
+                    .downcast_ref::<gtk::gdk::ButtonEvent>()
+                    .map_or(false, |button_event| button_event.button() == 1);
+                if is_primary_release {
+                    if let Some(finish) = release_fallback.borrow_mut().take() {
+                        finish();
+                    }
+                }
+            }
+            gtk::glib::Propagation::Proceed
+        }
+    });
+    fixed.add_controller(release);
 
     let empty_hint = gtk::Label::new(None);
     empty_hint.add_css_class("dim-label");
@@ -1007,6 +1032,7 @@ fn build_content(size: Size) -> (Rc<ShortcutsState>, gtk::Widget) {
         empty_hint: empty_hint.clone(),
         add_button: add_button.clone(),
         drop_highlight,
+        release_fallback,
         backdrop_css_class: next_backdrop_css_class(),
         backdrop_color: RefCell::new(default_backdrop_rgba()),
         backdrop_opacity: Cell::new(DEFAULT_BACKDROP_ALPHA),

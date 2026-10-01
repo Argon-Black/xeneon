@@ -869,6 +869,35 @@ fn register_app_icon(display: &gtk::gdk::Display) {
     gtk::Window::set_default_icon_name(APP_ID);
 }
 
+/// `gtk::glib::idle_add_local_once`, plus an explicit
+/// `MainContext::wakeup()` right after - used by `grid_widget.rs`'s
+/// whole-widget move and `widgets/shortcuts.rs`'s icon move/delete to
+/// defer a widget-tree mutation until a still-in-flight GTK gesture
+/// dispatch has finished (see either call site's own doc comment for the
+/// crash that deferring at all avoids).
+///
+/// Confirmed via real-world testing only possible once this app actually
+/// ran inside a Flatpak sandbox: the scheduled idle callback can sit
+/// unprocessed for a long, unpredictable time - the drop-preview ghost
+/// stays on screen - until *any* unrelated input event arrives (even just
+/// the pointer leaving and re-entering the window, confirmed with no
+/// click involved), at which point the deferred move suddenly completes.
+/// That points at the main loop itself sitting blocked in `poll()`
+/// without reacting promptly to the newly-queued source, rather than
+/// anything about the callback's priority (already tried raising it to
+/// `HIGH_IDLE` - made things worse, since it could then run *before* the
+/// gesture dispatch it's meant to wait for, not just later than before).
+/// `MainContext::wakeup()` is the mechanism GLib itself documents for
+/// exactly this: if the context is currently blocked in `poll()` waiting
+/// for a source to become ready, this makes it stop blocking and check
+/// again immediately - removing the need for an unrelated external event
+/// to do that by accident.
+pub(crate) fn idle_add_local_once_and_wake(func: impl FnOnce() + 'static) -> gtk::glib::SourceId {
+    let id = gtk::glib::idle_add_local_once(func);
+    gtk::glib::MainContext::default().wakeup();
+    id
+}
+
 /// Fixed path (not per-PID) - wiped and recreated at the start of every
 /// dev-mode launch (see below), so there's nothing to preserve across
 /// launches anyway, and a fixed name is easier to find on disk while

@@ -65,6 +65,9 @@ pub struct WidgetGrid {
     /// would leak throwaway test content into the persisted layout.
     persist: bool,
     placed: Rc<RefCell<Vec<PlacedWidget>>>,
+    /// Idempotent finalizer for the active drag, used as a fallback when
+    /// a captured pointer release does not finish `GestureDrag`.
+    release_fallback: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
     /// Fired when a widget delete leaves this page with zero widgets -
     /// lets the caller (`main.rs`) decide whether to remove the page
     /// itself (it always keeps the first page, deleted or not - see
@@ -181,6 +184,26 @@ impl WidgetGrid {
         // snap_to_layout math) - GAP is added right at the point each one
         // is actually put/moved onto `fixed`, not baked in here.
         fixed.set_size_request(page_w + 2 * grid::GAP, page_h + 2 * grid::GAP);
+        let release_fallback: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let release_trace = gtk::EventControllerLegacy::new();
+        release_trace.set_propagation_phase(gtk::PropagationPhase::Capture);
+        release_trace.connect_event({
+            let release_fallback = release_fallback.clone();
+            move |_, event| {
+                if event.event_type() == gtk::gdk::EventType::ButtonRelease {
+                    let is_primary_release = event
+                        .downcast_ref::<gtk::gdk::ButtonEvent>()
+                        .map_or(false, |button_event| button_event.button() == 1);
+                    if is_primary_release {
+                        if let Some(finish) = release_fallback.borrow_mut().take() {
+                            finish();
+                        }
+                    }
+                }
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        fixed.add_controller(release_trace);
         fixed.add_css_class(&background_css_class(&page_id));
         Self {
             fixed,
@@ -194,6 +217,7 @@ impl WidgetGrid {
             pages_dir,
             persist,
             placed: Rc::new(RefCell::new(Vec::new())),
+            release_fallback,
             on_emptied: Rc::new(RefCell::new(None)),
         }
     }
@@ -544,6 +568,52 @@ impl WidgetGrid {
         let drag = gtk::GestureDrag::new();
         let start_rect = Rc::new(Cell::new(rect));
         let preview: Rc<RefCell<Option<MovePreview>>> = Rc::new(RefCell::new(None));
+        let finish_drag: Rc<dyn Fn()> = Rc::new({
+            let placed = self.placed.clone();
+            let fixed = self.fixed.clone();
+            let widgets_dir = self.widgets_dir.clone();
+            let page_index = self.page_index.clone();
+            let persist = self.persist;
+            let id = id.clone();
+            let kind = kind.clone();
+            let root_widget = root_widget.clone();
+            let preview = preview.clone();
+            let to_dict = to_dict.clone();
+            let appearance = handles.appearance.clone();
+            move || {
+                let Some(state) = preview.borrow_mut().take() else {
+                    return;
+                };
+                let fixed = fixed.clone();
+                let root_widget = root_widget.clone();
+                let placed = placed.clone();
+                let id = id.clone();
+                let widgets_dir = widgets_dir.clone();
+                let page_index = page_index.clone();
+                let kind = kind.clone();
+                let appearance = appearance.clone();
+                let to_dict = to_dict.clone();
+                crate::idle_add_local_once_and_wake(move || {
+                    fixed.remove(&state.ghost);
+                    if !state.valid {
+                        fixed.queue_draw();
+                        return;
+                    }
+                    fixed.move_(&root_widget, (state.candidate.x + grid::GAP) as f64, (state.candidate.y + grid::GAP) as f64);
+                    fixed.queue_draw();
+                    if let Some(p) = placed.borrow_mut().iter_mut().find(|p| p.id == id) {
+                        p.rect = state.candidate;
+                    }
+                    if !persist {
+                        return;
+                    }
+                    let saved = WidgetState::new(id.clone(), kind.clone(), page_index.get(), state.candidate, appearance.borrow().clone(), to_dict());
+                    if let Err(err) = widget_state::save(&widgets_dir, &saved) {
+                        warn!("failed to save widget {id}: {err}");
+                    }
+                });
+            }
+        });
 
         {
             let start_rect = start_rect.clone();
@@ -551,6 +621,8 @@ impl WidgetGrid {
             let fixed = self.fixed.clone();
             let preview = preview.clone();
             let id = id.clone();
+            let release_fallback = self.release_fallback.clone();
+            let finish_drag = finish_drag.clone();
             drag.connect_drag_begin(move |gesture, _, _| {
                 // Claim the sequence immediately (a dedicated move button,
                 // not an ambiguous whole-card drag) so the ancestor
@@ -568,6 +640,7 @@ impl WidgetGrid {
                 ghost.add_css_class("xeneon-move-preview-valid");
                 fixed.put(&ghost, (current.x + grid::GAP) as f64, (current.y + grid::GAP) as f64);
                 *preview.borrow_mut() = Some(MovePreview { ghost, candidate: current, valid: true });
+                *release_fallback.borrow_mut() = Some(finish_drag.clone());
             });
         }
         {
@@ -607,61 +680,11 @@ impl WidgetGrid {
             });
         }
         {
-            let placed = self.placed.clone();
-            let fixed = self.fixed.clone();
-            let widgets_dir = self.widgets_dir.clone();
-            let page_index = self.page_index.clone();
-            let persist = self.persist;
-            let id = id.clone();
-            let kind = kind.clone();
-            let root_widget = root_widget.clone();
-            let preview = preview.clone();
-            let to_dict = to_dict.clone();
-            let appearance = handles.appearance.clone();
+            let release_fallback = self.release_fallback.clone();
             drag.connect_drag_end(move |_, _, _| {
-                let Some(state) = preview.borrow_mut().take() else { return };
-                // Deferred to the next main-loop idle iteration rather than
-                // done synchronously right here: this handler runs while
-                // GTK is still finishing its own dispatch of the drag
-                // gesture attached to a button that lives *inside*
-                // `root_widget` - removing the ghost and (on a valid drop)
-                // relocating `root_widget` itself, synchronously, out from
-                // under that still-in-flight event processing crashed
-                // inside GTK4's own crossing-event synthesis
-                // (`gtk_synthesize_crossing_events`, confirmed via
-                // `coredumpctl` after a real move on the Xeneon hardware).
-                // Letting the gesture's own dispatch finish first before
-                // mutating the widget tree avoids that - see
-                // feedback_rust_gtk_dev_loop_gotchas for the write-up.
-                let fixed = fixed.clone();
-                let root_widget = root_widget.clone();
-                let placed = placed.clone();
-                let id = id.clone();
-                let widgets_dir = widgets_dir.clone();
-                let page_index = page_index.clone();
-                let kind = kind.clone();
-                let appearance = appearance.clone();
-                let to_dict = to_dict.clone();
-                gtk::glib::idle_add_local_once(move || {
-                    fixed.remove(&state.ghost);
-                    if !state.valid {
-                        // Invalid drop: the real widget never moved, so
-                        // simply discarding the preview leaves it exactly
-                        // where it was.
-                        return;
-                    }
-                    fixed.move_(&root_widget, (state.candidate.x + grid::GAP) as f64, (state.candidate.y + grid::GAP) as f64);
-                    if let Some(p) = placed.borrow_mut().iter_mut().find(|p| p.id == id) {
-                        p.rect = state.candidate;
-                    }
-                    if !persist {
-                        return;
-                    }
-                    let saved = WidgetState::new(id.clone(), kind.clone(), page_index.get(), state.candidate, appearance.borrow().clone(), to_dict());
-                    if let Err(err) = widget_state::save(&widgets_dir, &saved) {
-                        warn!("failed to save widget {id}: {err}");
-                    }
-                });
+                if let Some(finish) = release_fallback.borrow_mut().take() {
+                    finish();
+                }
             });
         }
         handles.move_button.add_controller(drag);
