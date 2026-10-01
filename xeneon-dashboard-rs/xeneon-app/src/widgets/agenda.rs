@@ -96,6 +96,7 @@ use std::sync::Once;
 // unified on BLACK everywhere per the user's call, then deduped onto
 // the one shared implementation.
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
+use crate::widgets::icon_cache;
 use crate::widgets::registry::WidgetInstance;
 
 const SOURCES_BUS_NAME: &str = "org.gnome.evolution.dataserver.Sources5";
@@ -1331,9 +1332,18 @@ pub fn restore(data: &serde_json::Value) -> WidgetInstance {
 /// to show a throwaway preview tile, every single time the picker opens
 /// - audit finding 2026-09-18. Static icon instead, same idea as
 /// youtube.rs's own `preview()`.
+/// Bundled rather than `gtk::Image::from_icon_name` - `x-office-calendar-
+/// symbolic` isn't guaranteed to exist in every icon theme a user might
+/// have active (confirmed missing from at least one real-world theme
+/// while testing the Flatpak build), and this app has no reason to depend
+/// on that; same convention as every other bundled icon in this project
+/// (`icon_cache.rs`).
 pub fn preview() -> gtk::Widget {
-    let icon = gtk::Image::from_icon_name("x-office-calendar-symbolic");
+    let icon = gtk::Image::new();
     icon.set_pixel_size(48);
+    if let Some(texture) = icon_cache::load_icon_texture("assets/icons/x-office-calendar-symbolic.svg") {
+        icon.set_paintable(Some(&texture));
+    }
     icon.upcast()
 }
 

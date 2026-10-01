@@ -43,6 +43,7 @@ use crate::hue_bridge;
 use crate::i18n_runtime as i18n;
 use crate::page_indicator::PageIndicator;
 use crate::theme;
+use crate::widgets::icon_cache;
 use xeneon_core::appearance::WidgetAppearance;
 use xeneon_core::config::DefaultWidgetAppearance;
 
@@ -190,7 +191,15 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     indicator_color_button.set_rgba(&gtk::gdk::RGBA::parse(&initial_indicator_color).unwrap_or(gtk::gdk::RGBA::WHITE));
     indicator_color_button.set_valign(gtk::Align::Center);
     indicator_color_row.add_suffix(&indicator_color_button);
-    let indicator_color_reset_button = gtk::Button::from_icon_name("edit-undo-symbolic");
+    // Bundled rather than `from_icon_name` - `edit-undo-symbolic` isn't
+    // guaranteed to exist in every icon theme a user might have active
+    // (confirmed missing from at least one real-world theme while testing
+    // the Flatpak build); same convention as every other bundled icon in
+    // this project (`icon_cache.rs`).
+    let indicator_color_reset_button = gtk::Button::new();
+    if let Some(texture) = icon_cache::load_icon_texture("assets/icons/edit-undo-symbolic.svg") {
+        indicator_color_reset_button.set_child(Some(&gtk::Image::from_paintable(Some(&texture))));
+    }
     indicator_color_reset_button.add_css_class("flat");
     indicator_color_reset_button.set_valign(gtk::Align::Center);
     indicator_color_reset_button.set_tooltip_text(Some(&i18n::t("settings.indicator_color_row.reset_tooltip")));
@@ -561,7 +570,12 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
                 ha_ping_spinner.set_spinning(false);
                 ha_ping_status_icon.set_visible(true);
                 if reachable {
-                    ha_ping_status_icon.set_icon_name(Some("emblem-ok-symbolic"));
+                    // "object-select-symbolic" - "emblem-ok-symbolic" isn't
+                    // a real Adwaita icon name at all (confirmed absent
+                    // from the icon theme entirely, not just missing from
+                    // one particular theme), so no bundling helps here;
+                    // this is just the correct current name.
+                    ha_ping_status_icon.set_icon_name(Some("object-select-symbolic"));
                     ha_ping_status_icon.set_tooltip_text(Some(&i18n::t("settings.ha_group.url_row.reachable")));
                 } else {
                     ha_ping_status_icon.set_icon_name(Some("dialog-warning-symbolic"));
@@ -1700,7 +1714,11 @@ fn build_page_row(grid: Rc<WidgetGrid>, page_indicator: PageIndicator) -> adw::E
     name_row.set_text(&grid.custom_name().unwrap_or_default());
     name_row.set_show_apply_button(true);
 
-    let restore_button = gtk::Button::from_icon_name("edit-undo-symbolic");
+    // Bundled - see the other `edit-undo-symbolic` use above for why.
+    let restore_button = gtk::Button::new();
+    if let Some(texture) = icon_cache::load_icon_texture("assets/icons/edit-undo-symbolic.svg") {
+        restore_button.set_child(Some(&gtk::Image::from_paintable(Some(&texture))));
+    }
     restore_button.add_css_class("flat");
     restore_button.set_valign(gtk::Align::Center);
     restore_button.set_tooltip_text(Some(&i18n::t("settings.pages_group.restore_name_tooltip")));

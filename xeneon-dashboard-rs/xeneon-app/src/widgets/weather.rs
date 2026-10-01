@@ -54,6 +54,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::i18n_runtime as i18n;
+use crate::widgets::icon_cache;
 use crate::widgets::make_row;
 use crate::widgets::registry::WidgetInstance;
 
@@ -91,38 +92,89 @@ const DEFAULT_CONTENT_SCALE: f64 = 1.42;
 /// condition key suffix, day icon, night icon) - same grouping as the
 /// Python original's `_WEATHER_CODES`: several adjacent codes share an
 /// icon and are only distinguished by their condition text.
+///
+/// Icon values are bundled asset paths (`assets/icons/<name>.svg`, loaded
+/// through `icon_cache`), not icon-theme names - confirmed while testing
+/// the Flatpak build that none of these `weather-*-symbolic` names are
+/// guaranteed present in a user's active icon theme (missing entirely
+/// from at least one real-world theme), so this app bundles its own
+/// copies rather than depending on that, same convention as every other
+/// icon in this project.
 const WEATHER_CODES: &[(i64, &str, &str, &str)] = &[
-    (0, "clear", "weather-clear-symbolic", "weather-clear-night-symbolic"),
-    (1, "mainly_clear", "weather-few-clouds-symbolic", "weather-few-clouds-night-symbolic"),
-    (2, "partly_cloudy", "weather-few-clouds-symbolic", "weather-few-clouds-night-symbolic"),
-    (3, "overcast", "weather-overcast-symbolic", "weather-overcast-symbolic"),
-    (45, "fog", "weather-fog-symbolic", "weather-fog-symbolic"),
-    (48, "fog", "weather-fog-symbolic", "weather-fog-symbolic"),
-    (51, "drizzle", "weather-showers-scattered-symbolic", "weather-showers-scattered-symbolic"),
-    (53, "drizzle", "weather-showers-scattered-symbolic", "weather-showers-scattered-symbolic"),
-    (55, "drizzle", "weather-showers-scattered-symbolic", "weather-showers-scattered-symbolic"),
-    (56, "freezing_drizzle", "weather-showers-scattered-symbolic", "weather-showers-scattered-symbolic"),
-    (57, "freezing_drizzle", "weather-showers-scattered-symbolic", "weather-showers-scattered-symbolic"),
-    (61, "rain", "weather-showers-symbolic", "weather-showers-symbolic"),
-    (63, "rain", "weather-showers-symbolic", "weather-showers-symbolic"),
-    (65, "heavy_rain", "weather-showers-symbolic", "weather-showers-symbolic"),
-    (66, "freezing_rain", "weather-showers-symbolic", "weather-showers-symbolic"),
-    (67, "freezing_rain", "weather-showers-symbolic", "weather-showers-symbolic"),
-    (71, "snow", "weather-snow-symbolic", "weather-snow-symbolic"),
-    (73, "snow", "weather-snow-symbolic", "weather-snow-symbolic"),
-    (75, "heavy_snow", "weather-snow-symbolic", "weather-snow-symbolic"),
-    (77, "snow_grains", "weather-snow-symbolic", "weather-snow-symbolic"),
-    (80, "rain_showers", "weather-showers-symbolic", "weather-showers-symbolic"),
-    (81, "rain_showers", "weather-showers-symbolic", "weather-showers-symbolic"),
-    (82, "heavy_rain_showers", "weather-showers-symbolic", "weather-showers-symbolic"),
-    (85, "snow_showers", "weather-snow-symbolic", "weather-snow-symbolic"),
-    (86, "snow_showers", "weather-snow-symbolic", "weather-snow-symbolic"),
-    (95, "thunderstorm", "weather-storm-symbolic", "weather-storm-symbolic"),
-    (96, "thunderstorm_hail", "weather-storm-symbolic", "weather-storm-symbolic"),
-    (99, "thunderstorm_hail", "weather-storm-symbolic", "weather-storm-symbolic"),
+    (0, "clear", "assets/icons/weather-clear-symbolic.svg", "assets/icons/weather-clear-night-symbolic.svg"),
+    (
+        1,
+        "mainly_clear",
+        "assets/icons/weather-few-clouds-symbolic.svg",
+        "assets/icons/weather-few-clouds-night-symbolic.svg",
+    ),
+    (
+        2,
+        "partly_cloudy",
+        "assets/icons/weather-few-clouds-symbolic.svg",
+        "assets/icons/weather-few-clouds-night-symbolic.svg",
+    ),
+    (3, "overcast", "assets/icons/weather-overcast-symbolic.svg", "assets/icons/weather-overcast-symbolic.svg"),
+    (45, "fog", "assets/icons/weather-fog-symbolic.svg", "assets/icons/weather-fog-symbolic.svg"),
+    (48, "fog", "assets/icons/weather-fog-symbolic.svg", "assets/icons/weather-fog-symbolic.svg"),
+    (
+        51,
+        "drizzle",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+    ),
+    (
+        53,
+        "drizzle",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+    ),
+    (
+        55,
+        "drizzle",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+    ),
+    (
+        56,
+        "freezing_drizzle",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+    ),
+    (
+        57,
+        "freezing_drizzle",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+        "assets/icons/weather-showers-scattered-symbolic.svg",
+    ),
+    (61, "rain", "assets/icons/weather-showers-symbolic.svg", "assets/icons/weather-showers-symbolic.svg"),
+    (63, "rain", "assets/icons/weather-showers-symbolic.svg", "assets/icons/weather-showers-symbolic.svg"),
+    (65, "heavy_rain", "assets/icons/weather-showers-symbolic.svg", "assets/icons/weather-showers-symbolic.svg"),
+    (66, "freezing_rain", "assets/icons/weather-showers-symbolic.svg", "assets/icons/weather-showers-symbolic.svg"),
+    (67, "freezing_rain", "assets/icons/weather-showers-symbolic.svg", "assets/icons/weather-showers-symbolic.svg"),
+    (71, "snow", "assets/icons/weather-snow-symbolic.svg", "assets/icons/weather-snow-symbolic.svg"),
+    (73, "snow", "assets/icons/weather-snow-symbolic.svg", "assets/icons/weather-snow-symbolic.svg"),
+    (75, "heavy_snow", "assets/icons/weather-snow-symbolic.svg", "assets/icons/weather-snow-symbolic.svg"),
+    (77, "snow_grains", "assets/icons/weather-snow-symbolic.svg", "assets/icons/weather-snow-symbolic.svg"),
+    (80, "rain_showers", "assets/icons/weather-showers-symbolic.svg", "assets/icons/weather-showers-symbolic.svg"),
+    (81, "rain_showers", "assets/icons/weather-showers-symbolic.svg", "assets/icons/weather-showers-symbolic.svg"),
+    (
+        82,
+        "heavy_rain_showers",
+        "assets/icons/weather-showers-symbolic.svg",
+        "assets/icons/weather-showers-symbolic.svg",
+    ),
+    (85, "snow_showers", "assets/icons/weather-snow-symbolic.svg", "assets/icons/weather-snow-symbolic.svg"),
+    (86, "snow_showers", "assets/icons/weather-snow-symbolic.svg", "assets/icons/weather-snow-symbolic.svg"),
+    (95, "thunderstorm", "assets/icons/weather-storm-symbolic.svg", "assets/icons/weather-storm-symbolic.svg"),
+    (96, "thunderstorm_hail", "assets/icons/weather-storm-symbolic.svg", "assets/icons/weather-storm-symbolic.svg"),
+    (99, "thunderstorm_hail", "assets/icons/weather-storm-symbolic.svg", "assets/icons/weather-storm-symbolic.svg"),
 ];
-const UNKNOWN_CODE: (&str, &str, &str) =
-    ("unknown", "weather-severe-alert-symbolic", "weather-severe-alert-symbolic");
+const UNKNOWN_CODE: (&str, &str, &str) = (
+    "unknown",
+    "assets/icons/weather-severe-alert-symbolic.svg",
+    "assets/icons/weather-severe-alert-symbolic.svg",
+);
 
 fn weather_code_info(code: i64) -> (&'static str, &'static str, &'static str) {
     WEATHER_CODES
@@ -462,7 +514,8 @@ impl WeatherState {
 
                 let code = self.weather_code.get().unwrap_or(-1);
                 let (condition_key, day_icon, night_icon) = weather_code_info(code);
-                self.icon.set_icon_name(Some(if self.is_day.get() { day_icon } else { night_icon }));
+                let icon_path = if self.is_day.get() { day_icon } else { night_icon };
+                self.icon.set_paintable(icon_cache::load_icon_texture(icon_path).as_ref());
                 self.icon
                     .set_tooltip_text(Some(&i18n::t(&format!("widgets.weather.conditions.{condition_key}"))));
 
@@ -481,11 +534,15 @@ impl WeatherState {
             }
             FetchStatus::Loading | FetchStatus::Error => {
                 let is_error = self.status.get() == FetchStatus::Error;
-                let icon_name = if is_error { "weather-severe-alert-symbolic" } else { "weather-clear-symbolic" };
+                let icon_path = if is_error {
+                    "assets/icons/weather-severe-alert-symbolic.svg"
+                } else {
+                    "assets/icons/weather-clear-symbolic.svg"
+                };
                 let tooltip_key = if is_error { "widgets.weather.error" } else { "widgets.weather.loading" };
 
                 self.temp_label.set_markup(&markup("--°", BASE_TEMP_FONT_PT, scale));
-                self.icon.set_icon_name(Some(icon_name));
+                self.icon.set_paintable(icon_cache::load_icon_texture(icon_path).as_ref());
                 self.icon.set_tooltip_text(Some(&i18n::t(tooltip_key)));
                 self.humidity_label.set_markup(&markup("--%", BASE_STAT_FONT_PT, scale));
                 self.pressure_label.set_markup(&markup("-- hPa", BASE_STAT_FONT_PT, scale));
@@ -576,10 +633,16 @@ fn trigger_fetch(state: &Rc<WeatherState>) {
     });
 }
 
-fn make_stat_row(icon_name: &str) -> (gtk::Box, gtk::Image, gtk::Label) {
+/// `icon_path` is a bundled asset path (`assets/icons/<name>.svg`, see the
+/// `WEATHER_CODES` doc comment for why these are bundled rather than
+/// icon-theme names).
+fn make_stat_row(icon_path: &'static str) -> (gtk::Box, gtk::Image, gtk::Label) {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     row.set_halign(gtk::Align::Start);
-    let icon = gtk::Image::from_icon_name(icon_name);
+    let icon = gtk::Image::new();
+    if let Some(texture) = icon_cache::load_icon_texture(icon_path) {
+        icon.set_paintable(Some(&texture));
+    }
     row.append(&icon);
     let label = gtk::Label::new(None);
     row.append(&label);
@@ -600,7 +663,7 @@ fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
     root.append(&temp_column);
 
     let icon = gtk::Image::new();
-    let (wind_row, wind_icon, wind_label) = make_stat_row("weather-windy-symbolic");
+    let (wind_row, wind_icon, wind_label) = make_stat_row("assets/icons/weather-windy-symbolic.svg");
     let icon_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     icon_column.set_halign(gtk::Align::Center);
     icon_column.set_valign(gtk::Align::Center);
@@ -608,9 +671,17 @@ fn build_content() -> (Rc<WeatherState>, gtk::Widget) {
     icon_column.append(&wind_row);
     root.append(&icon_column);
 
-    let (humidity_row, humidity_icon, humidity_label) = make_stat_row("weather-showers-symbolic");
-    let (pressure_row, pressure_icon, pressure_label) = make_stat_row("speedometer-symbolic");
-    let (uv_row, uv_icon, uv_label) = make_stat_row("brightness-high-symbolic");
+    let (humidity_row, humidity_icon, humidity_label) = make_stat_row("assets/icons/weather-showers-symbolic.svg");
+    // "speedometer-symbolic" doesn't exist in Adwaita at all (an older
+    // gnome-icon-theme name) - bundled from the user's own active icon
+    // theme instead (Flat-Remix), which does have a real one, normalized
+    // to this project's white-fill tinting convention like every other
+    // bundled icon.
+    let (pressure_row, pressure_icon, pressure_label) = make_stat_row("assets/icons/speedometer-symbolic.svg");
+    // "brightness-high-symbolic" is also not a real Adwaita name - the
+    // current equivalent is "display-brightness-symbolic", bundled here
+    // too for the same reason as every other icon on this card.
+    let (uv_row, uv_icon, uv_label) = make_stat_row("assets/icons/display-brightness-symbolic.svg");
     let stats_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     stats_column.set_valign(gtk::Align::Center);
     stats_column.append(&humidity_row);
@@ -1161,7 +1232,10 @@ pub fn restore(data: &serde_json::Value) -> WidgetInstance {
 /// 2026-09-18. Static icon instead, same idea as youtube.rs's own
 /// `preview()`.
 pub fn preview() -> gtk::Widget {
-    let icon = gtk::Image::from_icon_name("weather-clear-symbolic");
+    let icon = gtk::Image::new();
     icon.set_pixel_size(48);
+    if let Some(texture) = icon_cache::load_icon_texture("assets/icons/weather-clear-symbolic.svg") {
+        icon.set_paintable(Some(&texture));
+    }
     icon.upcast()
 }
