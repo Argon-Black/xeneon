@@ -185,10 +185,20 @@ fn load_icon() -> ksni::Icon {
 /// Returns `None` (after logging) if no StatusNotifierWatcher is running -
 /// e.g. a desktop with no tray support at all - so the app stays fully
 /// usable without one; this is a convenience, not a requirement.
+///
+/// `disable_dbus_name(true)` skips owning a well-known bus name
+/// (`org.kde.StatusNotifierItem-<pid>-<n>`) and registers with this
+/// connection's own unique name instead - ksni's own docs call this out as
+/// required in a Flatpak sandbox (claiming an arbitrary well-known name
+/// needs a separate `--own-name` permission the manifest doesn't grant).
+/// Kept on unconditionally rather than only when sandboxed: every real SNI
+/// host (KDE's watcher, GNOME's AppIndicator extension) accepts either kind
+/// of bus name identically, so there's no behavior difference to branch on
+/// outside the sandbox either.
 pub(crate) fn spawn(sender: Sender<AppMsg>) -> Option<ksni::blocking::Handle<XeneonTray>> {
     use ksni::blocking::TrayMethods;
     let tray = XeneonTray::new(sender, load_icon());
-    match tray.spawn() {
+    match tray.disable_dbus_name(true).spawn() {
         Ok(handle) => Some(handle),
         Err(err) => {
             warn!("system tray unavailable, skipping: {err}");
