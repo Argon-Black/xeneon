@@ -14,6 +14,7 @@ pub mod network_m;
 pub mod network_s;
 pub mod network_sq;
 pub mod network_sx;
+pub mod network_text_card;
 pub mod registry;
 pub mod shortcuts;
 pub mod system_info;
