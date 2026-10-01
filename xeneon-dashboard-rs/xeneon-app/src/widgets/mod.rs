@@ -9,6 +9,7 @@ pub mod hue;
 pub mod icon_cache;
 pub mod interface_picker;
 pub mod network;
+pub mod network_card;
 pub mod network_m;
 pub mod network_s;
 pub mod network_sq;
