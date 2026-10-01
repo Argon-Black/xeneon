@@ -677,9 +677,21 @@ fn build_settings(state: Rc<SystemSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
     disk_path_label.set_halign(gtk::Align::Start);
     root.append(&disk_path_label);
 
-    let disk_path_entry = gtk::Entry::new();
-    disk_path_entry.set_text(&state.disk_path.borrow());
-    root.append(&disk_path_entry);
+    // A folder picker (via the portal) rather than a free-text entry: a
+    // typed path has no meaning once sandboxed - only a path the user
+    // actually picked through the file-chooser portal is guaranteed
+    // visible, regardless of which partition/drive it lives on (`statvfs`
+    // below reflects whatever real mount backs that folder, not the
+    // sandbox's own restricted view). Works identically outside a sandbox
+    // too, since `gtk::FileDialog` falls back to the plain native chooser
+    // there - no environment-specific branch needed in this widget's code.
+    let disk_path_value_label = gtk::Label::new(Some(&state.disk_path.borrow()));
+    disk_path_value_label.set_hexpand(true);
+    disk_path_value_label.set_halign(gtk::Align::Start);
+    disk_path_value_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    let disk_path_choose_button =
+        gtk::Button::with_label(&i18n::t("widgets.system_info.settings.disk_path_choose"));
+    root.append(&make_row(&[disk_path_value_label.upcast_ref(), disk_path_choose_button.upcast_ref()]));
 
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
@@ -717,9 +729,27 @@ fn build_settings(state: Rc<SystemSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
     root.append(&make_row(&[disk_color_label.upcast_ref(), disk_color_button.upcast_ref()]));
 
     // --- signal wiring: controls push one-way into `state` ---
-    disk_path_entry.connect_changed({
+    disk_path_choose_button.connect_clicked({
         let state = state.clone();
-        move |entry| state.set_disk_path(entry.text().to_string())
+        let disk_path_value_label = disk_path_value_label.clone();
+        move |button| {
+            let dialog = gtk::FileDialog::new();
+            let parent = button.root().and_downcast::<gtk::Window>();
+            let state = state.clone();
+            let disk_path_value_label = disk_path_value_label.clone();
+            dialog.select_folder(parent.as_ref(), gtk::gio::Cancellable::NONE, move |result| {
+                // Err just means the user closed the picker without
+                // choosing anything - nothing to do, same as
+                // `appearance_popover.rs`'s own image picker.
+                if let Ok(folder) = result {
+                    if let Some(path) = folder.path() {
+                        let path_str = path.display().to_string();
+                        disk_path_value_label.set_label(&path_str);
+                        state.set_disk_path(path_str);
+                    }
+                }
+            });
+        }
     });
     scale_slider.connect_value_changed({
         let state = state.clone();
@@ -741,12 +771,14 @@ fn build_settings(state: Rc<SystemSqState>) -> (gtk::Widget, Box<dyn Fn()>) {
     // --- retranslation ---
     i18n::on_change({
         let disk_path_label = disk_path_label.clone();
+        let disk_path_choose_button = disk_path_choose_button.clone();
         let scale_label = scale_label.clone();
         let cpu_color_label = cpu_color_label.clone();
         let mem_color_label = mem_color_label.clone();
         let disk_color_label = disk_color_label.clone();
         move || {
             disk_path_label.set_label(&i18n::t("widgets.system_info.settings.disk_path"));
+            disk_path_choose_button.set_label(&i18n::t("widgets.system_info.settings.disk_path_choose"));
             scale_label.set_label(&i18n::t("widgets.system_info.settings.content_scale"));
             cpu_color_label.set_label(&i18n::t("widgets.system_info.settings.cpu_color"));
             mem_color_label.set_label(&i18n::t("widgets.system_info.settings.mem_color"));

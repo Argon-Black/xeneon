@@ -365,6 +365,7 @@
   "widgets.system_info.unit_minute": "min",
   "widgets.system_info.uptime_label": "En ligne depuis {value}",
   "widgets.system_info.settings.disk_path": "Point de montage",
+  "widgets.system_info.settings.disk_path_choose": "Choisir un dossier…",
   "widgets.system_info.settings.content_scale": "Taille du contenu",
   "widgets.system_info.settings.cpu_color": "Couleur CPU",
   "widgets.system_info.settings.mem_color": "Couleur mémoire",
