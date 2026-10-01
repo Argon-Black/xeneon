@@ -1,0 +1,73 @@
+# Manifest Flatpak/Flathub pour Xeneon Dashboard (port Rust, xeneon-dashboard-rs/).
+#
+# ÉTAPE 1 de 5 (voir la mémoire du projet) : seulement les permissions déjà
+# bien identifiées, zéro changement de code applicatif. PAS ENCORE DEDANS,
+# volontairement - chacun a son propre point de travail à venir :
+#   - org.freedesktop.Avahi (découverte Hue locale) : hue_bridge.rs shelle
+#     encore vers le binaire `avahi-browse`, invisible en sandbox - tant que
+#     ce n'est pas réécrit en D-Bus direct (point 2), ajouter la permission
+#     ici n'aurait aucun effet et laisserait une ligne non justifiée par du
+#     code réel.
+#   - les talk/own-name du tray icon (ksni, tray.rs) : permission exacte pas
+#     encore vérifiée contre un précédent fiable (point 3).
+#   - les modules de build (vendoring cargo, extension SDK rust-stable) :
+#     repoussés au point 5 (manifeste complet + premier essai de build réel).
+#
+# Runtime GNOME 47 choisi pour matcher la feature `gnome_47` déjà épinglée
+# dans xeneon-app/Cargo.toml (relm4) - pas une valeur devinée.
+app-id: com.n3tlab.XeneonDashboardRust
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: xeneon-dashboard-rust # nom d'exemple, à faire correspondre au binaire réel une fois le module de build écrit (point 5)
+
+finish-args:
+  # --- Affichage ---
+  - --socket=wayland
+  - --socket=fallback-x11 # repli X11 seulement si le compositeur ne fait pas Wayland
+  - --device=dri # accélération GPU (GTK4 + webkit6 pour le widget YouTube)
+
+  # --- Réseau ---
+  # weather.rs (Open-Meteo), hue_bridge.rs (CLIP v2 local + repli cloud
+  # discovery.meethue.com), youtube.rs (webkit6 vers youtube.com).
+  - --share=network
+
+  # --- D-Bus session : noms précis uniquement, jamais --socket=session-bus ---
+  - --talk-name=org.mpris.MediaPlayer2.* # audio.rs : contrôle de n'importe quel lecteur MPRIS
+  # agenda.rs, D-Bus brut (gio::DBusConnection::call_sync, pas de binding
+  # libedataserver/libecal - voir la mémoire du projet). Sources5/Calendar8
+  # sont les noms de bus fixes ; OpenCalendar renvoie en plus un bus_name
+  # DYNAMIQUE par source (sous-processus backend EDS, un par calendrier
+  # connecté) - confirmé en lisant agenda.rs - d'où le wildcard en plus des
+  # deux noms fixes. Noms versionnés (Sources5, Calendar8) à revérifier si
+  # jamais la version d'evolution-data-server du runtime cible change de
+  # soname.
+  - --talk-name=org.gnome.evolution.dataserver.Sources5
+  - --talk-name=org.gnome.evolution.dataserver.Calendar8
+  - --talk-name=org.gnome.evolution.dataserver.Subprocess.Backend.*
+  # tray.rs (crate ksni) : enregistrement StatusNotifierItem. Pas de
+  # --own-name nécessaire - tray.rs appelle `disable_dbus_name(true)`
+  # (ksni s'enregistre avec le nom de connexion unique plutôt que de
+  # posséder org.kde.StatusNotifierItem-<pid>-<n>, suivant la doc du crate
+  # lui-même qui documente ce besoin précis pour Flatpak).
+  - --talk-name=org.kde.StatusNotifierWatcher
+
+  # --- D-Bus système (pas session) ---
+  # hue_bridge.rs::discover_avahi : découverte mDNS locale du bridge Hue via
+  # org.freedesktop.Avahi.Server, qui tourne sur le bus SYSTÈME (avahi-daemon
+  # est un service système, pas une session utilisateur) - d'où
+  # --system-talk-name et non --talk-name. Repli sur la découverte cloud
+  # (discovery.meethue.com, couverte par --share=network) si indisponible,
+  # donc aucune permission supplémentaire n'est strictement bloquante pour
+  # la fonctionnalité, juste pour la découverte locale.
+  - --system-talk-name=org.freedesktop.Avahi
+
+  # --- Système de fichiers, lecture seule, chemins précis uniquement ---
+  - --filesystem=/sys/class/hwmon:ro # cpu_temp.rs, temp_gauge.rs : lecture directe des capteurs hwmon, pas de portail pour ça
+  - --filesystem=/sys/class/net:ro # network.rs : lit .../wireless et .../phy80211 pour choisir l'icône Wi-Fi/Ethernet
+
+# Modules de build : volontairement vide à cette étape (voir le point 5 -
+# vendoring cargo + extension SDK org.freedesktop.Sdk.Extension.rust-stable
+# + build-commands réels). Rien ici ne doit être considéré buildable tel
+# quel pour l'instant.
+modules: []
