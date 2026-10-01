@@ -39,6 +39,7 @@ use std::rc::Rc;
 use webkit6::prelude::*;
 
 use crate::i18n_runtime as i18n;
+use crate::resource_path::resource_path;
 use crate::widgets::registry::WidgetInstance;
 
 const HOME_URL: &str = "https://www.youtube.com/";
@@ -117,7 +118,7 @@ fn loading_texture() -> Option<gtk::gdk::Texture> {
     LOADING_TEXTURE.with(|cell| {
         let mut cell = cell.borrow_mut();
         if cell.is_none() {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(LOADING_ICON_PATH);
+            let path = resource_path(LOADING_ICON_PATH);
             let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&path, LOADING_ICON_RASTER_PX, LOADING_ICON_RASTER_PX)
                 .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
                 .inspect_err(|err| warn!("failed to load {}: {err}", path.display()))

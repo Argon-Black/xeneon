@@ -11,18 +11,19 @@ use log::warn;
 use std::cell::RefCell;
 use xeneon_core::config::Config;
 
+use crate::resource_path::resource_path;
+
 thread_local! {
     static CONFIG: RefCell<Config> = RefCell::new(Config::default());
 }
 
-// Resolved relative to this crate's own source directory, same mechanism
-// (and same reason: reliable under `cargo run`/`cargo build` regardless of
-// the process's working directory) as `widgets/audio.rs`'s
+// Resolved via `resource_path` (installed-prefix-or-source-tree, see that
+// module's own doc comment), same as `widgets/audio.rs`'s
 // `EMPTY_STATE_ICON_PATH`.
 const DEFAULT_BACKGROUND_ASSET: &str = "assets/default-background.svg";
 
 fn default_background_source() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_BACKGROUND_ASSET)
+    resource_path(DEFAULT_BACKGROUND_ASSET)
 }
 
 /// Copies the bundled default background image into `background_dir()` and

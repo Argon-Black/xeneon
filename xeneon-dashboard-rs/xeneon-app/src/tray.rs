@@ -29,6 +29,7 @@
 use log::warn;
 use relm4::Sender;
 
+use crate::resource_path::resource_path;
 use crate::AppMsg;
 
 /// One label per menu entry, refreshed via [`retranslate`](Self::retranslate)
@@ -143,11 +144,8 @@ fn load_icon() -> ksni::Icon {
     // panels that scale tray icons up (most do, to at least their own
     // panel-icon size).
     const SIZE: i32 = 48;
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/resources/icons/hicolor/symbolic/apps/com.n3tlab.XeneonDashboardRust-symbolic.svg"
-    );
-    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(path, SIZE, SIZE)
+    let path = resource_path("resources/icons/hicolor/symbolic/apps/com.n3tlab.XeneonDashboardRust-symbolic.svg");
+    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&path, SIZE, SIZE)
         .expect("bundled tray icon SVG should always load");
 
     let width = pixbuf.width();

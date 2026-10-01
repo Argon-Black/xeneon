@@ -61,6 +61,7 @@ use std::sync::Once;
 use crate::appearance_css::CssRuleRegistry;
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
+use crate::resource_path::resource_path;
 use crate::widgets::card_header;
 use crate::widgets::make_row;
 use crate::widgets::registry::WidgetInstance;
@@ -174,7 +175,7 @@ fn load_header_icon() -> Option<gtk::gdk::Texture> {
         if let Some(texture) = cache.borrow().as_ref() {
             return Some(texture.clone());
         }
-        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ICON_PATH);
+        let full_path = resource_path(ICON_PATH);
         let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&full_path, HEADER_ICON_PX * 4, HEADER_ICON_PX * 4)
             .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
             .inspect_err(|err| warn!("failed to load {}: {err}", full_path.display()))

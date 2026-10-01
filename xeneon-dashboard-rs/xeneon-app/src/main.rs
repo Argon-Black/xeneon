@@ -58,6 +58,7 @@ mod hue_bridge;
 mod i18n_runtime;
 mod logging;
 mod page_indicator;
+mod resource_path;
 mod settings_page;
 mod theme;
 mod tray;
@@ -858,16 +859,13 @@ fn xeneon_monitor(display: &gtk::gdk::Display) -> Option<gtk::gdk::Monitor> {
 /// (tray.rs) doesn't use this lookup at all - it rasterizes the SVG
 /// directly, for the same reason.
 ///
-/// Resolved from `CARGO_MANIFEST_DIR` at compile time rather than an
-/// installed system path - there's no packaging/install step yet (see
-/// CLAUDE.md's Flatpak notes), so this only works run from a source
-/// checkout (`cargo run`/the built binary staying next to its source
-/// tree). Revisit this once packaging exists: an installed icon would
-/// live under `/usr/share/icons/hicolor/...` or a Flatpak's equivalent,
-/// found by the icon theme automatically with no search path needed.
+/// `resource_path::resource_path` finds this both in a source checkout
+/// (`cargo run`) and once installed (an icon theme search path works
+/// equally well pointed at `/app/share/.../resources/icons` as at the
+/// system hicolor theme's own tree).
 fn register_app_icon(display: &gtk::gdk::Display) {
-    let icons_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/icons");
-    gtk::IconTheme::for_display(display).add_search_path(icons_dir);
+    let icons_dir = resource_path::resource_path("resources/icons");
+    gtk::IconTheme::for_display(display).add_search_path(&icons_dir);
     gtk::Window::set_default_icon_name(APP_ID);
 }
 

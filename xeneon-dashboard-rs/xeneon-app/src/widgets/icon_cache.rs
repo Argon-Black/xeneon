@@ -15,6 +15,8 @@ use log::warn;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use crate::resource_path::resource_path;
+
 /// The fill color these bundled SVGs use for their main glyph - what
 /// `load_tinted_icon` looks for and replaces with the caller's chosen
 /// color.
@@ -42,7 +44,7 @@ pub fn load_icon_texture(path: &'static str) -> Option<gtk::gdk::Texture> {
         if let Some(texture) = cache.get(path) {
             return texture.clone();
         }
-        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+        let full_path = resource_path(path);
         let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&full_path, ICON_RASTER_PX, ICON_RASTER_PX)
             .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
             .inspect_err(|err| warn!("failed to load {}: {err}", full_path.display()))
@@ -63,7 +65,7 @@ pub fn load_tinted_icon(path: &'static str, hex_color: &str) -> Option<gtk::gdk:
         if let Some(texture) = cache.borrow().get(&key) {
             return texture.clone();
         }
-        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+        let full_path = resource_path(path);
         let texture = std::fs::read_to_string(&full_path)
             .inspect_err(|err| warn!("failed to read {}: {err}", full_path.display()))
             .ok()

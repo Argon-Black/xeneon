@@ -48,6 +48,7 @@ use std::rc::Rc;
 use std::sync::Once;
 
 use crate::i18n_runtime as i18n;
+use crate::resource_path::resource_path;
 use crate::widgets::registry::WidgetInstance;
 use xeneon_core::grid::{Size, SIZE_L, SIZE_M, SIZE_SQ};
 
@@ -116,7 +117,7 @@ fn empty_state_texture() -> Option<gtk::gdk::Texture> {
     EMPTY_STATE_TEXTURE.with(|cell| {
         let mut cell = cell.borrow_mut();
         if cell.is_none() {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(EMPTY_STATE_ICON_PATH);
+            let path = resource_path(EMPTY_STATE_ICON_PATH);
             let texture = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&path, EMPTY_STATE_ICON_RASTER_PX, EMPTY_STATE_ICON_RASTER_PX)
                 .map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
                 .inspect_err(|err| warn!("failed to load {}: {err}", path.display()))

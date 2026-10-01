@@ -10,6 +10,8 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use xeneon_core::i18n::{self, Catalog};
 
+use crate::resource_path::resource_path;
+
 const FALLBACK_LANGUAGE: &str = "fr";
 
 struct State {
@@ -30,18 +32,17 @@ thread_local! {
     });
 }
 
-/// `locales_dir` is resolved once at startup, relative to the crate's own
-/// source directory (`CARGO_MANIFEST_DIR`) rather than the process's
-/// current working directory - reliable for `cargo run`/`cargo build`
-/// regardless of where they're invoked from. Revisit once real packaging
-/// needs locales installed under an XDG data dir instead.
+/// `locales_dir` is resolved once at startup via `resource_path` -
+/// installed-prefix-relative once packaged, falling back to the crate's
+/// own source directory for `cargo run`/`cargo build` (see that module's
+/// own doc comment).
 ///
 /// `language` is the saved `Config.language` (`"fr"` by default on a
 /// first run, via `Config::default()`) - callers read it from
 /// `config_store::get()` before calling this, matching `i18n.init()`
 /// taking the configured language in the Python original.
 pub fn init(language: &str) {
-    let locales_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("locales");
+    let locales_dir = resource_path("locales");
     let fallback = i18n::load_catalog(&locales_dir, FALLBACK_LANGUAGE);
     let active = i18n::load_catalog(&locales_dir, language);
     STATE.with(|state| {
