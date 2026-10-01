@@ -1,25 +1,39 @@
 # Manifest Flatpak/Flathub pour Xeneon Dashboard (port Rust, xeneon-dashboard-rs/).
 #
-# ÉTAPE 1 de 5 (voir la mémoire du projet) : seulement les permissions déjà
-# bien identifiées, zéro changement de code applicatif. PAS ENCORE DEDANS,
-# volontairement - chacun a son propre point de travail à venir :
-#   - org.freedesktop.Avahi (découverte Hue locale) : hue_bridge.rs shelle
-#     encore vers le binaire `avahi-browse`, invisible en sandbox - tant que
-#     ce n'est pas réécrit en D-Bus direct (point 2), ajouter la permission
-#     ici n'aurait aucun effet et laisserait une ligne non justifiée par du
-#     code réel.
-#   - les talk/own-name du tray icon (ksni, tray.rs) : permission exacte pas
-#     encore vérifiée contre un précédent fiable (point 3).
-#   - les modules de build (vendoring cargo, extension SDK rust-stable) :
-#     repoussés au point 5 (manifeste complet + premier essai de build réel).
+# Points 1-4 (permissions, voir la mémoire du projet) tous clos. Point 5
+# (ce fichier maintenant) : vendoring cargo + extension SDK rust-stable +
+# module de build réel.
 #
-# Runtime GNOME 47 choisi pour matcher la feature `gnome_47` déjà épinglée
-# dans xeneon-app/Cargo.toml (relm4) - pas une valeur devinée.
+# runtime-version '49' (pas '47', qui n'était qu'un plancher minimum pour
+# la feature `gnome_47` de relm4) : choisi pour matcher ce qui est
+# réellement installé sur la machine de dev (org.gnome.Platform/Sdk 49),
+# et l'extension rust-stable branche '25.08' confirmée compatible en
+# lisant les vraies métadonnées du SDK (`flatpak remote-info
+# --show-metadata flathub org.gnome.Sdk/x86_64/49`, section
+# `[Extension org.freedesktop.Sdk.Extension]` -> `version = 25.08`), pas
+# la dernière branche dispo (`26.08`, qui aurait été incompatible).
 app-id: com.n3tlab.XeneonDashboardRust
 runtime: org.gnome.Platform
-runtime-version: '47'
+runtime-version: '49'
 sdk: org.gnome.Sdk
-command: xeneon-dashboard-rust # nom d'exemple, à faire correspondre au binaire réel une fois le module de build écrit (point 5)
+command: xeneon-app
+
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+
+build-options:
+  # Les extensions SDK se montent sous /usr/lib/sdk/<dernier segment de
+  # l'id> (confirmé via les métadonnées du SDK, section
+  # `directory = lib/sdk`) - rustc/cargo n'est pas sur PATH sans ça.
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    # cargo-sources.json (généré par flatpak-cargo-generator.py, voir la
+    # mémoire du projet) écrit lui-même son propre fichier de config
+    # pointant vers les crates vendorisées, à l'intérieur de ce dossier -
+    # CARGO_HOME doit donc pointer dessus pour que cargo le trouve.
+    # /run/build/<nom du module>/ est le chemin de build réel que
+    # flatpak-builder utilise pour ce module.
+    CARGO_HOME: /run/build/xeneon-dashboard-rust/cargo
 
 finish-args:
   # --- Affichage ---
@@ -66,8 +80,45 @@ finish-args:
   - --filesystem=/sys/class/hwmon:ro # cpu_temp.rs, temp_gauge.rs : lecture directe des capteurs hwmon, pas de portail pour ça
   - --filesystem=/sys/class/net:ro # network.rs : lit .../wireless et .../phy80211 pour choisir l'icône Wi-Fi/Ethernet
 
-# Modules de build : volontairement vide à cette étape (voir le point 5 -
-# vendoring cargo + extension SDK org.freedesktop.Sdk.Extension.rust-stable
-# + build-commands réels). Rien ici ne doit être considéré buildable tel
-# quel pour l'instant.
-modules: []
+modules:
+  - name: xeneon-dashboard-rust
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release
+      - install -Dm755 target/release/xeneon-app /app/bin/xeneon-app
+      - install -Dm644 xeneon-app/resources/com.n3tlab.XeneonDashboardRust.desktop
+        /app/share/applications/com.n3tlab.XeneonDashboardRust.desktop
+      - install -Dm644 xeneon-app/resources/icons/hicolor/scalable/apps/com.n3tlab.XeneonDashboardRust.svg
+        /app/share/icons/hicolor/scalable/apps/com.n3tlab.XeneonDashboardRust.svg
+      - install -Dm644 xeneon-app/resources/icons/hicolor/symbolic/apps/com.n3tlab.XeneonDashboardRust-symbolic.svg
+        /app/share/icons/hicolor/symbolic/apps/com.n3tlab.XeneonDashboardRust-symbolic.svg
+      # Copie séparée sous le préfixe propre à l'appli (pas le thème
+      # d'icônes système ci-dessus) : c'est ce que `resource_path()`
+      # (xeneon-app/src/resource_path.rs) va chercher à l'exécution pour
+      # les locales, les icônes des widgets et le fond d'écran par défaut.
+      - mkdir -p /app/share/xeneon-dashboard-rust
+      - cp -r xeneon-app/locales /app/share/xeneon-dashboard-rust/locales
+      - cp -r xeneon-app/assets /app/share/xeneon-dashboard-rust/assets
+      - cp -r xeneon-app/resources /app/share/xeneon-dashboard-rust/resources
+    sources:
+      # "type: dir" ne sert qu'aux builds locaux de dev avec
+      # flatpak-builder - à remplacer par "type: git" (dépôt public,
+      # épinglé sur un tag/commit précis) pour une vraie soumission
+      # Flathub. `skip: [target]` exclu explicitement : 13 Go d'artefacts
+      # de build locaux, inutiles et énormes à copier dans le bac à sable
+      # de build.
+      - type: dir
+        path: xeneon-dashboard-rs
+        skip:
+          - target
+      # Plain string = flatpak-builder lit ce fichier et insère son
+      # contenu (un array de sources) ici - voir flatpak-manifest(5),
+      # section Sources. Généré par flatpak-cargo-generator.py à partir de
+      # Cargo.lock (471 entrées / ~235 crates au 2026-10-01) - jamais écrit
+      # à la main.
+      - xeneon-dashboard-rs/cargo-sources.json
+
+# À faire avant une vraie soumission Flathub (pas bloquant pour un premier
+# build local) : metainfo.xml AppStream (absent pour l'instant), vérifier
+# la propriété du domaine n3tlab.com pour l'app-id, remplacer la source
+# "dir" par "git".
