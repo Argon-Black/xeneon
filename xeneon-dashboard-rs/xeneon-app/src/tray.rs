@@ -139,14 +139,26 @@ impl ksni::Tray for XeneonTray {
 /// a source checkout. Rendered through gdk-pixbuf - already a transitive
 /// dependency via gtk4 (which re-exports it as `gtk::gdk_pixbuf`) - rather
 /// than adding a dedicated image/SVG crate just for this.
-fn load_icon() -> ksni::Icon {
+/// `None` if the bundled SVG couldn't be loaded - same graceful-
+/// degradation convention every other icon loader in this app already
+/// follows (`icon_cache.rs`, `audio.rs`, `youtube.rs`, `system_sq.rs`: log
+/// and carry on without that icon, never panic). Confirmed to matter in
+/// practice, not just in theory: inside a real Flatpak sandbox, GTK4
+/// farms SVG decoding out to a separate sandboxed `glycin` loader process
+/// (`flatpak-spawn --sandbox ... glycin-svg`), which can fail for reasons
+/// unrelated to the SVG itself (e.g. a permission that subprocess needs
+/// and doesn't have yet) - a hard `.expect()` here took the whole app down
+/// with it the first time this was actually tested in a real sandbox,
+/// instead of just leaving the tray without an icon.
+fn load_icon() -> Option<ksni::Icon> {
     // Rendered above the SVG's native 24x24 for a less blurry result on
     // panels that scale tray icons up (most do, to at least their own
     // panel-icon size).
     const SIZE: i32 = 48;
     let path = resource_path("resources/icons/hicolor/symbolic/apps/com.n3tlab.XeneonDashboardRust-symbolic.svg");
     let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_file_at_size(&path, SIZE, SIZE)
-        .expect("bundled tray icon SVG should always load");
+        .inspect_err(|err| warn!("failed to load the bundled tray icon SVG: {err}"))
+        .ok()?;
 
     let width = pixbuf.width();
     let height = pixbuf.height();
@@ -172,7 +184,7 @@ fn load_icon() -> ksni::Icon {
         }
     }
 
-    ksni::Icon { width, height, data }
+    Some(ksni::Icon { width, height, data })
 }
 
 /// Spawns the tray's D-Bus service on its own background thread (see the
@@ -181,8 +193,10 @@ fn load_icon() -> ksni::Icon {
 /// itself runs off the GTK main thread.
 ///
 /// Returns `None` (after logging) if no StatusNotifierWatcher is running -
-/// e.g. a desktop with no tray support at all - so the app stays fully
-/// usable without one; this is a convenience, not a requirement.
+/// e.g. a desktop with no tray support at all - or if the bundled tray
+/// icon itself couldn't be loaded (see `load_icon`'s own doc comment) - so
+/// the app stays fully usable without one either way; this is a
+/// convenience, not a requirement.
 ///
 /// `disable_dbus_name(true)` skips owning a well-known bus name
 /// (`org.kde.StatusNotifierItem-<pid>-<n>`) and registers with this
@@ -195,7 +209,8 @@ fn load_icon() -> ksni::Icon {
 /// outside the sandbox either.
 pub(crate) fn spawn(sender: Sender<AppMsg>) -> Option<ksni::blocking::Handle<XeneonTray>> {
     use ksni::blocking::TrayMethods;
-    let tray = XeneonTray::new(sender, load_icon());
+    let icon = load_icon()?;
+    let tray = XeneonTray::new(sender, icon);
     match tray.disable_dbus_name(true).spawn() {
         Ok(handle) => Some(handle),
         Err(err) => {
