@@ -983,7 +983,12 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     hue_discover_spinner.set_visible(false);
     hue_ip_row.add_suffix(&hue_discover_spinner);
 
-    let hue_discover_button = gtk::Button::from_icon_name("system-search-symbolic");
+    // Bundled rather than `from_icon_name` - see the `edit-undo-symbolic`
+    // use above for why.
+    let hue_discover_button = gtk::Button::new();
+    if let Some(texture) = icon_cache::load_icon_texture("assets/icons/system-search-symbolic.svg") {
+        hue_discover_button.set_child(Some(&gtk::Image::from_paintable(Some(&texture))));
+    }
     hue_discover_button.add_css_class("flat");
     hue_discover_button.set_valign(gtk::Align::Center);
     hue_discover_button.set_tooltip_text(Some(&i18n::t("settings.hue_group.ip_row.discover_tooltip")));

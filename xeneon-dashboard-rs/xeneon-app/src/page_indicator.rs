@@ -36,6 +36,7 @@ use std::sync::Once;
 
 use crate::grid_widget::WidgetGrid;
 use crate::i18n_runtime;
+use crate::widgets::icon_cache;
 
 const DEFAULT_HIDE_DELAY_SECONDS: u32 = 2;
 // Sized off the Xeneon Edge's actual pixel density (2560x720 over a 14.5"
@@ -264,7 +265,13 @@ impl Inner {
 
         let settings_button = gtk::Button::new();
         settings_button.add_css_class("flat");
-        let icon = gtk::Image::from_icon_name("preferences-system-symbolic");
+        // Bundled rather than `from_icon_name` - not guaranteed to exist in
+        // every icon theme a user might have active (same convention as
+        // every other bundled icon in this project, see `icon_cache.rs`).
+        let icon = gtk::Image::new();
+        if let Some(texture) = icon_cache::load_icon_texture("assets/icons/preferences-system-symbolic.svg") {
+            icon.set_paintable(Some(&texture));
+        }
         icon.set_pixel_size(SETTINGS_ICON_PIXEL_SIZE);
         settings_button.set_child(Some(&icon));
         settings_button.add_css_class("xeneon-page-settings");

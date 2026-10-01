@@ -86,6 +86,7 @@ use std::rc::Rc;
 use crate::appearance_css;
 use crate::appearance_popover::{hex_to_rgba, rgba_to_hex};
 use crate::i18n_runtime as i18n;
+use crate::widgets::icon_cache;
 use crate::widgets::registry::WidgetInstance;
 use xeneon_core::grid::{Size, GAP, SIZE_L};
 
@@ -546,7 +547,13 @@ fn build_tile(icon: &ShortcutIcon, cell_w: f64, cell_h: f64) -> IconTile {
     move_button.add_css_class("flat");
     move_button.add_css_class("circular");
     move_button.add_css_class("xeneon-shortcut-corner");
-    let move_icon = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+    // Bundled rather than `from_icon_name` - not guaranteed to exist in
+    // every icon theme a user might have active (same convention as every
+    // other bundled icon in this project, see `icon_cache.rs`).
+    let move_icon = gtk::Image::new();
+    if let Some(texture) = icon_cache::load_icon_texture("assets/icons/list-drag-handle-symbolic.svg") {
+        move_icon.set_paintable(Some(&texture));
+    }
     move_icon.set_pixel_size(ICON_MOVE_BUTTON_PIXEL_SIZE);
     move_button.set_child(Some(&move_icon));
     move_button.set_halign(gtk::Align::Start);
