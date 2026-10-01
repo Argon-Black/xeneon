@@ -9,16 +9,28 @@
 //!
 //! Discovery mirrors the approach the GNOME Shell extension
 //! `vchlum/smart-home` uses (its `avahi.js`/`plugins/philipshue-bridge/
-//! api.js`, read for reference before writing this): local mDNS via the
-//! `avahi-browse` system command as the primary path (same
-//! shell-out-to-a-system-tool idiom this project already prefers over a
-//! new library dependency, see `CLAUDE.md`'s "minimal deps" note and
-//! `system_info.rs`'s own `/proc`/`/sys` reads), with Philips' own cloud
-//! discovery endpoint (`https://discovery.meethue.com/`) as a fallback for
-//! machines without `avahi-tools` installed. Both run every time
-//! `discover_all` is called and their results are merged/deduped by IP -
-//! same as the reference extension - rather than picking one and giving up
-//! if it comes back empty.
+//! api.js`, read for reference before writing this): local mDNS as the
+//! primary path, with Philips' own cloud discovery endpoint
+//! (`https://discovery.meethue.com/`) as a fallback for machines with no
+//! mDNS responder running. Both run every time `discover_all` is called
+//! and their results are merged/deduped by IP - same as the reference
+//! extension - rather than picking one and giving up if it comes back
+//! empty.
+//!
+//! The local path talks to `avahi-daemon` directly over D-Bus
+//! (`org.freedesktop.Avahi.Server`, system bus), not by shelling out to
+//! the `avahi-browse` CLI like an earlier version of this module did - a
+//! subprocess depends on a host binary being on `PATH`, invisible from
+//! inside a Flatpak sandbox (see `feedback_xeneon_flatpak_sandboxing` in
+//! the project's own memory notes; the same class of bug was already fixed
+//! once for the GNOME-extension-detection code in the old Python version).
+//! `ServiceBrowserNew`/`ItemNew`/`AllForNow` are asynchronous by nature
+//! (mDNS is a broadcast protocol, there's no synchronous "list everything
+//! right now" call) - `discover_avahi` below pumps a short-lived private
+//! `GMainContext` by hand to turn that into the same blocking
+//! `Vec<String>` contract this module's callers already expect, rather
+//! than making `discover_all`/`discover_hue_bridges` async all the way up
+//! through `settings_page.rs`.
 //!
 //! All bridge-facing HTTP goes over `https://<ip>/...` to a Hue bridge's
 //! own self-signed certificate, which a normal TLS verifier will always
@@ -42,8 +54,12 @@
 //! `PairError::LinkButtonNotPressed` so the settings UI can show "press
 //! the button" and retry rather than a generic failure.
 
+use gtk::gio;
+use gtk::glib;
+use gtk::glib::prelude::*;
 use log::{debug, warn};
-use std::process::Command;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::Duration;
 use ureq::tls::TlsConfig;
 
@@ -51,6 +67,26 @@ use crate::widgets::system_info::read_hostname;
 
 const HUE_MDNS_SERVICE: &str = "_hue._tcp";
 const CLOUD_DISCOVERY_URL: &str = "https://discovery.meethue.com/";
+
+// --- Avahi D-Bus discovery (see the module doc comment) ---
+const AVAHI_BUS_NAME: &str = "org.freedesktop.Avahi";
+const AVAHI_SERVER_PATH: &str = "/";
+const AVAHI_SERVER_INTERFACE: &str = "org.freedesktop.Avahi.Server";
+const AVAHI_SERVICE_BROWSER_INTERFACE: &str = "org.freedesktop.Avahi.ServiceBrowser";
+/// `AVAHI_IF_UNSPEC`/`AVAHI_PROTO_INET` from `avahi-common/defs.h` - browse
+/// every network interface, IPv4 only (this module never resolves IPv6
+/// bridges, matching the old `avahi-browse`-based parser's own filter).
+const AVAHI_IF_UNSPEC: i32 = -1;
+const AVAHI_PROTO_INET: i32 = 0;
+const AVAHI_DOMAIN: &str = "local";
+const AVAHI_DBUS_CALL_TIMEOUT_MS: i32 = 2000;
+/// How long to keep the service browser open collecting `ItemNew` replies
+/// before giving up and returning whatever was found - mirrors
+/// `avahi-browse -t`'s own "dump what's there, then stop" behavior rather
+/// than waiting indefinitely for an `AllForNow` a misbehaving avahi-daemon
+/// might never send.
+const AVAHI_BROWSE_WINDOW: Duration = Duration::from_millis(1500);
+const AVAHI_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// Local network calls (avahi already resolved the IP, or the user typed
 /// it in) - short, since a real bridge on the LAN answers in milliseconds
 /// and a long timeout here would just make a wrong/unreachable IP feel
@@ -122,51 +158,181 @@ fn bridge_tls_config() -> TlsConfig {
     TlsConfig::builder().disable_verification(true).build()
 }
 
-/// Parses one `avahi-browse -r -k -p -t` output line into the bridge's
-/// IPv4 address, or `None` for a line that isn't a resolved IPv4 record
-/// (avahi also reports IPv6 and unresolved/removed entries on other lines,
-/// see `avahi-browse(1)`'s `-p` machine-readable format). Split out as its
-/// own pure function so it's unit-testable without actually running
-/// `avahi-browse`.
-///
-/// Field layout (semicolon-separated): interface;protocol;name;type;
-/// domain;hostname;address;port;txt - same fields the reference GNOME
-/// extension's `Avahi._parseLine` reads (field 2 = protocol, 7 = address).
-fn parse_avahi_line(line: &str) -> Option<String> {
-    let fields: Vec<&str> = line.split(';').collect();
-    if fields.len() <= 8 {
-        return None;
+/// Local mDNS discovery via Avahi's own D-Bus API (see the module doc
+/// comment) - returns an empty list (not an error) both when no bridge is
+/// found and when avahi-daemon itself isn't reachable (not installed, not
+/// running, or - once packaged - outside what the sandbox's system-bus
+/// proxy allows), since either way `discover_all` should just fall back to
+/// cloud discovery rather than the caller having to tell those cases
+/// apart.
+fn discover_avahi() -> Vec<String> {
+    // A private `GMainContext`, used only for the duration of this call -
+    // needed because `ItemNew`/`AllForNow` are ordinary async D-Bus
+    // signals, dispatched through whichever context was thread-default
+    // when the connection was created; a `gio::spawn_blocking` worker
+    // thread (where this runs, see `settings_page.rs`) has no main loop of
+    // its own running by default, so without this the signals would simply
+    // never arrive no matter how long this function waited.
+    let context = glib::MainContext::new();
+    match context.with_thread_default(|| discover_avahi_on_context(&context)) {
+        Ok(ips) => ips,
+        Err(err) => {
+            debug!("failed to acquire a private GMainContext for Avahi discovery: {err}");
+            Vec::new()
+        }
     }
-    if fields[2] != "IPv4" {
-        return None;
-    }
-    let ip = fields[7];
-    if ip.is_empty() { None } else { Some(ip.to_string()) }
 }
 
-/// Local mDNS discovery via the `avahi-browse` system command - returns an
-/// empty list (not an error) both when no bridge is found and when
-/// `avahi-browse` itself isn't installed, since either way `discover_all`
-/// should just fall back to cloud discovery rather than the caller having
-/// to distinguish "not installed" from "installed but nothing found".
-fn discover_avahi() -> Vec<String> {
-    let output = match Command::new("avahi-browse").args(["-r", "-k", "-p", "-t", HUE_MDNS_SERVICE]).output() {
-        Ok(output) => output,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            debug!("avahi-browse not installed, skipping local Hue discovery");
-            return Vec::new();
-        }
+/// The actual discovery logic, run with `context` already pushed as this
+/// thread's default (see `discover_avahi`).
+fn discover_avahi_on_context(context: &glib::MainContext) -> Vec<String> {
+    let connection = match gio::bus_get_sync(gio::BusType::System, None::<&gio::Cancellable>) {
+        Ok(connection) => connection,
         Err(err) => {
-            warn!("failed to run avahi-browse: {err}");
+            debug!("no system bus connection for Avahi discovery: {err}");
             return Vec::new();
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut ips: Vec<String> = stdout.lines().filter_map(parse_avahi_line).collect();
+    let browser_reply = match connection.call_sync(
+        Some(AVAHI_BUS_NAME),
+        AVAHI_SERVER_PATH,
+        AVAHI_SERVER_INTERFACE,
+        "ServiceBrowserNew",
+        Some(&(AVAHI_IF_UNSPEC, AVAHI_PROTO_INET, HUE_MDNS_SERVICE, AVAHI_DOMAIN, 0u32).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        AVAHI_DBUS_CALL_TIMEOUT_MS,
+        None::<&gio::Cancellable>,
+    ) {
+        Ok(reply) => reply,
+        Err(err) => {
+            // The expected case on most machines with no avahi-daemon
+            // running - not worth a warning, cloud discovery covers it.
+            debug!("Avahi ServiceBrowserNew unavailable: {err}");
+            return Vec::new();
+        }
+    };
+    let Some((browser_path,)) = browser_reply.get::<(glib::variant::ObjectPath,)>() else {
+        warn!("Avahi ServiceBrowserNew reply had an unexpected shape");
+        return Vec::new();
+    };
+    let browser_path = browser_path.to_string();
+
+    let found: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let all_for_now = Rc::new(Cell::new(false));
+
+    // Both subscriptions unsubscribe automatically when dropped at the end
+    // of this function (`SignalSubscription`'s own `Drop` impl) - no manual
+    // cleanup needed, just keep them alive until then.
+    let _item_new_subscription = {
+        let found = found.clone();
+        // A separate clone from the receiver below, on purpose: capturing
+        // `connection` itself in this `move` closure would conflict with
+        // the borrow `subscribe_to_signal` needs on it to make this very
+        // call.
+        let connection_for_resolve = connection.clone();
+        connection.subscribe_to_signal(
+            Some(AVAHI_BUS_NAME),
+            Some(AVAHI_SERVICE_BROWSER_INTERFACE),
+            Some("ItemNew"),
+            Some(&browser_path),
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |signal| {
+                let Some((interface, protocol, name, service_type, domain, _flags)) =
+                    signal.parameters.get::<(i32, i32, String, String, String, u32)>()
+                else {
+                    return;
+                };
+                if let Some(ip) =
+                    resolve_hue_ipv4(&connection_for_resolve, interface, protocol, &name, &service_type, &domain)
+                {
+                    found.borrow_mut().push(ip);
+                }
+            },
+        )
+    };
+    let _all_for_now_subscription = {
+        let all_for_now = all_for_now.clone();
+        connection.subscribe_to_signal(
+            Some(AVAHI_BUS_NAME),
+            Some(AVAHI_SERVICE_BROWSER_INTERFACE),
+            Some("AllForNow"),
+            Some(&browser_path),
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |_signal| all_for_now.set(true),
+        )
+    };
+
+    // `iteration(false)` never blocks, so this loop's own `sleep` is what
+    // caps CPU use while waiting - matches `avahi-browse -t`'s short
+    // "dump what's there" window instead of blocking indefinitely on a
+    // `AllForNow` that might never come.
+    let deadline = std::time::Instant::now() + AVAHI_BROWSE_WINDOW;
+    while !all_for_now.get() && std::time::Instant::now() < deadline {
+        context.iteration(false);
+        std::thread::sleep(AVAHI_POLL_INTERVAL);
+    }
+
+    let _ = connection.call_sync(
+        Some(AVAHI_BUS_NAME),
+        &browser_path,
+        AVAHI_SERVICE_BROWSER_INTERFACE,
+        "Free",
+        None,
+        None,
+        gio::DBusCallFlags::NONE,
+        AVAHI_DBUS_CALL_TIMEOUT_MS,
+        None::<&gio::Cancellable>,
+    );
+
+    let mut ips = found.borrow().clone();
     ips.sort();
     ips.dedup();
     ips
+}
+
+/// Resolves one `ItemNew` result (interface/protocol/name/type/domain, the
+/// same five fields `ServiceBrowserNew` was given back scoped to one
+/// discovered instance) into its IPv4 address via Avahi's `ResolveService`,
+/// or `None` for anything that isn't a resolvable IPv4 record (an IPv6-only
+/// responder, a service that vanished between being announced and resolved,
+/// etc.) - the D-Bus equivalent of the old text-based `parse_avahi_line`,
+/// except every field already arrives typed instead of needing to be
+/// parsed out of a semicolon-separated line.
+fn resolve_hue_ipv4(
+    connection: &gio::DBusConnection,
+    interface: i32,
+    protocol: i32,
+    name: &str,
+    service_type: &str,
+    domain: &str,
+) -> Option<String> {
+    let reply = connection
+        .call_sync(
+            Some(AVAHI_BUS_NAME),
+            AVAHI_SERVER_PATH,
+            AVAHI_SERVER_INTERFACE,
+            "ResolveService",
+            Some(&(interface, protocol, name, service_type, domain, AVAHI_PROTO_INET, 0u32).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            AVAHI_DBUS_CALL_TIMEOUT_MS,
+            None::<&gio::Cancellable>,
+        )
+        .ok()?;
+    // Reply shape: (interface, protocol, name, type, domain, host_name,
+    // address_protocol, address, port, txt, flags) - only
+    // address_protocol/address are needed here.
+    let (_, _, _, _, _, _, address_protocol, address, ..) =
+        reply.get::<(i32, i32, String, String, String, String, i32, String, u16, Vec<Vec<u8>>, u32)>()?;
+    if address_protocol == AVAHI_PROTO_INET && !address.is_empty() {
+        Some(address)
+    } else {
+        None
+    }
 }
 
 /// Philips' own cloud discovery (`N-UPnP`) - lists bridges registered on
@@ -754,24 +920,6 @@ pub fn open_settings() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_resolved_ipv4_line() {
-        let line = "=;eth0;IPv4;Philips hue;_hue._tcp;local;Philips-hue.local;192.168.1.42;443;\"bridgeid=001788FFFE123456\"";
-        assert_eq!(parse_avahi_line(line), Some("192.168.1.42".to_string()));
-    }
-
-    #[test]
-    fn ignores_ipv6_line() {
-        let line = "=;eth0;IPv6;Philips hue;_hue._tcp;local;Philips-hue.local;fe80::1;443;\"bridgeid=001788FFFE123456\"";
-        assert_eq!(parse_avahi_line(line), None);
-    }
-
-    #[test]
-    fn ignores_short_or_unrelated_lines() {
-        assert_eq!(parse_avahi_line(""), None);
-        assert_eq!(parse_avahi_line("+;eth0;IPv4;Philips hue;_hue._tcp;local"), None);
-    }
 
     #[test]
     fn devicetype_stays_under_bridge_limit() {
