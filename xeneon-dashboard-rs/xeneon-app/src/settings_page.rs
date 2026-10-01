@@ -62,6 +62,7 @@ pub struct PagesHandle {
     page_indicator: PageIndicator,
     default_row: adw::ComboRow,
     default_values: Rc<RefCell<Vec<String>>>,
+    default_row_handler: Rc<RefCell<Option<glib::SignalHandlerId>>>,
 }
 
 impl PagesHandle {
@@ -70,7 +71,7 @@ impl PagesHandle {
         self.group.add(&row);
         self.rows.borrow_mut().push(row);
         self.pages.borrow_mut().push(grid);
-        refresh_default_row(&self.default_row, &self.default_values, &self.pages.borrow());
+        refresh_default_row(&self.default_row, &self.default_values, &self.pages.borrow(), &self.default_row_handler);
     }
 
     /// Drops a page's rename row - `rows` and `pages` are built in
@@ -88,7 +89,7 @@ impl PagesHandle {
         // no-longer-existing choice the same as unset, see `Config`'s own
         // doc comment on that field, so this doesn't need to duplicate
         // that fallback.
-        refresh_default_row(&self.default_row, &self.default_values, &pages);
+        refresh_default_row(&self.default_row, &self.default_values, &pages, &self.default_row_handler);
     }
 }
 
@@ -671,14 +672,19 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
     default_row.set_title(&i18n::t("settings.pages_group.default_row.title"));
     pages_group.add(&default_row);
     let default_values: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    refresh_default_row(&default_row, &default_values, &pages_shared.borrow());
-    default_row.connect_selected_notify({
+    // Held so every programmatic rebuild below (`refresh_default_row`) can
+    // block this handler for the duration of its own model swap - see
+    // that function's own doc comment (audit finding 2026-09-30).
+    let default_row_handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::new(RefCell::new(None));
+    refresh_default_row(&default_row, &default_values, &pages_shared.borrow(), &default_row_handler);
+    let handler = default_row.connect_selected_notify({
         let default_values = default_values.clone();
         move |row| {
             let value = default_values.borrow().get(row.selected() as usize).cloned();
             config_store::update(|c| c.default_page = value);
         }
     });
+    *default_row_handler.borrow_mut() = Some(handler);
 
     let page_rows: Rc<RefCell<Vec<adw::ExpanderRow>>> = Rc::new(RefCell::new(Vec::new()));
     refresh_pages_group(&pages_group, &page_rows, &pages_shared.borrow(), &page_indicator);
@@ -1289,6 +1295,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         let pages_group = pages_group.clone();
         let default_row = default_row.clone();
         let default_values = default_values.clone();
+        let default_row_handler = default_row_handler.clone();
         let page_rows = page_rows.clone();
         let pages_shared = pages_shared.clone();
         let page_indicator = page_indicator.clone();
@@ -1346,7 +1353,7 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
             default_row.set_title(&i18n::t("settings.pages_group.default_row.title"));
             // Same reasoning as the page list just below: its labels
             // ("Home Assistant", "Page N"...) are translated strings too.
-            refresh_default_row(&default_row, &default_values, &pages_shared.borrow());
+            refresh_default_row(&default_row, &default_values, &pages_shared.borrow(), &default_row_handler);
             // Rebuilding is the simplest way to keep a dynamic-length,
             // per-row-translated list in sync - same call Python's
             // _retranslate() makes to refresh_pages() for the same reason.
@@ -1398,7 +1405,15 @@ pub fn populate(root: &gtk::Box, pages: &[Rc<WidgetGrid>], page_indicator: PageI
         }
     });
 
-    PagesHandle { group: pages_group, rows: page_rows, pages: pages_shared, page_indicator, default_row, default_values }
+    PagesHandle {
+        group: pages_group,
+        rows: page_rows,
+        pages: pages_shared,
+        page_indicator,
+        default_row,
+        default_values,
+        default_row_handler,
+    }
 }
 
 /// One settings-page "screen": a fixed 3-column row of blocks, exactly
@@ -1597,7 +1612,33 @@ const HA_DEFAULT_PAGE_VALUE: &str = "ha";
 /// the first real page whenever the saved choice is unset or no longer
 /// among the options, mirroring `Config.default_page`'s own doc comment
 /// on why that's the right fallback (not an error) for both cases.
-fn refresh_default_row(row: &adw::ComboRow, values: &Rc<RefCell<Vec<String>>>, pages: &[Rc<WidgetGrid>]) {
+///
+/// `handler` - the row's own `connect_selected_notify` handler, blocked
+/// for the duration of `set_model`/`set_selected` below. Audit finding
+/// 2026-09-30 (reported by the user as "the Home Assistant page
+/// sometimes becomes the default one even though it wasn't", not every
+/// time): swapping the model makes GTK transiently report `selected() ==
+/// 0` before the corrective `set_selected(index)` call lands - same bug
+/// class already fixed for `clock.rs`'s city dropdown and `audio.rs`'s
+/// player dropdown (2026-09-18), just not yet applied here. Unblocked,
+/// that transient 0 would fire the row's own handler, which reads
+/// `values.borrow()` - *still the previous rebuild's list* at that point,
+/// since `*values.borrow_mut() = new_values` only happens at the very end
+/// of this function - and saves whatever sits at index 0 of *that* list
+/// as the new `default_page`. Whenever Home Assistant was already
+/// enabled, the previous list's index 0 *is* `HA_DEFAULT_PAGE_VALUE`, so
+/// any unrelated call to this function (a page added/removed, or a
+/// language switch retranslating this row) could silently overwrite the
+/// user's real saved default with "Home Assistant" - intermittently,
+/// since it depends on GTK actually emitting that transient notification
+/// for the particular model swap at hand, not on anything this code
+/// controls.
+fn refresh_default_row(
+    row: &adw::ComboRow,
+    values: &Rc<RefCell<Vec<String>>>,
+    pages: &[Rc<WidgetGrid>],
+    handler: &Rc<RefCell<Option<glib::SignalHandlerId>>>,
+) {
     let ha_enabled = config_store::get().ha_page_enabled;
     let mut new_values = Vec::with_capacity(pages.len() + 1);
     let mut labels = Vec::with_capacity(pages.len() + 1);
@@ -1612,13 +1653,21 @@ fn refresh_default_row(row: &adw::ComboRow, values: &Rc<RefCell<Vec<String>>>, p
         labels.push(grid.display_name());
     }
 
-    let model = gtk::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>());
-    row.set_model(Some(&model));
-
     let page_1_index = if ha_enabled { 1 } else { 0 };
     let saved = config_store::get().default_page;
     let index = saved.and_then(|value| new_values.iter().position(|v| *v == value)).unwrap_or(page_1_index);
+
+    let handler_ref = handler.borrow();
+    if let Some(handler) = handler_ref.as_ref() {
+        row.block_signal(handler);
+    }
+    let model = gtk::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>());
+    row.set_model(Some(&model));
     row.set_selected(index as u32);
+    if let Some(handler) = handler_ref.as_ref() {
+        row.unblock_signal(handler);
+    }
+    drop(handler_ref);
 
     *values.borrow_mut() = new_values;
 }
