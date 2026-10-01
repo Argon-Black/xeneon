@@ -69,7 +69,7 @@ use adw::prelude::*;
 use log::warn;
 use page_indicator::PageIndicator;
 use relm4::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use xeneon_core::config;
 use xeneon_core::grid::{PAGE_H, PAGE_W};
@@ -500,6 +500,7 @@ impl SimpleComponent for AppModel {
         let display = gtk::gdk::Display::default();
         if let Some(display) = &display {
             register_app_icon(display);
+            pin_icon_theme_under_flatpak(display);
         }
 
         let xeneon = display.and_then(|d| xeneon_monitor(&d));
@@ -867,6 +868,26 @@ fn register_app_icon(display: &gtk::gdk::Display) {
     let icons_dir = resource_path::resource_path("resources/icons");
     gtk::IconTheme::for_display(display).add_search_path(&icons_dir);
     gtk::Window::set_default_icon_name(APP_ID);
+}
+
+/// Pins the GTK icon theme to "Adwaita" when running sandboxed - the host's
+/// chosen icon theme (set via gsettings, read inside the sandbox through
+/// the portal) names a theme whose directory the sandbox can't see, so GTK
+/// can't even read its `index.theme` to learn it inherits Adwaita, and
+/// silently falls back only to the mostly-empty "hicolor" theme instead.
+/// That breaks icon lookups the same way whether the name comes from our
+/// own code or from a GTK/libadwaita widget's internals (e.g.
+/// `Adw.EntryRow`'s built-in apply-button icon) - the latter can't be
+/// worked around by bundling our own SVG, since we don't own that call
+/// site. "Adwaita" is guaranteed present here regardless of host theme,
+/// since it ships with the `org.gnome.Platform` runtime this app targets.
+/// Left untouched outside Flatpak, where the host theme's own files (and
+/// its real `Inherits=` chain) are reachable as normal.
+fn pin_icon_theme_under_flatpak(display: &gtk::gdk::Display) {
+    if !Path::new("/.flatpak-info").exists() {
+        return;
+    }
+    gtk::Settings::for_display(display).set_gtk_icon_theme_name(Some("Adwaita"));
 }
 
 /// `gtk::glib::idle_add_local_once`, plus an explicit
